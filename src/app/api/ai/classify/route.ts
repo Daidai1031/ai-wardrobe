@@ -113,15 +113,29 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { originalUrl, storagePath } = await request.json();
+    const { originalUrl, storagePath, mode } = await request.json();
     if (!originalUrl) {
       return NextResponse.json({ error: "originalUrl required" }, { status: 400 });
     }
 
-    console.log("[classify] detecting item count for", originalUrl);
-    const detection = await detectItems(originalUrl);
-    const itemCount = detection.count;
-    console.log("[classify] item count:", itemCount);
+    // The user can declare up front whether the photo has one item or
+    // several. A declared "single" skips the item-count vision call
+    // entirely — the most common upload case pays zero detection tokens. A
+    // declared "multi" still needs one call for the concrete SAM prompts,
+    // but trusts the user's count over Claude's guess. Omitting mode falls
+    // back to the original auto-detect behavior for backward compatibility.
+    let itemCount: number;
+    let prompts: string[] = [];
+    if (mode === "single") {
+      console.log("[classify] user declared single item; skipping detection call");
+      itemCount = 1;
+    } else {
+      console.log("[classify] detecting item count for", originalUrl);
+      const detection = await detectItems(originalUrl);
+      itemCount = mode === "multi" ? Math.max(2, detection.count) : detection.count;
+      prompts = detection.prompts;
+      console.log("[classify] item count:", itemCount);
+    }
 
     if (itemCount <= 1) {
       const cleanPath = storagePath.replace(/\.[^.]+$/, "_clean.png");
@@ -138,7 +152,7 @@ export async function POST(request: NextRequest) {
     // Multi-item: SAM supplies the alpha mask, so these crops do not need the
     // separate background-removal model used by the single-item branch.
     console.log("[classify] multi-item branch, segmenting...");
-    const crops = await segmentItems(originalUrl, detection.prompts, itemCount);
+    const crops = await segmentItems(originalUrl, prompts, itemCount);
     console.log(`[classify] got ${crops.length} segments`);
     const results = [];
     for (let i = 0; i < crops.length; i++) {

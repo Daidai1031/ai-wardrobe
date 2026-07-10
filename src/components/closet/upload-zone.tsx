@@ -19,6 +19,11 @@ const STAGE_LABELS: Record<Stage, string> = {
   done: "Done!",
   error: "Something went wrong",
 };
+
+const MODE_HELP: Record<"single" | "multi", string> = {
+  single: "One item per photo. JPG, PNG, WebP, HEIC.",
+  multi: "Several items in one photo (belts, jewelry, flat-lays) — we auto-detect and split them. JPG, PNG, WebP, HEIC.",
+};
 /** Convert HEIC/HEIF (or any image) to JPEG via server-side Sharp */
 async function convertIfNeeded(file: File): Promise<File> {
   const name = file.name.toLowerCase();
@@ -42,6 +47,9 @@ export function UploadZone() {
   const [stage, setStage] = useState<Stage>("idle");
   const [preview, setPreview] = useState<string | null>(null);
   const [result, setResult] = useState<{ clean_url: string; category: string; subcategory: string; color: string; count: number } | null>(null);
+  // Declaring this up front lets a single-item upload (the common case) skip
+  // the item-count vision call entirely server-side — see route.ts `mode`.
+  const [mode, setMode] = useState<"single" | "multi">("single");
   const router = useRouter();
   const supabase = createClient();
 
@@ -81,16 +89,23 @@ export function UploadZone() {
       // Cycle the label optimistically so it doesn't look frozen; multi-item
       // photos process each item sequentially and can take well over a
       // minute for 5+ items.
-      setStage("detecting");
-      stageTimers = [
-        setTimeout(() => setStage("removing-bg"), 4000),
-        setTimeout(() => setStage("classifying"), 10000),
-      ];
+      if (mode === "single") {
+        // No detection call happens server-side for a declared single item —
+        // go straight to the next visible stage.
+        setStage("removing-bg");
+        stageTimers = [setTimeout(() => setStage("classifying"), 6000)];
+      } else {
+        setStage("detecting");
+        stageTimers = [
+          setTimeout(() => setStage("removing-bg"), 4000),
+          setTimeout(() => setStage("classifying"), 10000),
+        ];
+      }
 
       const res = await fetch("/api/ai/classify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ originalUrl: publicUrl, storagePath }),
+        body: JSON.stringify({ originalUrl: publicUrl, storagePath, mode }),
       });
       stageTimers.forEach(clearTimeout);
 
@@ -141,7 +156,7 @@ export function UploadZone() {
         setPreview(null);
       }, 3000);
     }
-  }, [supabase, router]);
+  }, [supabase, router, mode]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop: (files) => {
@@ -155,18 +170,36 @@ export function UploadZone() {
   const isProcessing = stage !== "idle" && stage !== "done" && stage !== "error";
 
   return (
-    <div
-      {...getRootProps()}
-      className={`relative border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-all ${
-        isDragActive
-          ? "border-brand-400 bg-brand-50"
-          : stage === "done"
-          ? "border-green-300 bg-green-50"
-          : stage === "error"
-          ? "border-red-300 bg-red-50"
-          : "border-surface-300 hover:border-surface-400 bg-white"
-      }`}
-    >
+    <div>
+      <div className="flex gap-2 mb-3">
+        {(["single", "multi"] as const).map((m) => (
+          <button
+            key={m}
+            type="button"
+            onClick={() => setMode(m)}
+            disabled={stage !== "idle"}
+            className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 ${
+              mode === m
+                ? "bg-surface-900 text-white"
+                : "bg-surface-100 text-surface-600 hover:bg-surface-200"
+            }`}
+          >
+            {m === "single" ? "Single item" : "Multiple items"}
+          </button>
+        ))}
+      </div>
+      <div
+        {...getRootProps()}
+        className={`relative border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-all ${
+          isDragActive
+            ? "border-brand-400 bg-brand-50"
+            : stage === "done"
+            ? "border-green-300 bg-green-50"
+            : stage === "error"
+            ? "border-red-300 bg-red-50"
+            : "border-surface-300 hover:border-surface-400 bg-white"
+        }`}
+      >
       <input {...getInputProps()} />
 
       {preview && (
@@ -205,9 +238,10 @@ export function UploadZone() {
         )}
         {stage === "idle" && (
           <p className="text-xs text-surface-400 mt-1">
-            One item, or several (belts, jewelry, flat-lays) — we auto-detect and split multi-item photos. JPG, PNG, WebP, HEIC.
+            {MODE_HELP[mode]}
           </p>
         )}
+      </div>
       </div>
     </div>
   );

@@ -3,19 +3,37 @@
 import Image from "next/image";
 import Link from "next/link";
 import type { WardrobeItem } from "@/types/database";
-import { Heart } from "lucide-react";
+import { Heart, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface ItemCardProps {
   item: WardrobeItem;
   onToggleFavorite?: (id: string, current: boolean) => void;
+  selecting?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (id: string) => void;
 }
 
-export function ItemCard({ item, onToggleFavorite }: ItemCardProps) {
+export function ItemCard({
+  item,
+  onToggleFavorite,
+  selecting,
+  selected,
+  onToggleSelect,
+}: ItemCardProps) {
   return (
     <Link
       href={`/closet/${item.id}`}
-      className="group relative bg-white rounded-xl border border-surface-200 overflow-hidden hover:shadow-md transition-shadow"
+      onClick={(e) => {
+        if (selecting) {
+          e.preventDefault();
+          onToggleSelect?.(item.id);
+        }
+      }}
+      className={cn(
+        "group relative bg-white rounded-xl border overflow-hidden hover:shadow-md transition-shadow",
+        selected ? "border-brand-500 ring-2 ring-brand-500" : "border-surface-200"
+      )}
     >
       {/* Image */}
       <div className="relative aspect-square bg-surface-50">
@@ -28,8 +46,22 @@ export function ItemCard({ item, onToggleFavorite }: ItemCardProps) {
           unoptimized
         />
 
+        {/* Select checkbox */}
+        {selecting && (
+          <div
+            className={cn(
+              "absolute top-2 left-2 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors",
+              selected
+                ? "bg-brand-600 border-brand-600"
+                : "bg-white/80 backdrop-blur-sm border-surface-300"
+            )}
+          >
+            {selected && <Check size={12} className="text-white" strokeWidth={3} />}
+          </div>
+        )}
+
         {/* Favorite button */}
-        {onToggleFavorite && (
+        {!selecting && onToggleFavorite && (
           <button
             onClick={(e) => {
               e.preventDefault();
