@@ -8,13 +8,14 @@ import { Upload, Loader2, Check, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 import Image from "next/image";
 
-type Stage = "idle" | "uploading" | "removing-bg" | "classifying" | "done" | "error";
+type Stage = "idle" | "uploading" | "detecting" | "removing-bg" | "classifying" | "done" | "error";
 
 const STAGE_LABELS: Record<Stage, string> = {
   idle: "Drop a photo or tap to upload",
   uploading: "Uploading image…",
+  detecting: "Checking how many items are in the photo…",
   "removing-bg": "Removing background…",
-  classifying: "AI is analyzing your item…",
+  classifying: "AI is analyzing your item(s)…",
   done: "Done!",
   error: "Something went wrong",
 };
@@ -40,12 +41,13 @@ async function convertIfNeeded(file: File): Promise<File> {
 export function UploadZone() {
   const [stage, setStage] = useState<Stage>("idle");
   const [preview, setPreview] = useState<string | null>(null);
-  const [result, setResult] = useState<{ clean_url: string; category: string; subcategory: string; color: string } | null>(null);
+  const [result, setResult] = useState<{ clean_url: string; category: string; subcategory: string; color: string; count: number } | null>(null);
   const router = useRouter();
   const supabase = createClient();
 
   const processFile = useCallback(async (inputFile: File) => {
     let file = inputFile;
+    let stageTimers: ReturnType<typeof setTimeout>[] = [];
     try {
       // Preview
       setPreview(URL.createObjectURL(file));
@@ -73,14 +75,24 @@ export function UploadZone() {
         .from("wardrobe")
         .getPublicUrl(storagePath);
 
-      // Call the AI pipeline
-      setStage("removing-bg");
+      // Call the AI pipeline — this is a single HTTP request that does
+      // detect → segment (if multi-item) → remove-bg → classify → store
+      // server-side, so we can't get real progress ticks back mid-flight.
+      // Cycle the label optimistically so it doesn't look frozen; multi-item
+      // photos process each item sequentially and can take well over a
+      // minute for 5+ items.
+      setStage("detecting");
+      stageTimers = [
+        setTimeout(() => setStage("removing-bg"), 4000),
+        setTimeout(() => setStage("classifying"), 10000),
+      ];
 
       const res = await fetch("/api/ai/classify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ originalUrl: publicUrl, storagePath }),
       });
+      stageTimers.forEach(clearTimeout);
 
       if (!res.ok) {
         const err = await res.json();
@@ -90,14 +102,27 @@ export function UploadZone() {
       setStage("classifying");
       const data = await res.json();
 
-      setResult({
-        clean_url: data.item.clean_url,
-        category: data.item.category,
-        subcategory: data.item.subcategory,
-        color: data.item.color,
-      });
+      if (data.multiItem) {
+        const first = data.items[0];
+        setResult({
+          clean_url: first.item.clean_url,
+          category: first.item.category,
+          subcategory: first.item.subcategory,
+          color: first.item.color,
+          count: data.count,
+        });
+        toast.success(`Added ${data.count} items from this photo`);
+      } else {
+        setResult({
+          clean_url: data.item.clean_url,
+          category: data.item.category,
+          subcategory: data.item.subcategory,
+          color: data.item.color,
+          count: 1,
+        });
+        toast.success(`Added: ${data.item.color} ${data.item.subcategory || data.item.category}`);
+      }
       setStage("done");
-      toast.success(`Added: ${data.item.color} ${data.item.subcategory || data.item.category}`);
 
       // Refresh closet after a short delay
       setTimeout(() => {
@@ -107,6 +132,7 @@ export function UploadZone() {
         setResult(null);
       }, 2000);
     } catch (err) {
+      stageTimers.forEach(clearTimeout);
       console.error("Upload error:", err);
       setStage("error");
       toast.error(err instanceof Error ? err.message : "Upload failed");
@@ -172,12 +198,14 @@ export function UploadZone() {
         </p>
         {result && stage === "done" && (
           <p className="text-xs text-surface-500">
-            {result.color} {result.subcategory || result.category}
+            {result.count > 1
+              ? `${result.count} items detected and added`
+              : `${result.color} ${result.subcategory || result.category}`}
           </p>
         )}
         {stage === "idle" && (
           <p className="text-xs text-surface-400 mt-1">
-            Single item photo — flat-lay or hanging. JPG, PNG, WebP, HEIC.
+            One item, or several (belts, jewelry, flat-lays) — we auto-detect and split multi-item photos. JPG, PNG, WebP, HEIC.
           </p>
         )}
       </div>

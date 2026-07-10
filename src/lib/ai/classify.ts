@@ -33,7 +33,7 @@ Return ONLY valid JSON, no markdown fences, no explanation.`;
 
 const MAX_DIMENSION = 1024;
 
-async function resizeForClassification(imageBuffer: Buffer): Promise<{ data: string; mediaType: "image/jpeg" | "image/png" | "image/webp" | "image/gif" }> {
+export async function resizeForClassification(imageBuffer: Buffer): Promise<{ data: string; mediaType: "image/jpeg" | "image/png" | "image/webp" | "image/gif" }> {
   const resized = await sharp(imageBuffer)
     .resize(MAX_DIMENSION, MAX_DIMENSION, { fit: "inside", withoutEnlargement: true })
     .jpeg({ quality: 85 })
