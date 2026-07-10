@@ -6,6 +6,7 @@
  * with category, subcategory, colors, material, season, occasion, style tags.
  */
 import Anthropic from "@anthropic-ai/sdk";
+import sharp from "sharp"; 
 import type { AIClassification, ItemCategory } from "@/types/database";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
@@ -30,20 +31,29 @@ const CLASSIFICATION_PROMPT = `You are an expert fashion stylist AI. Analyze thi
 
 Return ONLY valid JSON, no markdown fences, no explanation.`;
 
+const MAX_DIMENSION = 1024;
+
+async function resizeForClassification(imageBuffer: Buffer): Promise<{ data: string; mediaType: "image/jpeg" | "image/png" | "image/webp" | "image/gif" }> {
+  const resized = await sharp(imageBuffer)
+    .resize(MAX_DIMENSION, MAX_DIMENSION, { fit: "inside", withoutEnlargement: true })
+    .jpeg({ quality: 85 })
+    .toBuffer();
+
+  return {
+    data: resized.toString("base64"),
+    mediaType: "image/jpeg",
+  };
+}
+
 export async function classifyItem(imageUrl: string): Promise<AIClassification> {
-  // Fetch image and convert to base64
   const response = await fetch(imageUrl);
   const arrayBuffer = await response.arrayBuffer();
-  const base64 = Buffer.from(arrayBuffer).toString("base64");
+  const imageBuffer = Buffer.from(arrayBuffer);
 
-  // Detect media type
-  const contentType = response.headers.get("content-type") || "image/png";
-  const mediaType = contentType.startsWith("image/")
-    ? contentType as "image/png" | "image/jpeg" | "image/webp" | "image/gif"
-    : "image/png";
+  const { data: base64, mediaType } = await resizeForClassification(imageBuffer);
 
   const msg = await anthropic.messages.create({
-    model: "claude-sonnet-4-6",
+    model: "claude-haiku-4-5-20251001",
     max_tokens: 500,
     messages: [
       {
