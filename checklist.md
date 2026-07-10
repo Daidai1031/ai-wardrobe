@@ -1,6 +1,6 @@
 # AI Wardrobe — Implementation Checklist
 
-> Last updated: 2026-07-10 (HEIC 支持完成；多件物品识别代码已完成，待真实 fal.ai 调用联调)
+> Last updated: 2026-07-10 (搭配创建/保存与自由拼贴 Canvas 完成；鞋子/耳环/手镯配对泛化 + 上传 single/multi 预选完成；下一步：Home 每日推荐、AI Stylist Canvas 化、已保存 outfit 支持编辑)
 
 ---
 
@@ -76,11 +76,11 @@
 
 | 功能 | 状态 | 备注 |
 |------|------|------|
-| AI Stylist Chat | ✅ 完成 | 基于真实衣橱推荐 |
-| 搭配创建/保存 | ✅ 框架就绪 | 前端拖拽组合 UI 待开发 |
-| 天气 API 集成 | ✅ API 就绪 | 需要 OpenWeather Key |
-| 每日推荐 (Home Page) | ❌ 待开发 | |
-| Google Calendar 集成 | ❌ 待开发 | |
+| AI Stylist Chat | ✅ 完成 | 基于真实衣橱推荐；**目前只回复纯文字**，下一步计划改成 Canvas 形式展示推荐搭配并可编辑（呼应 outfits 的自由拼贴 Canvas） |
+| 搭配创建/保存 | ✅ 前端完成 | `outfits-view.tsx`：衣橱单品拖入/点击加入、自由定位、缩放、层级调整、名称/合集/备注及 Supabase 保存；Canvas 使用去背图透明展示；**已保存的 outfit 目前不可编辑**（outfits 库里没有「编辑」入口，且 `outfit_items` schema 只存 `position` 层级顺序、不存自由坐标/缩放，见下方「当前边界」） |
+| 天气 API 集成 | ✅ API 就绪 | 需要 OpenWeather Key；`stylist` route 已预留 `context.weather` 字段待接入 |
+| 每日推荐 (Home Page) | ❌ 待开发 | 目前 `/` 只是重定向到 `/closet` 或 `/login`（`src/app/page.tsx`），dashboard 路由组下没有独立首页；计划结合 Google Calendar（日程）+ OpenWeather（天气）生成每日穿搭推荐 |
+| Google Calendar 集成 | ❌ 待开发 | `stylist` route 已预留 `context.calendar` 字段待接入；schema 里没有存 Google Calendar token/事件的表 |
 
 ### Phase 4 — Calendar + Analytics (Module 10, 11)
 
@@ -111,6 +111,46 @@
 
 ## 下一步开发任务
 
+### 任务 1: 每日推荐 (Home Page) — ❌ 待开发
+
+- 需求: dashboard 需要一个真正的首页，结合 Google Calendar（当天日程）+ OpenWeather（当天天气）生成每日穿搭推荐。目前 `/` (`src/app/page.tsx`) 只是重定向到 `/closet` 或 `/login`，dashboard 路由组下没有独立首页。
+- 可复用的现有基础:
+  - `src/app/api/weather/route.ts`：OpenWeatherMap 代理已就绪。
+  - `src/app/api/ai/stylist/route.ts`：`context.weather` / `context.calendar` 字段已预留在 system prompt 里，但从未被真正调用方传入过数据。
+  - `src/proxy.ts` 的 `isDashboard` 检查需要加上新首页路径。
+- 待做: Google Calendar OAuth 接入（目前 schema 里没有存 token/事件的表，需要新表或复用 `profiles`）；新的首页路由 + 服务端数据拉取（天气 + 日程 + 衣橱）；调用 stylist 逻辑生成当日推荐。
+
+### 任务 2: AI Stylist 用 Canvas 展示推荐并可编辑 — ❌ 待开发
+
+- 需求: 目前 `POST /api/ai/stylist` 只返回纯文字 `{ reply }`（`src/app/(dashboard)/stylist/page.tsx` 就是一个文字聊天框）。推荐的搭配应该像 `outfits` 的自由拼贴 Canvas 一样，以图片拼贴的形式展示，并且用户可以直接在 Canvas 上编辑（挪动、替换单品等）。
+- 可复用: `src/app/(dashboard)/outfits/outfits-view.tsx` 里的自由拼贴 Canvas 组件（拖拽/缩放/层级/`clean_url` 透明展示逻辑）——目标是让 stylist 推荐结果能复用同一套 Canvas，而不是重新造一个。
+- 待做: stylist route 除了文字回复外，还要返回结构化的「推荐单品 id 列表 + 初始布局」；前端渲染 Canvas 而不是纯文字气泡；Canvas 编辑后要能「保存为搭配」（复用任务 3 的编辑/保存逻辑）。
+
+### 任务 3: 已保存的 outfit 支持编辑 — ❌ 待开发
+
+- 需求: `Your outfits` 库里已保存的搭配目前不能编辑，只能新建。用户应该能打开一个已保存的 outfit，回到 Canvas 里调整（挪动/缩放/增删单品）后重新保存。
+- 已知障碍（见下方「已完成任务详情」里搭配 Canvas 任务的「当前边界」）: `outfit_items` schema 目前只存 `position`（层级顺序整数），不存自由拼贴的 `x/y/width`。要做到「打开后完全恢复原来的布局」，必须先给 `outfit_items` 加布局字段（并同步 `supabase/schema.sql`、`src/types/database.ts`、`outfits/page.tsx` 查询、`outfits-view.tsx` 的保存/加载逻辑），否则重新打开只能恢复层级顺序、无法恢复具体摆放位置。
+- 待做: schema 迁移（加 `x`/`y`/`width` 到 `outfit_items`，手动在 Supabase SQL Editor 执行，本仓库没有迁移工具）；`outfits-view.tsx` 增加「编辑」入口（点击已保存搭配 → 加载进 Canvas，带上已存布局）；保存逻辑从「只能 insert 新 outfit」扩展为「update 已有 outfit + 增删 outfit_items」。
+
+---
+
+## 已完成任务详情（历史记录）
+
+### 任务: 搭配创建/保存 + 自由拼贴 Canvas — ✅ 前端完成
+
+- 已实现:
+  - `src/app/(dashboard)/outfits/page.tsx`
+    - 服务端并行读取当前用户的 `outfits`（含 `outfit_items` 与单品预览字段）和全部未归档 `wardrobe_items`，传给客户端搭配视图。
+  - `src/app/(dashboard)/outfits/outfits-view.tsx`
+    - 搭配库：展示已保存搭配、单品拼图预览、合集、穿着次数和备注；空状态可直接开始第一套搭配。
+    - Closet 单品池：支持类别筛选和颜色/品牌/类型搜索；单品使用 1:1 `object-contain` 完整显示，卡片互不遮挡；加入 Canvas 后从左侧消失，从 Canvas 移除后自动回到左侧。
+    - 自由拼贴 Canvas：可从 Closet 拖入或点击自动加入；拖入时以释放点作为初始位置；支持鼠标/触屏自由移动、自动置顶和右下角缩放，尺寸限制为画布宽度的 15%–60%，移动和缩放都限制在画布边界内。
+    - Canvas 单品直接使用 `clean_url`（缺失时回退 `original_url`）展示；已移除白/灰卡片底、灰色边框和底部名称栏，只保留悬停时的删除与缩放控件。
+    - 保存：至少选择 2 件；写入 `outfits` 后按当前层级顺序批量写入 `outfit_items.position`；关联写入失败时自动删除刚创建的空搭配，避免半成品数据。
+    - 支持搭配名称、Collection（Everyday/Work/Weekend/Date Night/Travel/Special Occasion 等）和备注；未填写名称时自动生成日期名称。
+- **已验证 (2026-07-10)**: TypeScript `--noEmit` 检查与 Next.js 生产构建均通过。
+- **当前边界**: 自由拼贴的 `x/y/width` 目前是创建页面内的客户端状态；现有 `outfit_items` Schema 只保存 `position` 层级顺序，因此刷新或重新打开搭配时不会恢复自由坐标和尺寸。若后续要做搭配编辑/原样恢复，需要给关联表增加布局字段并同步 `schema.sql`、查询和保存逻辑。
+
 ### 任务: 多件物品识别 (自动判断 single vs multi-item) — ✅ 代码已完成，⚠️ 待真实调用验证
 
 - 已实现:
@@ -118,8 +158,9 @@
     - `detectItems(imageUrl)`: Haiku vision 在一次调用中返回物品计数和供 SAM 3.1 使用的具体英文 noun prompts（复用 `classify.ts` 的 `resizeForClassification`）；同类物品 prompt 会归一化去重
     - `segmentItems(imageUrl, prompts, expectedCount)`: 调用 fal.ai `fal-ai/sam-3-1/image`，显式开启 `return_multiple_masks/include_scores/include_boxes`；读取官方 normalized `[cx,cy,w,h]` boxes，过滤 <1% 图片面积的碎 mask、按分数去重，最多取 12 个，再用 Sharp 从原图裁剪（不用 SAM 黑底 applied-mask 图）
   - `src/app/api/ai/classify/route.ts`
-    - 先调用 `detectItemCount`；≤1 件 → 原单件 pipeline 完全不变（去背景 → Claude 分类 → 存储，返回 `{ item, classification, multiItem: false }`）
+    - ≤1 件 → 原单件 pipeline 完全不变（去背景 → Claude 分类 → 存储，返回 `{ item, classification, multiItem: false }`）
     - ≥2 件 → `segmentItems` 拿到裁剪图 → 每张裁剪图先传到 Storage 拿 URL（fal 的去背景需要可访问的 URL）→ 复用同一套「去背景 → Claude 分类 → 插入 wardrobe_items」逻辑（抽成 `processOneItem` 共享函数）→ 返回 `{ items: [...], multiItem: true, count }`；单个 segment 失败不影响其它 segment（catch 后跳过，全部失败才报错）
+    - **已更新**: 判断「≤1 件还是 ≥2 件」现在不是无条件调用 `detectItems`——见下面「泛化配对逻辑…」任务里的 `mode` 参数，用户选 single 时这一步完全跳过
   - `src/components/closet/upload-zone.tsx`: 新增 `detecting` 阶段提示；根据响应里的 `multiItem` 分流展示「Added N items」或原有单件文案，`result` 增加 `count` 字段
 - **已验证 (2026-07-10)**: `fal-ai/sam-3-1/image` 真实响应为 `masks`, `scores`, `boxes`, `metadata`；测试图用 `purse` prompt 返回 4 个独立 mask，boxes 为官方 normalized `[cx,cy,w,h]`。宽泛 prompt 会返回 0 个 mask，因此必须由 Claude 提供具体可见物品 noun。
 - 未做 (Phase 2): 前端 checkbox 勾选/取消每个检测到的物品的 UI — 目前 multi-item 检测到的所有 segment 会全部自动分类入库，没有确认环节
@@ -160,10 +201,10 @@ ai-wardrobe/
 ├── src/
 │   ├── app/
 │   │   ├── (auth)/login, signup
-│   │   ├── (dashboard)/closet, outfits, stylist, profile, analytics, travel
-│   │   └── api/ai/classify, stylist + api/weather
-│   ├── components/closet, layout
-│   ├── lib/ai/remove-bg.ts, classify.ts + supabase/client.ts, server.ts
+│   │   ├── (dashboard)/closet, outfits (含自由拼贴 Canvas), stylist, profile, analytics, travel
+│   │   └── api/ai/classify, convert (HEIC), stylist + api/weather
+│   ├── components/closet (upload-zone.tsx, item-card.tsx), layout
+│   ├── lib/ai/remove-bg.ts, classify.ts, segment.ts (多件检测 + 配对泛化) + supabase/client.ts, server.ts
 │   ├── proxy.ts (原 middleware.ts)
 │   └── types/database.ts
 ├── supabase/schema.sql
@@ -180,7 +221,11 @@ ai-wardrobe/
 | 多件物品计数 / SAM 分割 | `src/lib/ai/segment.ts` |
 | HEIC 转换 | `src/app/api/ai/convert/route.ts` |
 | 上传 pipeline (计数→单件/多件分支→去背景→分类→存储) | `src/app/api/ai/classify/route.ts` |
+| 上传 UI（single/multi 切换、进度提示） | `src/components/closet/upload-zone.tsx` |
 | AI Stylist 对话 | `src/app/api/ai/stylist/route.ts` |
+| AI Stylist 页面（目前纯文字聊天） | `src/app/(dashboard)/stylist/page.tsx` |
+| 搭配创建/保存、自由拼贴 Canvas | `src/app/(dashboard)/outfits/outfits-view.tsx` |
+| 搭配页服务端数据查询 | `src/app/(dashboard)/outfits/page.tsx` |
 | 数据库类型定义 | `src/types/database.ts` |
 | 认证 / 路由保护 | `src/proxy.ts` |
 | 数据库 Schema | `supabase/schema.sql` |

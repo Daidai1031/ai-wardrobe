@@ -70,42 +70,40 @@ src/
 │   ├── (dashboard)/             — main app (sidebar layout)
 │   │   ├── closet/              — browse & upload items
 │   │   ├── closet/[id]/         — item detail & edit
-│   │   ├── outfits/             — outfit library
-│   │   ├── stylist/             — AI chat stylist
+│   │   ├── outfits/             — outfit library + freeform Canvas builder
+│   │   ├── stylist/             — AI chat stylist (text-only for now)
 │   │   ├── analytics/           — closet stats & style DNA
 │   │   ├── profile/             — user profile & body data
-│   │   └── travel/              — travel planner (Phase 5)
+│   │   └── travel/              — travel planner (placeholder pages only)
 │   └── api/ai/                  — AI processing endpoints
-│       ├── classify/            — upload → bg removal → classification → store
+│       ├── classify/            — upload → detect count → bg removal or SAM segmentation → classify → store
+│       ├── convert/             — HEIC/HEIF → JPEG (client calls this before upload)
 │       ├── stylist/             — chat with wardrobe context
 │       └── weather/             — OpenWeatherMap proxy
 ├── components/
-│   ├── closet/                  — upload zone, item card
+│   ├── closet/                  — upload zone (single/multi toggle), item card
 │   ├── layout/                  — sidebar navigation
 │   └── ui/                      — reusable UI primitives
 ├── lib/
-│   ├── ai/                      — fal.ai & Claude API wrappers
+│   ├── ai/                      — fal.ai bg removal, Claude classify, SAM 3.1 multi-item segmentation
 │   └── supabase/                — client & server Supabase instances
+├── proxy.ts                     — Next.js 16's middleware equivalent (auth/session refresh, route protection)
 └── types/                       — TypeScript domain types
 ```
+
+There is no dashboard home page yet — `/` just redirects to `/closet` or `/login`. See `CLAUDE.md` and `checklist.md` for the current architecture and in-progress work in detail; this file only covers setup/deployment.
 
 ## Architecture Decisions
 
 | Decision | Why |
 |---|---|
-| **fal.ai for bg removal** (not SAM segmentation) | BiRefNet is faster, cheaper, and better for single-item photos. SAM is overkill for MVP. |
+| **fal.ai BiRefNet for single-item bg removal, SAM 3.1 for multi-item segmentation** | BiRefNet is fast/cheap and the common case is one item per photo; a cheap Claude Haiku call decides item count first so SAM (and its extra cost) only runs on photos that actually need splitting. See `checklist.md`/`CLAUDE.md` for the full pipeline. |
 | **Claude Vision for classification** | Far more accurate than SAM concept labels. Returns rich metadata (category, color, material, season, occasion, style tags) in one call. |
+| **Claude Haiku (not Sonnet) for classify/stylist/detection** | ~3x cheaper than Sonnet with acceptable accuracy for these calls; see the cost table below. One exception: the shoe/jewelry duplicate-pairing check in `segment.ts` uses Sonnet, since it only fires on multi-item photos and needs stronger visual reasoning. |
 | **Supabase** | Auth + DB + Storage in one service. Free tier handles 3+ users easily. RLS ensures data isolation. |
-| **Next.js App Router** | Server Components for data fetching, API Routes for AI processing, middleware for auth. |
+| **Next.js App Router** | Server Components for data fetching, API Routes for AI processing, `proxy.ts` (Next 16's renamed middleware) for auth. |
 | **New project** (not upgrading Python repo) | Different language, different architecture, different deployment target. The Python pipeline was a prototype. |
 
 ## Cost Estimate (3 users, ~50 items each)
 
-| Service | Monthly Cost |
-|---|---|
-| Supabase (Free tier) | $0 |
-| Vercel (Hobby) | $0 |
-| fal.ai BiRefNet (~150 calls) | ~$1.50 |
-| Claude Sonnet (~150 classify + chat) | ~$3.00 |
-| OpenWeatherMap (Free) | $0 |
-| **Total** | **~$4.50/mo** |
+Rough total after switching classify/stylist from Sonnet to Haiku: **~$1.20/mo** (down from ~$4.50/mo on Sonnet). See `checklist.md`'s cost table ("成本优化") for the full before/after breakdown, including the per-model rates.
