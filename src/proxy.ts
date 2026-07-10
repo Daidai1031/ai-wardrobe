@@ -31,7 +31,8 @@ export default async function proxy(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   // Redirect unauthenticated users away from dashboard
-  const isDashboard = request.nextUrl.pathname.startsWith("/closet") ||
+  const isDashboard = request.nextUrl.pathname.startsWith("/home") ||
+    request.nextUrl.pathname.startsWith("/closet") ||
     request.nextUrl.pathname.startsWith("/outfits") ||
     request.nextUrl.pathname.startsWith("/stylist") ||
     request.nextUrl.pathname.startsWith("/profile") ||
@@ -48,7 +49,7 @@ export default async function proxy(request: NextRequest) {
   const isAuth = request.nextUrl.pathname === "/login" || request.nextUrl.pathname === "/signup";
   if (user && isAuth) {
     const url = request.nextUrl.clone();
-    url.pathname = "/closet";
+    url.pathname = "/home";
     return NextResponse.redirect(url);
   }
 

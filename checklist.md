@@ -1,6 +1,6 @@
 # AI Wardrobe — Implementation Checklist
 
-> Last updated: 2026-07-10 (搭配创建/保存与自由拼贴 Canvas 完成；鞋子/耳环/手镯配对泛化 + 上传 single/multi 预选完成；已保存 outfit 支持编辑完成；下一步：Home 每日推荐、AI Stylist Canvas 化)
+> Last updated: 2026-07-10 (搭配创建/保存与自由拼贴 Canvas 完成；鞋子/耳环/手镯配对泛化 + 上传 single/multi 预选完成；已保存 outfit 支持编辑完成；Home 每日推荐（天气+衣橱版）完成，Google Calendar 部分仍待开发；下一步：AI Stylist Canvas 化)
 
 ---
 
@@ -79,7 +79,7 @@
 | AI Stylist Chat | ✅ 完成 | 基于真实衣橱推荐；**目前只回复纯文字**，下一步计划改成 Canvas 形式展示推荐搭配并可编辑（呼应 outfits 的自由拼贴 Canvas） |
 | 搭配创建/保存 + 编辑 | ✅ 完成 | `outfits-view.tsx`：衣橱单品拖入/点击加入、自由定位、缩放、层级调整、名称/合集/备注及 Supabase 保存；Canvas 使用去背图透明展示；已保存搭配可从库卡片「Edit」按钮打开进 Canvas 编辑并保存回原 outfit（`outfit_items` 新增 `x`/`y`/`width` 持久化自由坐标，见「已完成任务详情」） |
 | 天气 API 集成 | ✅ API 就绪 | 需要 OpenWeather Key；`stylist` route 已预留 `context.weather` 字段待接入 |
-| 每日推荐 (Home Page) | ❌ 待开发 | 目前 `/` 只是重定向到 `/closet` 或 `/login`（`src/app/page.tsx`），dashboard 路由组下没有独立首页；计划结合 Google Calendar（日程）+ OpenWeather（天气）生成每日穿搭推荐 |
+| 每日推荐 (Home Page) | ✅ 天气+衣橱版完成 / ❌ Calendar 部分待开发 | `/` 现在重定向到 `/home`（登录）或 `/login`；`/home` 拉取 profile city → OpenWeather 天气 + 活跃衣橱，让 Claude Haiku 从真实衣橱里选一套当日搭配并给出理由/衣橱缺口提示；Google Calendar 部分仍未接入（无 token 存储，`context.calendar` 暂未使用），见任务 1 详情 |
 | Google Calendar 集成 | ❌ 待开发 | `stylist` route 已预留 `context.calendar` 字段待接入；schema 里没有存 Google Calendar token/事件的表 |
 
 ### Phase 4 — Calendar + Analytics (Module 10, 11)
@@ -111,14 +111,23 @@
 
 ## 下一步开发任务
 
-### 任务 1: 每日推荐 (Home Page) — ❌ 待开发
+### 任务 1: 每日推荐 (Home Page) — ✅ 天气+衣橱版完成，❌ Google Calendar 部分待开发
 
-- 需求: dashboard 需要一个真正的首页，结合 Google Calendar（当天日程）+ OpenWeather（当天天气）生成每日穿搭推荐。目前 `/` (`src/app/page.tsx`) 只是重定向到 `/closet` 或 `/login`，dashboard 路由组下没有独立首页。
-- 可复用的现有基础:
-  - `src/app/api/weather/route.ts`：OpenWeatherMap 代理已就绪。
-  - `src/app/api/ai/stylist/route.ts`：`context.weather` / `context.calendar` 字段已预留在 system prompt 里，但从未被真正调用方传入过数据。
-  - `src/proxy.ts` 的 `isDashboard` 检查需要加上新首页路径。
-- 待做: Google Calendar OAuth 接入（目前 schema 里没有存 token/事件的表，需要新表或复用 `profiles`）；新的首页路由 + 服务端数据拉取（天气 + 日程 + 衣橱）；调用 stylist 逻辑生成当日推荐。
+- 需求: dashboard 需要一个真正的首页，结合 Google Calendar（当天日程）+ OpenWeather（当天天气）生成每日穿搭推荐。原来 `/` (`src/app/page.tsx`) 只是重定向到 `/closet` 或 `/login`，dashboard 路由组下没有独立首页。
+- 已实现:
+  - `src/lib/weather.ts`：把原来内联在 `api/weather/route.ts` 里的 OpenWeatherMap 请求逻辑抽成 `getWeather(city)`，两处（`/api/weather` 和新的 `/api/ai/daily`）共用，避免服务端互相发 HTTP 请求。
+  - `src/app/api/ai/daily/route.ts`（新增 `GET`）：读取当前用户 `profiles.city` → `getWeather` 拿当天天气（没填 city 或没配 `OPENWEATHER_API_KEY` 时优雅降级为 `weather: null`，prompt 里注明"天气未知"）；并行读取活跃 (`archived=false`) 衣橱（复用 `stylist` route 同款字段）；系统 prompt 要求 Claude Haiku 只能从真实衣橱 id 里选 2–5 件组成当日一套搭配，输出严格 JSON（`{"itemIds":[...],"reasoning":"...","gap":"..."}`），用正则提取花括号 JSON 块解析（`parseDailyPick`），并用返回的 id 反查真实 `wardrobe_items` 行（防止模型编造不存在的 id）。衣橱少于 2 件或解析失败时返回 `message` 而不是报错，前端据此显示引导文案。
+  - `src/app/(dashboard)/home/page.tsx`（新增，服务端组件）：查当前用户 profile 名字做问候语 + 日期，渲染下面的客户端组件。
+  - `src/app/(dashboard)/home/daily-recommendation.tsx`（新增，客户端组件）：挂载时 fetch `/api/ai/daily`，loading/空态/错误态分别处理；天气用小卡片展示；推荐搭配用和 outfits Canvas 一致的「`clean_url` 优先、透明展示、无卡片底」的拼贴形式横排展示，下方是 Claude 的推荐理由和（如果有）衣橱缺口提示；「Regenerate」按钮重新拉取；底部链接到 `/stylist` 继续追问。
+  - `src/proxy.ts`：`isDashboard` 检查新增 `/home` 前缀；已登录用户访问 `/login`/`/signup` 现在重定向到 `/home` 而不是 `/closet`。
+  - `src/app/page.tsx`：已登录时重定向到 `/home`。
+  - `src/components/layout/sidebar.tsx`：导航新增排在最前的「Home」入口（`Home` 图标）。
+- **已验证 (2026-07-10)**: TypeScript `--noEmit` 检查与 Next.js 生产构建（`npm run build`）均通过，`/home` 和 `/api/ai/daily` 正确出现在构建路由列表里。
+- **未验证**: 尚未登录真实账号在浏览器里实际打开 `/home` 确认天气卡片、AI 推荐搭配图片的真实效果（依赖 `OPENWEATHER_API_KEY` 和 profile 里填了 city，以及衣橱里至少有 2 件已分类单品）。
+- **后续修正 (2026-07-10)**:
+  - 修了一个"每次打开/刷新页面都会自己重新生成一次推荐"的问题：`daily-recommendation.tsx` 现在把当天的推荐结果（含反馈状态）缓存进 `localStorage`（key 按 `userId + 当天日期`），挂载时先读缓存，有就直接用，不重新 fetch；只有用户主动 Dislike 才会重新请求 `/api/ai/daily` 并覆盖缓存。移除了原来单独的「Regenerate」按钮，改成 Like/Dislike 两个按钮：Like 只是记录反馈（不重新生成），Dislike 直接重新生成一套新推荐。
+  - 新增「Add to outfits」按钮：直接复用 `outfits-view.tsx` saveOutfit 同款客户端 Supabase insert 逻辑（浏览器端 `createClient()`），把当天推荐的 items 写入 `outfits`（`ai_generated: true`，`ai_reasoning` 存 Claude 给的理由，`folder: "Everyday"`）+ `outfit_items`，写完标记为已保存并禁用按钮防止重复保存。
+- 待做 (Google Calendar 部分，未在本次任务中实现): OAuth 接入（schema 里没有存 token/事件的表，需要新表或复用 `profiles`）；把当天日程传给 `/api/ai/daily` 的 prompt（`context.calendar` 字段目前只在 `stylist` route 里预留，`daily` route 还没接这个字段）。
 
 ### 任务 2: AI Stylist 用 Canvas 展示推荐并可编辑 — ❌ 待开发
 
@@ -232,6 +241,8 @@ ai-wardrobe/
 | 上传 pipeline (计数→单件/多件分支→去背景→分类→存储) | `src/app/api/ai/classify/route.ts` |
 | 上传 UI（single/multi 切换、进度提示） | `src/components/closet/upload-zone.tsx` |
 | AI Stylist 对话 | `src/app/api/ai/stylist/route.ts` |
+| 每日推荐 (Home) 数据+AI 逻辑 | `src/app/api/ai/daily/route.ts`, `src/lib/weather.ts` |
+| Home 首页 UI | `src/app/(dashboard)/home/page.tsx`, `daily-recommendation.tsx` |
 | AI Stylist 页面（目前纯文字聊天） | `src/app/(dashboard)/stylist/page.tsx` |
 | 搭配创建/保存、自由拼贴 Canvas | `src/app/(dashboard)/outfits/outfits-view.tsx` |
 | 搭配页服务端数据查询 | `src/app/(dashboard)/outfits/page.tsx` |

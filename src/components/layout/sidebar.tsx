@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
 import {
+  Home,
   Shirt,
   Sparkles,
   MessageCircle,
@@ -19,6 +20,7 @@ import {
 import { useState } from "react";
 
 const NAV_ITEMS = [
+  { href: "/home", label: "Home", icon: Home },
   { href: "/closet", label: "My Closet", icon: Shirt },
   { href: "/outfits", label: "Outfits", icon: Sparkles },
   { href: "/stylist", label: "AI Stylist", icon: MessageCircle },
