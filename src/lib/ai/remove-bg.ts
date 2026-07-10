@@ -5,7 +5,7 @@
  * For flat-lay multi-item photos, we'd still use SAM — but for MVP,
  * single-item upload with background removal is the priority flow.
  */
-import * as fal from "fal-client";
+import { fal } from "@fal-ai/client";
 
 fal.config({ credentials: process.env.FAL_KEY! });
 
