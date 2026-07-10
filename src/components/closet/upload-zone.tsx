@@ -18,7 +18,25 @@ const STAGE_LABELS: Record<Stage, string> = {
   done: "Done!",
   error: "Something went wrong",
 };
+/** Convert HEIC/HEIF (or any image) to JPEG via server-side Sharp */
+async function convertIfNeeded(file: File): Promise<File> {
+  const name = file.name.toLowerCase();
+  const isHeic = name.endsWith(".heic") || name.endsWith(".heif") || file.type === "image/heic" || file.type === "image/heif";
 
+  if (!isHeic) return file;
+
+  // Send to server endpoint for conversion
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const res = await fetch("/api/ai/convert", { method: "POST", body: formData });
+  if (!res.ok) throw new Error("Failed to convert HEIC image");
+
+  const blob = await res.blob();
+  return new File([blob], file.name.replace(/\.heic$/i, ".jpg").replace(/\.heif$/i, ".jpg"), {
+    type: "image/jpeg",
+  });
+}
 export function UploadZone() {
   const [stage, setStage] = useState<Stage>("idle");
   const [preview, setPreview] = useState<string | null>(null);
@@ -26,11 +44,16 @@ export function UploadZone() {
   const router = useRouter();
   const supabase = createClient();
 
-  const processFile = useCallback(async (file: File) => {
+  const processFile = useCallback(async (inputFile: File) => {
+    let file = inputFile;
     try {
       // Preview
       setPreview(URL.createObjectURL(file));
       setStage("uploading");
+
+      // Convert HEIC to JPEG if needed
+      file = await convertIfNeeded(file);    // ← 加这行
+
 
       // Get user
       const { data: { user } } = await supabase.auth.getUser();
