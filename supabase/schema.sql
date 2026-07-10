@@ -108,9 +108,17 @@ create index idx_outfits_user on public.outfits(user_id);
 create table public.outfit_items (
   outfit_id   uuid not null references public.outfits(id) on delete cascade,
   item_id     uuid not null references public.wardrobe_items(id) on delete cascade,
-  position    int,   -- layering order: 0 = base, 1 = mid, 2 = outer, etc.
+  position    int,      -- layering order: 0 = base, 1 = mid, 2 = outer, etc.
+  x           numeric,  -- normalized freeform canvas position (0-100), null for outfits saved before this was tracked
+  y           numeric,  -- normalized freeform canvas position (0-100)
+  width       numeric,  -- normalized freeform canvas width (0-100)
   primary key (outfit_id, item_id)
 );
+
+-- Migration for existing databases (schema.sql above is for fresh installs):
+-- alter table public.outfit_items add column if not exists x numeric;
+-- alter table public.outfit_items add column if not exists y numeric;
+-- alter table public.outfit_items add column if not exists width numeric;
 
 -- ============================================================
 -- 5. OUTFIT CALENDAR / JOURNAL

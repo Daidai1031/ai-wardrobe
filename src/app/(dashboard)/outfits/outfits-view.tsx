@@ -12,6 +12,7 @@ import {
   Layers3,
   Loader2,
   Maximize2,
+  Pencil,
   Plus,
   RotateCcw,
   Search,
@@ -32,6 +33,9 @@ type OutfitItemPreview = Pick<
 interface SavedOutfitJoin {
   item_id: string;
   position: number | null;
+  x: number | null;
+  y: number | null;
+  width: number | null;
   wardrobe_items: OutfitItemPreview | null;
 }
 
@@ -93,10 +97,24 @@ function readDragPayload(event: DragEvent): DragPayload | null {
   }
 }
 
+function defaultLayoutFor(index: number): CanvasItemLayout {
+  const defaultWidth = index >= 6 ? 22 : 28;
+  const columns = index >= 6 ? 4 : 3;
+  const column = index % columns;
+  const row = Math.floor(index / columns);
+  const horizontalStep = (94 - defaultWidth) / (columns - 1);
+  return {
+    x: 3 + column * horizontalStep,
+    y: 4 + (row % 3) * 31,
+    width: defaultWidth,
+  };
+}
+
 export function OutfitsView({ outfits, wardrobeItems, userId }: OutfitsViewProps) {
   const router = useRouter();
   const supabase = useMemo(() => createClient(), []);
   const [isCreating, setIsCreating] = useState(false);
+  const [editingOutfitId, setEditingOutfitId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [canvasLayouts, setCanvasLayouts] = useState<Record<string, CanvasItemLayout>>({});
   const [activeCategory, setActiveCategory] = useState<ItemCategory | "All">("All");
@@ -129,20 +147,9 @@ export function OutfitsView({ outfits, wardrobeItems, userId }: OutfitsViewProps
   function addItem(itemId: string, layout?: CanvasItemLayout) {
     if (selectedIds.includes(itemId)) return;
 
-    const index = selectedIds.length;
-    const defaultWidth = index >= 6 ? 22 : 28;
-    const columns = index >= 6 ? 4 : 3;
-    const column = index % columns;
-    const row = Math.floor(index / columns);
-    const horizontalStep = (94 - defaultWidth) / (columns - 1);
-    const defaultLayout = {
-      x: 3 + column * horizontalStep,
-      y: 4 + (row % 3) * 31,
-      width: defaultWidth,
-    };
     setCanvasLayouts((layouts) => ({
       ...layouts,
-      [itemId]: layout || defaultLayout,
+      [itemId]: layout || defaultLayoutFor(selectedIds.length),
     }));
     setSelectedIds((current) => (current.includes(itemId) ? current : [...current, itemId]));
   }
@@ -184,7 +191,37 @@ export function OutfitsView({ outfits, wardrobeItems, userId }: OutfitsViewProps
       return;
     }
     resetBuilder();
+    setEditingOutfitId(null);
     setIsCreating(false);
+  }
+
+  function startCreate() {
+    resetBuilder();
+    setEditingOutfitId(null);
+    setIsCreating(true);
+  }
+
+  function startEdit(outfit: SavedOutfit) {
+    const joins = [...outfit.outfit_items].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    const ids: string[] = [];
+    const layouts: Record<string, CanvasItemLayout> = {};
+    joins.forEach((join, index) => {
+      if (!join.wardrobe_items || !itemById.has(join.item_id)) return;
+      ids.push(join.item_id);
+      layouts[join.item_id] =
+        join.x != null && join.y != null && join.width != null
+          ? { x: join.x, y: join.y, width: join.width }
+          : defaultLayoutFor(index);
+    });
+    setSelectedIds(ids);
+    setCanvasLayouts(layouts);
+    setName(outfit.name || "");
+    setFolder(outfit.folder || "Uncategorized");
+    setNotes(outfit.notes || "");
+    setActiveCategory("All");
+    setSearch("");
+    setEditingOutfitId(outfit.id);
+    setIsCreating(true);
   }
 
   function handleCanvasDrop(event: DragEvent<HTMLDivElement>) {
@@ -216,6 +253,58 @@ export function OutfitsView({ outfits, wardrobeItems, userId }: OutfitsViewProps
       month: "short",
       day: "numeric",
     }).format(new Date())}`;
+    const outfitItemRows = selectedIds.map((itemId, position) => ({
+      item_id: itemId,
+      position,
+      x: canvasLayouts[itemId]?.x ?? null,
+      y: canvasLayouts[itemId]?.y ?? null,
+      width: canvasLayouts[itemId]?.width ?? null,
+    }));
+
+    if (editingOutfitId) {
+      const { error: outfitError } = await supabase
+        .from("outfits")
+        .update({
+          name: name.trim() || fallbackName,
+          folder,
+          notes: notes.trim() || null,
+        })
+        .eq("id", editingOutfitId);
+
+      if (outfitError) {
+        toast.error(outfitError.message || "Failed to update outfit");
+        setSaving(false);
+        return;
+      }
+
+      const { error: deleteError } = await supabase
+        .from("outfit_items")
+        .delete()
+        .eq("outfit_id", editingOutfitId);
+      if (deleteError) {
+        toast.error(deleteError.message || "Failed to update outfit items");
+        setSaving(false);
+        return;
+      }
+
+      const { error: itemsError } = await supabase
+        .from("outfit_items")
+        .insert(outfitItemRows.map((row) => ({ ...row, outfit_id: editingOutfitId })));
+      if (itemsError) {
+        toast.error(itemsError.message || "Failed to attach items to outfit");
+        setSaving(false);
+        return;
+      }
+
+      toast.success("Outfit updated");
+      resetBuilder();
+      setEditingOutfitId(null);
+      setIsCreating(false);
+      setSaving(false);
+      router.refresh();
+      return;
+    }
+
     const { data: outfit, error: outfitError } = await supabase
       .from("outfits")
       .insert({
@@ -234,9 +323,9 @@ export function OutfitsView({ outfits, wardrobeItems, userId }: OutfitsViewProps
       return;
     }
 
-    const { error: itemsError } = await supabase.from("outfit_items").insert(
-      selectedIds.map((itemId, position) => ({ outfit_id: outfit.id, item_id: itemId, position }))
-    );
+    const { error: itemsError } = await supabase
+      .from("outfit_items")
+      .insert(outfitItemRows.map((row) => ({ ...row, outfit_id: outfit.id })));
     if (itemsError) {
       await supabase.from("outfits").delete().eq("id", outfit.id);
       toast.error(itemsError.message || "Failed to attach items to outfit");
@@ -255,6 +344,7 @@ export function OutfitsView({ outfits, wardrobeItems, userId }: OutfitsViewProps
     return (
       <div className="min-h-[calc(100vh-7rem)]">
         <BuilderHeader
+          isEditing={Boolean(editingOutfitId)}
           onClose={closeBuilder}
           onReset={resetBuilder}
           onSave={saveOutfit}
@@ -297,10 +387,18 @@ export function OutfitsView({ outfits, wardrobeItems, userId }: OutfitsViewProps
     );
   }
 
-  return <OutfitLibrary outfits={outfits} wardrobeCount={wardrobeItems.length} onCreate={() => setIsCreating(true)} />;
+  return (
+    <OutfitLibrary
+      outfits={outfits}
+      wardrobeCount={wardrobeItems.length}
+      onCreate={startCreate}
+      onEdit={startEdit}
+    />
+  );
 }
 
 function BuilderHeader({
+  isEditing,
   onClose,
   onReset,
   onSave,
@@ -308,6 +406,7 @@ function BuilderHeader({
   canSave,
   canReset,
 }: {
+  isEditing: boolean;
   onClose: () => void;
   onReset: () => void;
   onSave: () => void;
@@ -325,7 +424,9 @@ function BuilderHeader({
         >
           <ChevronLeft size={14} /> Back to outfits
         </button>
-        <h1 className="font-display text-2xl font-semibold text-surface-900">Build an outfit</h1>
+        <h1 className="font-display text-2xl font-semibold text-surface-900">
+          {isEditing ? "Edit outfit" : "Build an outfit"}
+        </h1>
         <p className="mt-1 text-sm text-surface-500">
           Drag pieces onto the canvas, then reorder them to set the layer order.
         </p>
@@ -346,7 +447,7 @@ function BuilderHeader({
           className="inline-flex items-center gap-2 rounded-lg bg-surface-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-surface-800 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {saving ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />}
-          {saving ? "Saving…" : "Save outfit"}
+          {saving ? "Saving…" : isEditing ? "Save changes" : "Save outfit"}
         </button>
       </div>
     </div>
@@ -574,7 +675,7 @@ function OutfitCanvas({
         }}
         onDrop={onDrop}
         className={cn(
-          "relative min-h-[555px] overflow-hidden rounded-xl border-2 bg-white transition-all",
+          "relative aspect-square overflow-hidden rounded-xl border-2 bg-white transition-all",
           isOver
             ? "scale-[1.01] border-brand-400 bg-brand-50 shadow-lg shadow-brand-900/5"
             : "border-dashed border-surface-300"
@@ -755,10 +856,12 @@ function OutfitLibrary({
   outfits,
   wardrobeCount,
   onCreate,
+  onEdit,
 }: {
   outfits: SavedOutfit[];
   wardrobeCount: number;
   onCreate: () => void;
+  onEdit: (outfit: SavedOutfit) => void;
 }) {
   return (
     <div>
@@ -850,29 +953,57 @@ function OutfitLibrary({
           {outfits.map((outfit) => {
             const joinedItems = [...(outfit.outfit_items || [])]
               .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
-              .map((join) => join.wardrobe_items)
-              .filter((item): item is OutfitItemPreview => Boolean(item));
+              .filter(
+                (join): join is SavedOutfitJoin & { wardrobe_items: OutfitItemPreview } =>
+                  Boolean(join.wardrobe_items)
+              );
 
             return (
               <article
                 key={outfit.id}
                 className="group overflow-hidden rounded-2xl border border-surface-200 bg-white transition-all hover:-translate-y-0.5 hover:shadow-lg"
               >
-                <div className="grid h-64 grid-cols-2 gap-2 bg-[#f1eee9] p-4">
-                  {joinedItems.slice(0, 4).map((item) => (
-                    <div key={item.id} className="relative overflow-hidden rounded-xl bg-white/85">
-                      <Image
-                        src={imageUrl(item)}
-                        alt={`${item.color || ""} ${itemName(item)}`}
-                        fill
-                        className="object-contain p-2"
-                        sizes="200px"
-                        unoptimized
-                      />
-                    </div>
-                  ))}
+                <div className="relative aspect-square overflow-hidden bg-[#f1eee9]">
+                  <button
+                    type="button"
+                    onClick={() => onEdit(outfit)}
+                    className="absolute right-3 top-3 z-20 flex items-center gap-1.5 rounded-full bg-white/90 px-3 py-1.5 text-[11px] font-semibold text-surface-600 opacity-0 shadow-sm transition-all hover:bg-surface-900 hover:text-white group-hover:opacity-100"
+                  >
+                    <Pencil size={12} /> Edit
+                  </button>
+                  {joinedItems.map((join, index) => {
+                    const item = join.wardrobe_items;
+                    const layout =
+                      join.x != null && join.y != null && join.width != null
+                        ? { x: join.x, y: join.y, width: join.width }
+                        : defaultLayoutFor(index);
+                    return (
+                      <div
+                        key={item.id}
+                        className="absolute"
+                        style={{
+                          left: `${layout.x}%`,
+                          top: `${layout.y}%`,
+                          width: `${layout.width}%`,
+                          aspectRatio: "1 / 1",
+                          zIndex: index + 1,
+                        }}
+                      >
+                        <div className="relative h-full w-full">
+                          <Image
+                            src={imageUrl(item)}
+                            alt={`${item.color || ""} ${itemName(item)}`}
+                            fill
+                            className="object-contain"
+                            sizes="200px"
+                            unoptimized
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
                   {joinedItems.length === 0 && (
-                    <div className="col-span-2 flex items-center justify-center text-surface-300">
+                    <div className="absolute inset-0 flex items-center justify-center text-surface-300">
                       <Shirt size={36} strokeWidth={1.4} />
                     </div>
                   )}

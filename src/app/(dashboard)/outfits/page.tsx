@@ -15,7 +15,7 @@ export default async function OutfitsPage() {
       supabase
         .from("outfits")
         .select(
-          "*, outfit_items(item_id, position, wardrobe_items(id, clean_url, original_url, category, subcategory, color, brand))"
+          "*, outfit_items(item_id, position, x, y, width, wardrobe_items(id, clean_url, original_url, category, subcategory, color, brand))"
         )
         .eq("user_id", user.id)
         .order("created_at", { ascending: false }),
@@ -27,8 +27,20 @@ export default async function OutfitsPage() {
         .order("created_at", { ascending: false }),
     ]);
 
-  if (outfitsError) console.error("Outfits fetch error:", outfitsError);
-  if (itemsError) console.error("Wardrobe fetch error:", itemsError);
+  if (outfitsError) {
+    console.error(
+      "Outfits fetch error (raw):",
+      JSON.stringify(outfitsError, Object.getOwnPropertyNames(outfitsError))
+    );
+  }
+  if (itemsError) {
+    console.error("Wardrobe fetch error:", {
+      message: itemsError.message,
+      details: itemsError.details,
+      hint: itemsError.hint,
+      code: itemsError.code,
+    });
+  }
 
   return (
     <OutfitsView

@@ -1,6 +1,6 @@
 # AI Wardrobe — Implementation Checklist
 
-> Last updated: 2026-07-10 (搭配创建/保存与自由拼贴 Canvas 完成；鞋子/耳环/手镯配对泛化 + 上传 single/multi 预选完成；下一步：Home 每日推荐、AI Stylist Canvas 化、已保存 outfit 支持编辑)
+> Last updated: 2026-07-10 (搭配创建/保存与自由拼贴 Canvas 完成；鞋子/耳环/手镯配对泛化 + 上传 single/multi 预选完成；已保存 outfit 支持编辑完成；下一步：Home 每日推荐、AI Stylist Canvas 化)
 
 ---
 
@@ -77,7 +77,7 @@
 | 功能 | 状态 | 备注 |
 |------|------|------|
 | AI Stylist Chat | ✅ 完成 | 基于真实衣橱推荐；**目前只回复纯文字**，下一步计划改成 Canvas 形式展示推荐搭配并可编辑（呼应 outfits 的自由拼贴 Canvas） |
-| 搭配创建/保存 | ✅ 前端完成 | `outfits-view.tsx`：衣橱单品拖入/点击加入、自由定位、缩放、层级调整、名称/合集/备注及 Supabase 保存；Canvas 使用去背图透明展示；**已保存的 outfit 目前不可编辑**（outfits 库里没有「编辑」入口，且 `outfit_items` schema 只存 `position` 层级顺序、不存自由坐标/缩放，见下方「当前边界」） |
+| 搭配创建/保存 + 编辑 | ✅ 完成 | `outfits-view.tsx`：衣橱单品拖入/点击加入、自由定位、缩放、层级调整、名称/合集/备注及 Supabase 保存；Canvas 使用去背图透明展示；已保存搭配可从库卡片「Edit」按钮打开进 Canvas 编辑并保存回原 outfit（`outfit_items` 新增 `x`/`y`/`width` 持久化自由坐标，见「已完成任务详情」） |
 | 天气 API 集成 | ✅ API 就绪 | 需要 OpenWeather Key；`stylist` route 已预留 `context.weather` 字段待接入 |
 | 每日推荐 (Home Page) | ❌ 待开发 | 目前 `/` 只是重定向到 `/closet` 或 `/login`（`src/app/page.tsx`），dashboard 路由组下没有独立首页；计划结合 Google Calendar（日程）+ OpenWeather（天气）生成每日穿搭推荐 |
 | Google Calendar 集成 | ❌ 待开发 | `stylist` route 已预留 `context.calendar` 字段待接入；schema 里没有存 Google Calendar token/事件的表 |
@@ -126,15 +126,24 @@
 - 可复用: `src/app/(dashboard)/outfits/outfits-view.tsx` 里的自由拼贴 Canvas 组件（拖拽/缩放/层级/`clean_url` 透明展示逻辑）——目标是让 stylist 推荐结果能复用同一套 Canvas，而不是重新造一个。
 - 待做: stylist route 除了文字回复外，还要返回结构化的「推荐单品 id 列表 + 初始布局」；前端渲染 Canvas 而不是纯文字气泡；Canvas 编辑后要能「保存为搭配」（复用任务 3 的编辑/保存逻辑）。
 
-### 任务 3: 已保存的 outfit 支持编辑 — ❌ 待开发
-
-- 需求: `Your outfits` 库里已保存的搭配目前不能编辑，只能新建。用户应该能打开一个已保存的 outfit，回到 Canvas 里调整（挪动/缩放/增删单品）后重新保存。
-- 已知障碍（见下方「已完成任务详情」里搭配 Canvas 任务的「当前边界」）: `outfit_items` schema 目前只存 `position`（层级顺序整数），不存自由拼贴的 `x/y/width`。要做到「打开后完全恢复原来的布局」，必须先给 `outfit_items` 加布局字段（并同步 `supabase/schema.sql`、`src/types/database.ts`、`outfits/page.tsx` 查询、`outfits-view.tsx` 的保存/加载逻辑），否则重新打开只能恢复层级顺序、无法恢复具体摆放位置。
-- 待做: schema 迁移（加 `x`/`y`/`width` 到 `outfit_items`，手动在 Supabase SQL Editor 执行，本仓库没有迁移工具）；`outfits-view.tsx` 增加「编辑」入口（点击已保存搭配 → 加载进 Canvas，带上已存布局）；保存逻辑从「只能 insert 新 outfit」扩展为「update 已有 outfit + 增删 outfit_items」。
-
 ---
 
 ## 已完成任务详情（历史记录）
+
+### 任务: 已保存的 outfit 支持编辑 — ✅ 完成
+
+- 需求: `Your outfits` 库里已保存的搭配之前不能编辑，只能新建。用户应该能打开一个已保存的 outfit，回到 Canvas 里调整（挪动/缩放/增删单品）后重新保存。
+- 已实现:
+  - `supabase/schema.sql`：`outfit_items` 新增 `x`/`y`/`width`（numeric，可空）三列，持久化自由拼贴坐标/宽度；旧记录为 null，读取时回退到按索引计算的默认网格布局。schema.sql 底部附了给已有数据库手动执行的 `alter table` 语句（本仓库无迁移工具，需要在 Supabase SQL Editor 手动跑一次）。
+  - `outfits/page.tsx`：查询新增 `x, y, width` 字段。
+  - `outfits-view.tsx`：
+    - `SavedOutfitJoin` 类型新增 `x`/`y`/`width`。
+    - 抽出 `defaultLayoutFor(index)` 复用于「新增单品默认布局」和「编辑已保存 outfit 时旧记录缺失坐标的回退布局」。
+    - 新增 `editingOutfitId` state；`startEdit(outfit)` 按 `position` 排序还原 `selectedIds`/`canvasLayouts`/名称/合集/备注并进入 Canvas；`startCreate()` 显式清空 `editingOutfitId` 保证「新建」入口不会误继承编辑态。
+    - `saveOutfit()` 按 `editingOutfitId` 是否存在分支：编辑态 `update outfits` 元数据 + 删除旧 `outfit_items` + 按当前 Canvas 状态重新插入（含 `x/y/width`）；创建态保持原 insert 流程不变（同样带上 `x/y/width`）。
+    - `OutfitLibrary` 卡片新增悬停显示的「Edit」按钮（Pencil 图标），点击调用 `onEdit(outfit)`；`BuilderHeader` 根据 `isEditing` 切换标题/保存按钮文案（"Edit outfit" / "Save changes"）。
+- **已验证 (2026-07-10)**: TypeScript `--noEmit` 检查与 Next.js 生产构建均通过。
+- **未验证**: 尚未登录真实账号在浏览器里实际点开一个已保存 outfit、编辑、保存、刷新确认布局被正确恢复（依赖先在 Supabase SQL Editor 手动执行 schema.sql 底部的 `alter table` 语句）。
 
 ### 任务: 搭配创建/保存 + 自由拼贴 Canvas — ✅ 前端完成
 
@@ -149,7 +158,7 @@
     - 保存：至少选择 2 件；写入 `outfits` 后按当前层级顺序批量写入 `outfit_items.position`；关联写入失败时自动删除刚创建的空搭配，避免半成品数据。
     - 支持搭配名称、Collection（Everyday/Work/Weekend/Date Night/Travel/Special Occasion 等）和备注；未填写名称时自动生成日期名称。
 - **已验证 (2026-07-10)**: TypeScript `--noEmit` 检查与 Next.js 生产构建均通过。
-- **当前边界**: 自由拼贴的 `x/y/width` 目前是创建页面内的客户端状态；现有 `outfit_items` Schema 只保存 `position` 层级顺序，因此刷新或重新打开搭配时不会恢复自由坐标和尺寸。若后续要做搭配编辑/原样恢复，需要给关联表增加布局字段并同步 `schema.sql`、查询和保存逻辑。
+- **边界已解除 (2026-07-10)**: 最初 `x/y/width` 只是创建页面内的客户端状态，刷新或重新打开搭配不会恢复自由坐标和尺寸；现已在「已保存的 outfit 支持编辑」任务里给 `outfit_items` 加了 `x/y/width` 列并接上编辑/保存逻辑，详见上方该任务条目。
 
 ### 任务: 多件物品识别 (自动判断 single vs multi-item) — ✅ 代码已完成，⚠️ 待真实调用验证
 
