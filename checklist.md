@@ -1,6 +1,17 @@
 # AI Wardrobe — Implementation Checklist
 
-> Last updated: 2026-07-10 (搭配创建/保存与自由拼贴 Canvas 完成；鞋子/耳环/手镯配对泛化 + 上传 single/multi 预选完成；已保存 outfit 支持编辑完成；Home 每日推荐（天气+衣橱版）完成，Google Calendar 部分仍待开发；下一步：AI Stylist Canvas 化)
+> Last updated: 2026-07-27（进度重整 + 范围扩充）
+>
+> **本文件只负责「已完成的实现细节 + Debug Log」。未来要做什么、按什么顺序做、新功能的技术方案，全部移到 [`ROADMAP.md`](./ROADMAP.md)。**
+>
+> 当前优先级：Phase 6 = Daily/Weekly outfit planning + 出差模式（天气 + Google Calendar + Gmail）。
+> 新增但尚未排期的范围：双端（C 端/B 端）、Human Stylist Consultation 预约、Shopping Recommendations、冷启动 Onboarding、Avatar（fal.ai）。详见 ROADMAP.md 第四节。
+>
+> **动手前已敲定的 14 条决策记在 ROADMAP.md 第二节「决策记录」，改动前先读理由。**
+>
+> ⚠️ ROADMAP 第四节新增「数据边界」一节：哪些数据可进 Folk CRM、哪些绝不出 App。原始日历事件与邮箱内容是硬边界。
+>
+> 上一次进度（2026-07-10）：搭配创建/保存与自由拼贴 Canvas 完成；鞋子/耳环/手镯配对泛化 + 上传 single/multi 预选完成；已保存 outfit 支持编辑完成；Home 每日推荐（天气+衣橱版）完成。
 
 ---
 
@@ -79,8 +90,10 @@
 | AI Stylist Chat | ✅ 完成 | 基于真实衣橱推荐；**目前只回复纯文字**，下一步计划改成 Canvas 形式展示推荐搭配并可编辑（呼应 outfits 的自由拼贴 Canvas） |
 | 搭配创建/保存 + 编辑 | ✅ 完成 | `outfits-view.tsx`：衣橱单品拖入/点击加入、自由定位、缩放、层级调整、名称/合集/备注及 Supabase 保存；Canvas 使用去背图透明展示；已保存搭配可从库卡片「Edit」按钮打开进 Canvas 编辑并保存回原 outfit（`outfit_items` 新增 `x`/`y`/`width` 持久化自由坐标，见「已完成任务详情」） |
 | 天气 API 集成 | ✅ API 就绪 | 需要 OpenWeather Key；`stylist` route 已预留 `context.weather` 字段待接入 |
-| 每日推荐 (Home Page) | ✅ 天气+衣橱版完成 / ❌ Calendar 部分待开发 | `/` 现在重定向到 `/home`（登录）或 `/login`；`/home` 拉取 profile city → OpenWeather 天气 + 活跃衣橱，让 Claude Haiku 从真实衣橱里选一套当日搭配并给出理由/衣橱缺口提示；Google Calendar 部分仍未接入（无 token 存储，`context.calendar` 暂未使用），见任务 1 详情 |
-| Google Calendar 集成 | ❌ 待开发 | `stylist` route 已预留 `context.calendar` 字段待接入；schema 里没有存 Google Calendar token/事件的表 |
+| 每日推荐 (Home Page) | ✅ 天气+衣橱版完成 / ❌ Calendar 部分待开发 | `/` 现在重定向到 `/home`（登录）或 `/login`；`/home` 拉取 profile city → OpenWeather 天气 + 活跃衣橱，让 Claude Haiku 从真实衣橱里选一套当日搭配并给出理由/衣橱缺口提示；Google Calendar 部分仍未接入（无 token 存储，`context.calendar` 暂未使用），见任务 1 详情。**ROADMAP Phase 6.1 会接日历 + 把结果从 localStorage 迁到新表 `outfit_plans`** |
+| Weekly planning (7 天规划) | ❌ 待开发 | ROADMAP Phase 6.2。需要 OpenWeather 5day/3hour 预报 + 当周日历 + 「7 天内 statement piece 不重复」等约束 |
+| Google Calendar 集成 | ❌ 待开发 | ROADMAP Phase 6.0。`stylist` route 已预留 `context.calendar` 字段；schema 里没有存 token/事件的表，需新增 `google_connections` + `calendar_events` |
+| Gmail 集成（行程/dress code 信号） | ❌ 待开发 | ROADMAP Phase 6.0/6.3。用途是行程确认邮件 → 自动发现出差、活动邀请、邮件里的明文 dress code；只存抽取后的结构化字段，不存正文。注意 Gmail readonly 属于 Google restricted scope，上线前需通过 Google 验证审核 |
 
 ### Phase 4 — Calendar + Analytics (Module 10, 11)
 
@@ -95,9 +108,23 @@
 
 | 功能 | 状态 | 备注 |
 |------|------|------|
-| Capsule Wardrobe Generator | ❌ 占位页面 | |
-| Travel Packing Planner | ❌ 占位页面 | |
-| Packing List 导出 | ❌ 待开发 | |
+| Capsule Wardrobe Generator | ❌ 占位页面 | ROADMAP Phase 6.3。目标函数和 daily/weekly 不同：最小化件数、最大化组合数（一衣多穿） |
+| Travel Packing Planner | ❌ 占位页面 | `src/app/(dashboard)/travel/page.tsx` 目前只是一句 "coming in Phase 5" 的静态文案；`travel_plans` 表（含 `packing_list`/`daily_outfits`/`weather_data` 三个 JSONB 列）已建好但零读写 |
+| Printable outfit cards | ❌ 待开发 | ROADMAP Phase 6.3。`/travel/[id]/print` + `@media print`，一天一卡（含天气/日程/单品图/理由/手写备注区），确定性网格排版而非自由拼贴 |
+| Packing List 导出 | ❌ 待开发 | 先做「复制为文本」+ 打印/PDF，不必一上来做原生分享 |
+
+### Phase 6+ — 新增范围（详细方案见 ROADMAP.md）
+
+| 功能 | 状态 | 依赖 / 备注 |
+|------|------|------|
+| Google OAuth 底座（Calendar + Gmail scope、token 刷新） | ❌ 待开发 | Phase 6.0，Daily/Weekly/出差三者共用的前置条件 |
+| `outfit_plans` 统一计划表 | ❌ 待开发 | Phase 6.0。日/周/出差三种来源共用，替掉现在 `/home` 的 localStorage 缓存 |
+| 日历事件语义化（occasion + formality） | ❌ 待开发 | Phase 6.0。按周批量调一次 Haiku 并缓存进 `calendar_events`，不按事件逐个调 |
+| 冷启动 Onboarding（问卷 + 风格滑卡） | ❌ 待开发 | Phase 7。`preference_swipes` 表 + `profiles.preference_dna` 字段都已就绪；ROADMAP 里建议把它排在 Avatar/Shopping 之前，因为它是所有推荐质量的上游且成本最低。唯一非代码工作量是准备 20–40 张风格参考图 |
+| Avatar 生成（fal.ai） | ❌ 待开发 | Phase 8。`profiles` 的 `skin_tone`/`hair_color`/`hair_length`/`body_shape` 就是给这个预留的。**成本量级和文本调用不同，必须缓存 + 限流**；虚拟试穿比静态 avatar 难得多，建议分两步 |
+| Shopping Recommendations | ❌ 待开发 | Phase 9。缺口信号已经在产出（daily 的 `gap`、出差 capsule 缺口、Analytics 类别失衡）只是丢掉了。**最大未决问题是商品数据源**，建议先接一个联盟 feed 而不是做通用爬虫 |
+| 搭配师授权访问 + Folk CRM 集成 | ❌ 待开发 | Phase 10（原「Human Stylist Consultation」，已简化）。需要 `stylists`/`stylist_availability`/`consultations` 等表 + Stripe Connect + 显式限时可撤销的衣橱授权（`wardrobe_grants`），不能靠角色一刀切放开 RLS |
+| 双端（C 端客户 + B 端公司/造型师） | 🚫 **已取消**（2026-07-30，D12） | 公司为自有少数长期搭配师，不做第三方入驻平台。改为 Folk CRM 管客户列表/阶段/跟进 + App 只做 `wardrobe_grants` 授权访问。省掉 Stripe Connect 分账、入驻审核、评价体系 |
 
 ### 部署
 
@@ -111,7 +138,11 @@
 
 ## 下一步开发任务
 
-### 任务 1: 每日推荐 (Home Page) — ✅ 天气+衣橱版完成，❌ Google Calendar 部分待开发
+> **完整的优先级和技术方案已移到 [`ROADMAP.md`](./ROADMAP.md)。** 当前第一步是 ROADMAP Phase 6.0（Google OAuth 底座 + `google_connections`/`calendar_events`/`outfit_plans` 三张新表 + 事件语义化），它是 Daily 接日历、Weekly 规划、出差模式三者共同的前置条件。
+>
+> 下面两条保留下来，是因为它们记录了已经落地的实现细节和明确的剩余缺口：
+
+### 任务 1: 每日推荐 (Home Page) — ✅ 天气+衣橱版完成，❌ Google Calendar 部分待开发（→ ROADMAP Phase 6.1）
 
 - 需求: dashboard 需要一个真正的首页，结合 Google Calendar（当天日程）+ OpenWeather（当天天气）生成每日穿搭推荐。原来 `/` (`src/app/page.tsx`) 只是重定向到 `/closet` 或 `/login`，dashboard 路由组下没有独立首页。
 - 已实现:
@@ -129,7 +160,7 @@
   - 新增「Add to outfits」按钮：直接复用 `outfits-view.tsx` saveOutfit 同款客户端 Supabase insert 逻辑（浏览器端 `createClient()`），把当天推荐的 items 写入 `outfits`（`ai_generated: true`，`ai_reasoning` 存 Claude 给的理由，`folder: "Everyday"`）+ `outfit_items`，写完标记为已保存并禁用按钮防止重复保存。
 - 待做 (Google Calendar 部分，未在本次任务中实现): OAuth 接入（schema 里没有存 token/事件的表，需要新表或复用 `profiles`）；把当天日程传给 `/api/ai/daily` 的 prompt（`context.calendar` 字段目前只在 `stylist` route 里预留，`daily` route 还没接这个字段）。
 
-### 任务 2: AI Stylist 用 Canvas 展示推荐并可编辑 — ❌ 待开发
+### 任务 2: AI Stylist 用 Canvas 展示推荐并可编辑 — ❌ 待开发（建议并入 ROADMAP Phase 6.1 一起做，因为两者都要给搭配加结构化输出）
 
 - 需求: 目前 `POST /api/ai/stylist` 只返回纯文字 `{ reply }`（`src/app/(dashboard)/stylist/page.tsx` 就是一个文字聊天框）。推荐的搭配应该像 `outfits` 的自由拼贴 Canvas 一样，以图片拼贴的形式展示，并且用户可以直接在 Canvas 上编辑（挪动、替换单品等）。
 - 可复用: `src/app/(dashboard)/outfits/outfits-view.tsx` 里的自由拼贴 Canvas 组件（拖拽/缩放/层级/`clean_url` 透明展示逻辑）——目标是让 stylist 推荐结果能复用同一套 Canvas，而不是重新造一个。
