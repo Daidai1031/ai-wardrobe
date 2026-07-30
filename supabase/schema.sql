@@ -283,10 +283,17 @@ create table public.outfit_plan_segments (
 
 create index idx_plan_segments_plan on public.outfit_plan_segments(outfit_plan_id, position);
 
+-- x/y/width mirror outfit_items: normalized freeform Canvas geometry (percent of
+-- the canvas), null until the user actually arranges the segment, in which case
+-- the UI falls back to a deterministic default grid. Generated plans always start
+-- null — only a human Canvas edit produces layout.
 create table public.outfit_plan_segment_items (
   segment_id uuid not null references public.outfit_plan_segments(id) on delete cascade,
   item_id    uuid not null references public.wardrobe_items(id) on delete cascade,
   position   int not null check (position >= 0),
+  x          numeric,
+  y          numeric,
+  width      numeric,
   created_at timestamptz default now(),
   primary key (segment_id, item_id),
   unique (segment_id, position)
@@ -555,12 +562,21 @@ create table if not exists public.outfit_plan_segment_items (
   segment_id uuid not null references public.outfit_plan_segments(id) on delete cascade,
   item_id    uuid not null references public.wardrobe_items(id) on delete cascade,
   position   int not null check (position >= 0),
+  x          numeric,
+  y          numeric,
+  width      numeric,
   created_at timestamptz default now(),
   primary key (segment_id, item_id),
   unique (segment_id, position)
 );
 create index if not exists idx_plan_segment_items_item
   on public.outfit_plan_segment_items(item_id);
+
+-- Phase 6.1 收尾: freeform Canvas geometry for a plan segment, same shape as
+-- outfit_items.x/y/width so saving a segment to Looks carries the collage over.
+alter table public.outfit_plan_segment_items add column if not exists x numeric;
+alter table public.outfit_plan_segment_items add column if not exists y numeric;
+alter table public.outfit_plan_segment_items add column if not exists width numeric;
 
 alter table public.outfit_journal
   add column if not exists plan_segment_id uuid;
@@ -639,9 +655,110 @@ create policy "Users manage own journal" on public.outfit_journal for all
   with check (auth.uid() = user_id);
 
 
--- 15d. Atomic plan replacement, segment saving, and Worn-today confirmation.
--- Supabase JS does not expose multi-statement transactions, so both workflows
--- enter through these security-invoker functions and remain covered by RLS.
+-- 15d. Atomic plan replacement, segment regeneration/saving, Canvas edits, and
+-- Worn-today confirmation. Supabase JS does not expose multi-statement
+-- transactions, so these workflows enter through security-invoker functions and
+-- remain covered by RLS.
+
+-- Shared item-writing helper. Every path that rewrites a segment's items goes
+-- through this so the three tricky parts live in exactly one place:
+--   1. (segment_id, position) is unique and NOT deferrable, so renumbering in
+--      place can transiently collide -- surviving rows are parked at +1000 first.
+--   2. Ownership is enforced by joining wardrobe_items on the caller's user_id;
+--      a foreign or non-existent id simply fails to join and trips the count check.
+--   3. Canvas geometry must survive item edits. Only an explicit Canvas save
+--      (p_apply_layout) writes x/y/width; every other path leaves whatever the
+--      user already arranged untouched.
+-- Accepts either a plain ["<uuid>", ...] array or the richer Canvas form
+-- [{"itemId": "...", "x": 0, "y": 0, "width": 28}, ...], so the generation path
+-- never has to know layout exists.
+create or replace function public.apply_plan_segment_items(
+  p_segment_id uuid,
+  p_items jsonb,
+  p_user_id uuid,
+  p_apply_layout boolean
+)
+returns void
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  v_requested jsonb;
+  v_requested_count int;
+  v_distinct_count int;
+  v_written_count int;
+begin
+  select coalesce(
+    jsonb_agg(
+      case
+        when jsonb_typeof(entry.value) = 'object' then entry.value
+        else jsonb_build_object('itemId', entry.value #>> '{}')
+      end
+      order by entry.ordinality
+    ),
+    '[]'::jsonb
+  )
+  into v_requested
+  from jsonb_array_elements(p_items) with ordinality as entry(value, ordinality);
+
+  v_requested_count := jsonb_array_length(v_requested);
+
+  select count(distinct entry.value ->> 'itemId')
+  into v_distinct_count
+  from jsonb_array_elements(v_requested) entry(value);
+
+  -- on conflict do update cannot touch the same row twice, and a duplicate here
+  -- would silently mean "worn twice in one segment" anyway.
+  if v_distinct_count <> v_requested_count then
+    raise exception 'A segment cannot contain the same item twice';
+  end if;
+
+  update public.outfit_plan_segment_items
+  set position = position + 1000
+  where segment_id = p_segment_id;
+
+  delete from public.outfit_plan_segment_items
+  where segment_id = p_segment_id
+    and item_id not in (
+      select (entry.value ->> 'itemId')::uuid
+      from jsonb_array_elements(v_requested) entry(value)
+    );
+
+  insert into public.outfit_plan_segment_items (segment_id, item_id, position, x, y, width)
+  select
+    p_segment_id,
+    requested.item_id,
+    requested.position,
+    case when p_apply_layout then requested.x else null end,
+    case when p_apply_layout then requested.y else null end,
+    case when p_apply_layout then requested.width else null end
+  from (
+    select
+      (entry.value ->> 'itemId')::uuid   as item_id,
+      (entry.ordinality - 1)::int        as position,
+      (entry.value ->> 'x')::numeric     as x,
+      (entry.value ->> 'y')::numeric     as y,
+      (entry.value ->> 'width')::numeric as width
+    from jsonb_array_elements(v_requested) with ordinality as entry(value, ordinality)
+  ) requested
+  join public.wardrobe_items
+    on wardrobe_items.id = requested.item_id
+   and wardrobe_items.user_id = p_user_id
+  on conflict (segment_id, item_id) do update
+  set
+    position = excluded.position,
+    x        = case when p_apply_layout then excluded.x     else outfit_plan_segment_items.x     end,
+    y        = case when p_apply_layout then excluded.y     else outfit_plan_segment_items.y     end,
+    width    = case when p_apply_layout then excluded.width else outfit_plan_segment_items.width end;
+
+  get diagnostics v_written_count = row_count;
+  if v_written_count <> v_requested_count then
+    raise exception 'A segment contains an invalid wardrobe item';
+  end if;
+end;
+$$;
+
 create or replace function public.replace_outfit_plan(
   p_plan_date date,
   p_source text,
@@ -661,8 +778,6 @@ declare
   v_segment jsonb;
   v_segment_id uuid;
   v_segment_position int;
-  v_requested_count int;
-  v_inserted_count int;
 begin
   if v_user_id is null then
     raise exception 'Unauthorized';
@@ -766,25 +881,10 @@ begin
     )
     returning id into v_segment_id;
 
-    v_requested_count := jsonb_array_length(v_segment -> 'itemIds');
-
-    insert into public.outfit_plan_segment_items (segment_id, item_id, position)
-    select
-      v_segment_id,
-      requested.item_id,
-      (requested.ordinality - 1)::int
-    from (
-      select value::uuid as item_id, ordinality
-      from jsonb_array_elements_text(v_segment -> 'itemIds') with ordinality
-    ) requested
-    join public.wardrobe_items
-      on wardrobe_items.id = requested.item_id
-     and wardrobe_items.user_id = v_user_id;
-
-    get diagnostics v_inserted_count = row_count;
-    if v_inserted_count <> v_requested_count then
-      raise exception 'A segment contains an invalid wardrobe item';
-    end if;
+    -- A freshly inserted segment has no rows yet, so there is no layout to keep.
+    perform public.apply_plan_segment_items(
+      v_segment_id, v_segment -> 'itemIds', v_user_id, false
+    );
   end loop;
 
   return v_plan_id;
@@ -806,8 +906,6 @@ declare
   v_segment public.outfit_plan_segments%rowtype;
   v_payload_segment jsonb;
   v_segment_id uuid;
-  v_requested_count int;
-  v_inserted_count int;
   v_item_ids uuid[];
   v_all_item_ids uuid[];
   v_journal_outfit_id uuid;
@@ -870,28 +968,10 @@ begin
       raise exception 'Every worn segment must contain at least one item';
     end if;
 
-    delete from public.outfit_plan_segment_items
-    where segment_id = v_segment_id;
-
-    v_requested_count := jsonb_array_length(v_payload_segment -> 'itemIds');
-
-    insert into public.outfit_plan_segment_items (segment_id, item_id, position)
-    select
-      v_segment_id,
-      requested.item_id,
-      (requested.ordinality - 1)::int
-    from (
-      select value::uuid as item_id, ordinality
-      from jsonb_array_elements_text(v_payload_segment -> 'itemIds') with ordinality
-    ) requested
-    join public.wardrobe_items
-      on wardrobe_items.id = requested.item_id
-     and wardrobe_items.user_id = v_user_id;
-
-    get diagnostics v_inserted_count = row_count;
-    if v_inserted_count <> v_requested_count then
-      raise exception 'A worn segment contains an invalid wardrobe item';
-    end if;
+    -- Confirming what was actually worn must not discard the Canvas arrangement.
+    perform public.apply_plan_segment_items(
+      v_segment_id, v_payload_segment -> 'itemIds', v_user_id, false
+    );
 
     select array_agg(item_id order by position)
     into v_item_ids
@@ -968,8 +1048,6 @@ declare
   v_user_id uuid := auth.uid();
   v_segment public.outfit_plan_segments%rowtype;
   v_outfit_id uuid;
-  v_requested_count int;
-  v_inserted_count int;
   v_now timestamptz := now();
 begin
   if v_user_id is null then
@@ -998,28 +1076,7 @@ begin
     raise exception 'At least two items are required to save an outfit';
   end if;
 
-  delete from public.outfit_plan_segment_items
-  where segment_id = p_segment_id;
-
-  v_requested_count := jsonb_array_length(p_item_ids);
-
-  insert into public.outfit_plan_segment_items (segment_id, item_id, position)
-  select
-    p_segment_id,
-    requested.item_id,
-    (requested.ordinality - 1)::int
-  from (
-    select value::uuid as item_id, ordinality
-    from jsonb_array_elements_text(p_item_ids) with ordinality
-  ) requested
-  join public.wardrobe_items
-    on wardrobe_items.id = requested.item_id
-   and wardrobe_items.user_id = v_user_id;
-
-  get diagnostics v_inserted_count = row_count;
-  if v_inserted_count <> v_requested_count then
-    raise exception 'The segment contains an invalid wardrobe item';
-  end if;
+  perform public.apply_plan_segment_items(p_segment_id, p_item_ids, v_user_id, false);
 
   insert into public.outfits (
     user_id,
@@ -1041,8 +1098,12 @@ begin
   )
   returning id into v_outfit_id;
 
-  insert into public.outfit_items (outfit_id, item_id, position)
-  select v_outfit_id, item_id, position
+  -- Carry the segment's Canvas geometry into the saved Look so reopening it in
+  -- /outfits shows the same collage the user arranged on /home. Null x/y/width
+  -- means the segment was never arranged; outfits-view falls back to its default
+  -- grid for those, exactly as it does for pre-layout outfits.
+  insert into public.outfit_items (outfit_id, item_id, position, x, y, width)
+  select v_outfit_id, item_id, position, x, y, width
   from public.outfit_plan_segment_items
   where segment_id = p_segment_id
   order by position;
@@ -1056,6 +1117,179 @@ begin
   return v_outfit_id;
 end;
 $$;
+
+-- Persist a Canvas edit of one segment: the item set AND its freeform geometry.
+-- Without this the /home Canvas would be throwaway client state -- a refresh
+-- re-reads the plan from the database and would discard the arrangement.
+-- p_items is the Canvas form: [{"itemId": "...", "x": 0, "y": 0, "width": 28}, ...]
+create or replace function public.update_outfit_plan_segment_items(
+  p_segment_id uuid,
+  p_items jsonb
+)
+returns void
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_plan public.outfit_plans%rowtype;
+begin
+  if v_user_id is null then
+    raise exception 'Unauthorized';
+  end if;
+
+  select plans.*
+  into v_plan
+  from public.outfit_plans plans
+  join public.outfit_plan_segments segments
+    on segments.outfit_plan_id = plans.id
+  where segments.id = p_segment_id
+    and plans.user_id = v_user_id
+  for update of plans;
+
+  if not found then
+    raise exception 'Plan segment not found';
+  end if;
+
+  if v_plan.status = 'worn' then
+    raise exception 'This plan is already marked as worn';
+  end if;
+
+  if coalesce(jsonb_typeof(p_items), 'null') <> 'array'
+    or jsonb_array_length(p_items) = 0 then
+    raise exception 'A segment must contain at least one item';
+  end if;
+
+  perform public.apply_plan_segment_items(p_segment_id, p_items, v_user_id, true);
+
+  -- The already-saved Look is a snapshot of the pre-edit segment, so it no
+  -- longer represents this segment. Drop the link (the Look itself is left
+  -- alone in the library) so the user can save the edited version.
+  update public.outfit_plan_segments
+  set saved_outfit_id = null, updated_at = now()
+  where id = p_segment_id;
+
+  update public.outfit_plans
+  set updated_at = now()
+  where id = v_plan.id;
+end;
+$$;
+
+-- Regenerate ONE segment instead of the whole day (Phase 6.1 收尾). Rerunning the
+-- whole plan to fix a single bad segment discards the good ones and costs a full
+-- generation, so this replaces just the target segment in place.
+-- p_next_change_from_previous updates the FOLLOWING segment's "what changed"
+-- line, which would otherwise describe an outfit that no longer exists -- the
+-- model returns it in the same call, so keeping it accurate costs nothing extra.
+create or replace function public.regenerate_outfit_plan_segment(
+  p_segment_id uuid,
+  p_label text,
+  p_reasoning text,
+  p_change_from_previous text,
+  p_event_ids jsonb,
+  p_item_ids jsonb,
+  p_next_change_from_previous text
+)
+returns void
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_plan public.outfit_plans%rowtype;
+  v_segment public.outfit_plan_segments%rowtype;
+  v_now timestamptz := now();
+begin
+  if v_user_id is null then
+    raise exception 'Unauthorized';
+  end if;
+
+  select segments.*
+  into v_segment
+  from public.outfit_plan_segments segments
+  join public.outfit_plans plans
+    on plans.id = segments.outfit_plan_id
+  where segments.id = p_segment_id
+    and plans.user_id = v_user_id
+  for update of segments;
+
+  if not found then
+    raise exception 'Plan segment not found';
+  end if;
+
+  select *
+  into v_plan
+  from public.outfit_plans
+  where id = v_segment.outfit_plan_id
+  for update;
+
+  if v_plan.status = 'worn' then
+    raise exception 'This plan is already marked as worn';
+  end if;
+
+  if coalesce(jsonb_typeof(p_item_ids), 'null') <> 'array'
+    or jsonb_array_length(p_item_ids) = 0 then
+    raise exception 'A segment must contain at least one item';
+  end if;
+
+  -- Brand new items, so any previous Canvas arrangement is meaningless: pass
+  -- p_apply_layout = true with layout-free ids to reset x/y/width to null.
+  perform public.apply_plan_segment_items(p_segment_id, p_item_ids, v_user_id, true);
+
+  update public.outfit_plan_segments
+  set
+    label = coalesce(nullif(p_label, ''), v_segment.label),
+    reasoning = coalesce(p_reasoning, ''),
+    change_from_previous = nullif(p_change_from_previous, ''),
+    event_ids = coalesce(
+      (
+        select array_agg(requested.event_id order by requested.ordinality)
+        from (
+          select value::uuid as event_id, ordinality
+          from jsonb_array_elements_text(coalesce(p_event_ids, '[]'::jsonb)) with ordinality
+        ) requested
+        join public.calendar_events
+          on calendar_events.id = requested.event_id
+         and calendar_events.user_id = v_user_id
+      ),
+      '{}'::uuid[]
+    ),
+    -- Same reasoning as update_outfit_plan_segment_items: the saved Look is a
+    -- snapshot of an outfit this segment no longer proposes.
+    saved_outfit_id = null,
+    updated_at = v_now
+  where id = p_segment_id;
+
+  if p_next_change_from_previous is not null then
+    update public.outfit_plan_segments
+    set change_from_previous = nullif(p_next_change_from_previous, ''), updated_at = v_now
+    where outfit_plan_id = v_segment.outfit_plan_id
+      and position = v_segment.position + 1;
+  end if;
+
+  -- D9 rate limiting counts a single-segment redo as a generation too.
+  update public.outfit_plans
+  set generated_at = v_now, updated_at = v_now, status = 'suggested'
+  where id = v_segment.outfit_plan_id;
+end;
+$$;
+
+revoke execute on function public.apply_plan_segment_items(uuid, jsonb, uuid, boolean)
+  from public, anon;
+grant execute on function public.apply_plan_segment_items(uuid, jsonb, uuid, boolean)
+  to authenticated;
+
+revoke execute on function public.update_outfit_plan_segment_items(uuid, jsonb)
+  from public, anon;
+grant execute on function public.update_outfit_plan_segment_items(uuid, jsonb)
+  to authenticated;
+
+revoke execute on function public.regenerate_outfit_plan_segment(uuid, text, text, text, jsonb, jsonb, text)
+  from public, anon;
+grant execute on function public.regenerate_outfit_plan_segment(uuid, text, text, text, jsonb, jsonb, text)
+  to authenticated;
 
 revoke execute on function public.replace_outfit_plan(date, text, uuid, text, jsonb, jsonb)
   from public, anon;

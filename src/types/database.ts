@@ -190,6 +190,12 @@ export interface OutfitPlanSegmentItem {
   segment_id: string;
   item_id: string;
   position: number;
+  // Normalized freeform Canvas geometry, same meaning as outfit_items.x/y/width.
+  // Null until the user arranges the segment on /home; the UI falls back to a
+  // deterministic default grid for those.
+  x: number | null;
+  y: number | null;
+  width: number | null;
   created_at: string;
 }
 

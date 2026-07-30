@@ -9,6 +9,7 @@ import type {
   DailyOccasion,
   DailyPlanStatus,
   DailyResponse,
+  DailySegmentItem,
   DailySegmentResponse,
   DailyWardrobeItem,
 } from "@/types/daily";
@@ -51,6 +52,9 @@ interface StoredSegmentItem {
   segment_id: string;
   item_id: string;
   position: number;
+  x: number | null;
+  y: number | null;
+  width: number | null;
 }
 
 const WARDROBE_SELECT =
@@ -108,6 +112,60 @@ function parseDailyPlan(text: string, validItemIds: Set<string>, validEventIds: 
     return {
       segments,
       gap: typeof parsed.gap === "string" && parsed.gap.trim() ? parsed.gap.trim() : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+interface RegeneratedSegment extends GeneratedSegment {
+  nextChangeFromPrevious?: string;
+}
+
+/**
+ * Same defensive shape as parseDailyPlan: ids the model made up are dropped
+ * rather than trusted, and a segment left with no real items is treated as a
+ * failed generation instead of being persisted empty.
+ */
+function parseSegmentRegeneration(
+  text: string,
+  validItemIds: Set<string>,
+  validEventIds: Set<string>
+): RegeneratedSegment | null {
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+
+  try {
+    const parsed = JSON.parse(match[0]) as Record<string, unknown>;
+    const segment = parsed.segment;
+    if (typeof segment !== "object" || segment === null) return null;
+
+    const source = segment as Record<string, unknown>;
+    const itemIds = Array.isArray(source.itemIds)
+      ? uniqueIds(
+          source.itemIds.filter((id): id is string => typeof id === "string" && validItemIds.has(id))
+        )
+      : [];
+    if (itemIds.length === 0) return null;
+
+    const eventIds = Array.isArray(source.eventIds)
+      ? uniqueIds(
+          source.eventIds.filter(
+            (id): id is string => typeof id === "string" && validEventIds.has(id)
+          )
+        )
+      : [];
+
+    const optionalText = (value: unknown) =>
+      typeof value === "string" && value.trim() ? value.trim() : undefined;
+
+    return {
+      label: optionalText(source.label) || "Outfit",
+      itemIds,
+      eventIds,
+      changeFromPrevious: optionalText(source.changeFromPrevious),
+      reasoning: typeof source.reasoning === "string" ? source.reasoning.trim() : "",
+      nextChangeFromPrevious: optionalText(parsed.nextChangeFromPrevious),
     };
   } catch {
     return null;
@@ -175,7 +233,7 @@ async function readStoredPlan(
 
   const { data: segmentItems, error: itemsError } = await supabase
     .from("outfit_plan_segment_items")
-    .select("segment_id, item_id, position")
+    .select("segment_id, item_id, position, x, y, width")
     .in(
       "segment_id",
       storedSegments.map((segment) => segment.id)
@@ -215,8 +273,11 @@ function buildStoredResponse(
     savedOutfitId: segment.saved_outfit_id,
     items: (itemsBySegment.get(segment.id) || [])
       .sort((a, b) => a.position - b.position)
-      .map((row) => byId.get(row.item_id))
-      .filter((item): item is DailyWardrobeItem => Boolean(item)),
+      .map((row) => {
+        const item = byId.get(row.item_id);
+        return item ? { ...item, x: row.x, y: row.y, width: row.width } : null;
+      })
+      .filter((item): item is DailySegmentItem => Boolean(item)),
   }));
 
   return {
@@ -292,44 +353,110 @@ function emptyResponse(
   };
 }
 
-async function handleDaily(request: NextRequest, regenerate: boolean) {
-  try {
-    const supabase = await createServerSupabase();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+interface DailyPostBody {
+  segmentId?: unknown;
+  rejectedItemIds?: unknown;
+}
 
-    if (!user) {
+/**
+ * Everything the read, whole-day-regenerate and single-segment-regenerate paths
+ * all need. Kept in one place so the three entry points can't drift on how the
+ * local date or the calendar window is derived.
+ */
+async function loadDailyContext(request: NextRequest) {
+  const supabase = await createServerSupabase();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) return { unauthorized: true as const };
+
+  const { data: profile, error: profileError } = await supabase
+    .from("profiles")
+    .select("name, city, lat, lng, body_shape, preference_dna, timezone")
+    .eq("id", user.id)
+    .single();
+
+  if (profileError) throw profileError;
+
+  const timeZone = request.nextUrl.searchParams.get("timezone") || profile?.timezone || "UTC";
+  const localDate =
+    request.nextUrl.searchParams.get("date") ||
+    new Intl.DateTimeFormat("en-CA", { timeZone }).format(new Date());
+
+  const [{ data: wardrobeRows, error: wardrobeError }, stored, occasionData] = await Promise.all([
+    supabase
+      .from("wardrobe_items")
+      .select(WARDROBE_SELECT)
+      .eq("user_id", user.id)
+      .eq("archived", false)
+      .limit(150),
+    readStoredPlan(supabase, user.id, localDate),
+    readDailyOccasions(supabase, user.id, localDate, timeZone),
+  ]);
+
+  if (wardrobeError) throw wardrobeError;
+  const wardrobe = (wardrobeRows || []) as Record<string, unknown>[];
+
+  return {
+    unauthorized: false as const,
+    supabase,
+    userId: user.id,
+    profile,
+    timeZone,
+    localDate,
+    wardrobe,
+    availableItems: wardrobe.map(toClientItem),
+    stored,
+    occasionData,
+  };
+}
+
+/** Keep only ids the user actually owns; a client can send anything. */
+function ownedItemIds(value: unknown, wardrobe: Record<string, unknown>[]): string[] {
+  if (!Array.isArray(value)) return [];
+  const owned = new Set(wardrobe.map((item) => String(item.id)));
+  return uniqueIds(
+    value.filter((id): id is string => typeof id === "string" && isUuid(id) && owned.has(id))
+  );
+}
+
+function describeWardrobe(items: Record<string, unknown>[]) {
+  return items.map((item) => ({
+    id: item.id,
+    type: `${item.category} — ${item.subcategory || "unknown"}`,
+    color: item.color,
+    material: item.material,
+    seasons: item.season,
+    occasions: item.occasion,
+    tags: item.style_tags,
+  }));
+}
+
+function formatDateLabel(localDate: string, timeZone: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  }).format(new Date(`${localDate}T12:00:00Z`));
+}
+
+function describeWeather(weather: WeatherData | null) {
+  return weather
+    ? `WEATHER: ${weather.temp}°C (feels like ${weather.feels_like}°C), ${weather.description}, wind ${weather.wind_speed} m/s, in ${weather.city}`
+    : "WEATHER: unknown, no city set in profile";
+}
+
+async function handleDaily(request: NextRequest, regenerate: boolean, body: DailyPostBody = {}) {
+  try {
+    const context = await loadDailyContext(request);
+    if (context.unauthorized) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { data: profile, error: profileError } = await supabase
-      .from("profiles")
-      .select("name, city, lat, lng, body_shape, preference_dna, timezone")
-      .eq("id", user.id)
-      .single();
-
-    if (profileError) throw profileError;
-
-    const timeZone = request.nextUrl.searchParams.get("timezone") || profile?.timezone || "UTC";
-    const localDate =
-      request.nextUrl.searchParams.get("date") ||
-      new Intl.DateTimeFormat("en-CA", { timeZone }).format(new Date());
-
-    const [{ data: wardrobeRows, error: wardrobeError }, stored, occasionData] = await Promise.all([
-      supabase
-        .from("wardrobe_items")
-        .select(WARDROBE_SELECT)
-        .eq("user_id", user.id)
-        .eq("archived", false)
-        .limit(150),
-      readStoredPlan(supabase, user.id, localDate),
-      readDailyOccasions(supabase, user.id, localDate, timeZone),
-    ]);
-
-    if (wardrobeError) throw wardrobeError;
-    const wardrobe = (wardrobeRows || []) as Record<string, unknown>[];
-    const availableItems = wardrobe.map(toClientItem);
+    const { supabase, userId, profile, timeZone, localDate, wardrobe, availableItems, stored, occasionData } =
+      context;
 
     if (stored && !regenerate) {
       return NextResponse.json(buildStoredResponse(stored, wardrobe, occasionData.occasions, true));
@@ -342,19 +469,7 @@ async function handleDaily(request: NextRequest, regenerate: boolean) {
       );
     }
 
-    let rejectedItemIds: string[] = [];
-    if (regenerate) {
-      const body = (await request.json().catch(() => ({}))) as { rejectedItemIds?: unknown };
-      if (Array.isArray(body.rejectedItemIds)) {
-        const ownedIds = new Set(wardrobe.map((item) => String(item.id)));
-        rejectedItemIds = uniqueIds(
-          body.rejectedItemIds.filter(
-            (id): id is string => typeof id === "string" && isUuid(id) && ownedIds.has(id)
-          )
-        );
-      }
-    }
-
+    const rejectedItemIds = regenerate ? ownedItemIds(body.rejectedItemIds, wardrobe) : [];
     const rejectedSet = new Set(rejectedItemIds);
     const candidateWardrobe = wardrobe.filter((item) => !rejectedSet.has(String(item.id)));
 
@@ -375,22 +490,8 @@ async function handleDaily(request: NextRequest, regenerate: boolean) {
       weather = await getCurrentWeather(profile.lat, profile.lng);
     }
 
-    const wardrobeSummary = candidateWardrobe.map((item) => ({
-      id: item.id,
-      type: `${item.category} — ${item.subcategory || "unknown"}`,
-      color: item.color,
-      material: item.material,
-      seasons: item.season,
-      occasions: item.occasion,
-      tags: item.style_tags,
-    }));
-
-    const dateLabel = new Intl.DateTimeFormat("en-US", {
-      timeZone,
-      weekday: "long",
-      month: "long",
-      day: "numeric",
-    }).format(new Date(`${localDate}T12:00:00Z`));
+    const wardrobeSummary = describeWardrobe(candidateWardrobe);
+    const dateLabel = formatDateLabel(localDate, timeZone);
 
     const promptOccasions = occasionData.occasions.map((occasion) => ({
       id: occasion.id,
@@ -408,7 +509,7 @@ async function handleDaily(request: NextRequest, regenerate: boolean) {
     const systemPrompt = `You are an expert personal stylist AI. Build TODAY's outfit plan for the user from their ACTUAL wardrobe below — never invent items.
 
 TODAY: ${dateLabel}
-${weather ? `WEATHER: ${weather.temp}°C (feels like ${weather.feels_like}°C), ${weather.description}, wind ${weather.wind_speed} m/s, in ${weather.city}` : "WEATHER: unknown, no city set in profile"}
+${describeWeather(weather)}
 
 TODAY'S CALENDAR OCCASIONS (chronological; empty if none):
 ${promptOccasions.length > 0 ? JSON.stringify(promptOccasions, null, 2) : "(no calendar events today)"}
@@ -480,7 +581,7 @@ Respond with ONLY this JSON, no other text:
       throw persistError || new Error("Daily plan was generated but could not be saved");
     }
 
-    const persisted = await readStoredPlan(supabase, user.id, localDate);
+    const persisted = await readStoredPlan(supabase, userId, localDate);
     if (!persisted) {
       throw new Error("Daily plan was saved but could not be read back");
     }
@@ -498,14 +599,193 @@ Respond with ONLY this JSON, no other text:
 }
 
 /**
+ * Redo ONE segment and leave the rest of the day alone. Regenerating the whole
+ * plan to fix a single bad look throws away the segments the user was happy with
+ * and pays for a full generation, which is why this exists as its own path.
+ *
+ * The model also returns the FOLLOWING segment's updated "what changed" line: it
+ * describes the transition from the segment being replaced, so leaving it as-is
+ * would point at an outfit that no longer exists. Asking for it in the same call
+ * keeps it accurate at no extra cost.
+ */
+async function handleSegmentRegeneration(request: NextRequest, segmentId: string, body: DailyPostBody) {
+  try {
+    const context = await loadDailyContext(request);
+    if (context.unauthorized) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { supabase, userId, profile, timeZone, localDate, wardrobe, availableItems, stored, occasionData } =
+      context;
+
+    if (!stored) {
+      return NextResponse.json({ error: "There is no plan to adjust yet." }, { status: 404 });
+    }
+    if (stored.plan.status === "worn") {
+      return NextResponse.json(
+        { error: "Today's worn plan cannot be regenerated." },
+        { status: 409 }
+      );
+    }
+
+    const target = stored.segments.find((segment) => segment.id === segmentId);
+    if (!target) {
+      return NextResponse.json({ error: "That segment is not part of today's plan." }, { status: 404 });
+    }
+
+    const currentItemIds = stored.segmentItems
+      .filter((row) => row.segment_id === target.id)
+      .sort((a, b) => a.position - b.position)
+      .map((row) => row.item_id);
+
+    // Default to rejecting exactly what this segment currently shows; the client
+    // may send a narrower set. Only this segment's items are excluded — items in
+    // the segments the user is keeping stay available, since wearing the same
+    // blazer through two parts of the day is normal, not a repeat to avoid.
+    const explicit = ownedItemIds(body.rejectedItemIds, wardrobe);
+    const rejectedItemIds = explicit.length > 0 ? explicit : currentItemIds;
+    const rejectedSet = new Set(rejectedItemIds);
+    const candidateWardrobe = wardrobe.filter((item) => !rejectedSet.has(String(item.id)));
+
+    if (candidateWardrobe.length < 1) {
+      return NextResponse.json(
+        emptyResponse(
+          localDate,
+          availableItems,
+          "There aren't enough different items left to rebuild this segment."
+        )
+      );
+    }
+
+    const byId = new Map(wardrobe.map((item) => [String(item.id), item]));
+    const itemsBySegment = new Map<string, string[]>();
+    for (const row of [...stored.segmentItems].sort((a, b) => a.position - b.position)) {
+      itemsBySegment.set(row.segment_id, [...(itemsBySegment.get(row.segment_id) || []), row.item_id]);
+    }
+
+    const planOutline = stored.segments.map((segment) => ({
+      position: segment.position,
+      label: segment.label,
+      action: segment.id === target.id ? "REGENERATE THIS ONE" : "keep unchanged",
+      currentItems: (itemsBySegment.get(segment.id) || []).map((itemId) => {
+        const item = byId.get(itemId);
+        return item ? `${item.color || ""} ${item.subcategory || item.category}`.trim() : itemId;
+      }),
+    }));
+
+    const nextSegment = stored.segments.find((segment) => segment.position === target.position + 1);
+    const previousSegment = stored.segments.find((segment) => segment.position === target.position - 1);
+
+    // The parent row's weather is the snapshot for this local day; refetching here
+    // would make the segment reason about different weather than the rest of the plan.
+    const weather = parseStoredWeather(stored.plan.weather);
+    const wardrobeSummary = describeWardrobe(candidateWardrobe);
+
+    const systemPrompt = `You are an expert personal stylist AI. The user likes today's plan except for ONE segment. Rebuild ONLY that segment from their ACTUAL wardrobe below — never invent items.
+
+TODAY: ${formatDateLabel(localDate, timeZone)}
+${describeWeather(weather)}
+
+TODAY'S CALENDAR OCCASIONS (chronological; empty if none):
+${occasionData.occasions.length > 0 ? JSON.stringify(occasionData.occasions, null, 2) : "(no calendar events today)"}
+
+TODAY'S FULL PLAN — you are replacing exactly one entry, the rest stay as they are:
+${JSON.stringify(planOutline, null, 2)}
+
+SEGMENT TO REGENERATE: "${target.label}" at position ${target.position}, covering event IDs ${JSON.stringify(target.event_ids || [])}.
+
+REJECTED ITEM IDS — the user disliked this segment. Do NOT use any of these:
+${JSON.stringify(rejectedItemIds)}
+
+USER PROFILE:
+${profile ? `Name: ${profile.name || "User"}, Body Shape: ${profile.body_shape || "Unknown"}` : "No profile data"}
+${profile?.preference_dna ? `Preferences: ${JSON.stringify(profile.preference_dna)}` : ""}
+
+USER'S AVAILABLE WARDROBE (${wardrobeSummary.length} items):
+${JSON.stringify(wardrobeSummary, null, 2)}
+
+Keep the new segment appropriate for the same occasions the old one covered. "itemIds" must be the COMPLETE set worn during this segment.
+${previousSegment ? `There IS a preceding segment ("${previousSegment.label}"), so give "changeFromPrevious" describing what changes coming from it.` : `This is the FIRST segment of the day, so omit "changeFromPrevious".`}
+${nextSegment ? `There IS a following segment ("${nextSegment.label}" with items ${JSON.stringify(itemsBySegment.get(nextSegment.id) || [])}). Return "nextChangeFromPrevious" rewriting how that following segment differs from your NEW segment, so the day still reads as one sequence.` : `This is the LAST segment of the day, so omit "nextChangeFromPrevious".`}
+
+Respond with ONLY this JSON, no other text:
+{
+  "segment": {
+    "label": "short label naming the actual occasion(s), never generic morning/evening wording",
+    "itemIds": ["<wardrobe id>", "<wardrobe id>"],
+    "eventIds": ["<calendar event id>"],
+    "changeFromPrevious": "omit when this is the first segment",
+    "reasoning": "1-2 sentences on why this works"
+  },
+  "nextChangeFromPrevious": "omit when there is no following segment"
+}`;
+
+    const response = await anthropic.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 1000,
+      system: systemPrompt,
+      messages: [{ role: "user", content: `Rebuild the "${target.label}" segment.` }],
+    });
+
+    const textBlock = response.content.find((block) => block.type === "text");
+    const generated = parseSegmentRegeneration(
+      textBlock && textBlock.type === "text" ? textBlock.text : "",
+      new Set(candidateWardrobe.map((item) => String(item.id))),
+      new Set(occasionData.events.map((event) => event.id))
+    );
+
+    if (!generated) {
+      return NextResponse.json(
+        { error: "Couldn't rebuild that segment right now. Try again in a moment." },
+        { status: 502 }
+      );
+    }
+
+    const { error: persistError } = await supabase.rpc("regenerate_outfit_plan_segment", {
+      p_segment_id: target.id,
+      p_label: generated.label,
+      p_reasoning: generated.reasoning,
+      p_change_from_previous: previousSegment ? generated.changeFromPrevious ?? null : null,
+      p_event_ids: generated.eventIds,
+      p_item_ids: generated.itemIds,
+      p_next_change_from_previous: nextSegment ? generated.nextChangeFromPrevious ?? null : null,
+    });
+
+    if (persistError) throw persistError;
+
+    const persisted = await readStoredPlan(supabase, userId, localDate);
+    if (!persisted) {
+      throw new Error("Segment was regenerated but the plan could not be read back");
+    }
+
+    return NextResponse.json(
+      buildStoredResponse(persisted, wardrobe, occasionData.occasions, false)
+    );
+  } catch (error) {
+    console.error("Daily segment regeneration error:", error);
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Segment regeneration failed" },
+      { status: 500 }
+    );
+  }
+}
+
+/**
  * GET returns the persisted daily plan when present. Claude is called only on a
- * cache miss. POST is the explicit Dislike/regenerate path and overwrites the
- * same parent plan after excluding the rejected item IDs supplied by the client.
+ * cache miss. POST is the explicit regenerate path: with a `segmentId` it redoes
+ * that one segment in place, without it the whole day is rebuilt after excluding
+ * the rejected item IDs supplied by the client.
  */
 export async function GET(request: NextRequest) {
   return handleDaily(request, false);
 }
 
 export async function POST(request: NextRequest) {
-  return handleDaily(request, true);
+  const body = (await request.json().catch(() => ({}))) as DailyPostBody;
+
+  if (typeof body.segmentId === "string" && isUuid(body.segmentId)) {
+    return handleSegmentRegeneration(request, body.segmentId, body);
+  }
+
+  return handleDaily(request, true, body);
 }

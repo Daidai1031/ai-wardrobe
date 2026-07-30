@@ -1,25 +1,35 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
 import Link from "next/link";
-import Image from "next/image";
 import { toast } from "sonner";
 import {
   Check,
   Cloud,
   ListPlus,
   Loader2,
-  Plus,
+  Pencil,
+  RotateCcw,
   Shirt,
   Sparkles,
   ThumbsDown,
   ThumbsUp,
-  X,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
+import {
+  ClosetPicker,
+  OutfitCanvas,
+  OutfitCollage,
+  defaultLayoutFor,
+  layoutsFromRows,
+  readDragPayload,
+  type CanvasItemLayout,
+} from "@/components/outfit/outfit-canvas";
+import type { ItemCategory } from "@/types/database";
 import type {
   DailyResponse,
+  DailySegmentItem,
   DailySegmentResponse,
   DailyWardrobeItem,
 } from "@/types/daily";
@@ -38,6 +48,8 @@ export function DailyRecommendation({ userId }: { userId: string }) {
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [savingSegmentIds, setSavingSegmentIds] = useState<Set<string>>(new Set());
+  const [regeneratingSegmentId, setRegeneratingSegmentId] = useState<string | null>(null);
+  const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
   const [markingWorn, setMarkingWorn] = useState(false);
 
   const loadPlan = useCallback(async () => {
@@ -90,6 +102,7 @@ export function DailyRecommendation({ userId }: { userId: string }) {
     setData((current) => (current ? { ...current, status: "accepted" } : current));
   }
 
+  /** Whole-day Dislike: every segment is thrown away and rebuilt. */
   async function dislike() {
     if (!data || data.status === "worn") return;
 
@@ -123,32 +136,58 @@ export function DailyRecommendation({ userId }: { userId: string }) {
     }
   }
 
-  function updateSegmentItems(
-    segmentId: string,
-    update: (items: DailyWardrobeItem[]) => DailyWardrobeItem[]
-  ) {
-    setData((current) => {
-      if (!current || current.status === "worn") return current;
-      return {
-        ...current,
-        segments: current.segments.map((segment) =>
-          segment.id === segmentId ? { ...segment, items: update(segment.items) } : segment
-        ),
-      };
-    });
+  /**
+   * Per-segment Dislike. Only this segment is rebuilt, so a day where one look
+   * lands and another misses doesn't cost the user the good one.
+   */
+  async function dislikeSegment(segment: DailySegmentResponse) {
+    if (!data || data.status === "worn") return;
+
+    setRegeneratingSegmentId(segment.id);
+    try {
+      const response = await fetch("/api/ai/daily", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          segmentId: segment.id,
+          rejectedItemIds: segment.items.map((item) => item.id),
+        }),
+      });
+      const next = (await response.json()) as DailyResponse;
+
+      if (!response.ok || next.error) {
+        throw new Error(next.error || "Couldn't rebuild that segment.");
+      }
+      if (next.message || next.segments.length === 0) {
+        toast.error(next.message || "Couldn't rebuild that segment.");
+        return;
+      }
+
+      setData(next);
+      setFeedback(null);
+      toast.success(`Rebuilt “${segment.label}”`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Couldn't rebuild that segment.");
+    } finally {
+      setRegeneratingSegmentId(null);
+    }
   }
 
-  function removeItem(segmentId: string, itemId: string) {
-    updateSegmentItems(segmentId, (items) => items.filter((item) => item.id !== itemId));
-  }
-
-  function addItem(segmentId: string, itemId: string) {
-    if (!data) return;
-    const item = data.availableItems.find((candidate) => candidate.id === itemId);
-    if (!item) return;
-
-    updateSegmentItems(segmentId, (items) =>
-      items.some((existing) => existing.id === item.id) ? items : [...items, item]
+  function applyEditedSegment(segmentId: string, items: DailySegmentItem[]) {
+    setData((current) =>
+      current
+        ? {
+            ...current,
+            segments: current.segments.map((segment) =>
+              segment.id === segmentId
+                ? // The RPC drops saved_outfit_id, because the already-saved Look is a
+                  // snapshot of the pre-edit segment. Mirror that here so the Save
+                  // button re-enables for the edited version.
+                  { ...segment, items, savedOutfitId: null }
+                : segment
+            ),
+          }
+        : current
     );
   }
 
@@ -255,6 +294,21 @@ export function DailyRecommendation({ userId }: { userId: string }) {
   }
 
   const worn = data.status === "worn";
+  const editingSegment = data.segments.find((segment) => segment.id === editingSegmentId);
+
+  if (editingSegment) {
+    return (
+      <SegmentCanvasEditor
+        segment={editingSegment}
+        availableItems={data.availableItems}
+        onCancel={() => setEditingSegmentId(null)}
+        onSaved={(items) => {
+          applyEditedSegment(editingSegment.id, items);
+          setEditingSegmentId(null);
+        }}
+      />
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -287,7 +341,7 @@ export function DailyRecommendation({ userId }: { userId: string }) {
           <button
             onClick={() => void dislike()}
             disabled={worn}
-            title="Dislike — avoid these items and generate a new plan"
+            title="Dislike the whole day — avoid every item above and rebuild all segments"
             className="p-2 rounded-lg border border-surface-200 text-surface-400 hover:text-surface-700 transition-colors disabled:opacity-40"
           >
             <ThumbsDown size={15} />
@@ -300,17 +354,13 @@ export function DailyRecommendation({ userId }: { userId: string }) {
           <h2 className="text-sm font-semibold text-surface-800 flex items-center gap-2">
             <Sparkles size={16} className="text-brand-500" /> Today&apos;s plan
           </h2>
-          {data.cached && (
-            <span className="text-[11px] text-surface-400">Saved daily plan</span>
-          )}
+          {data.cached && <span className="text-[11px] text-surface-400">Saved daily plan</span>}
         </div>
 
         <div className="space-y-5">
           {data.segments.map((segment, segmentIndex) => {
-            const selectableItems = data.availableItems.filter(
-              (item) => !segment.items.some((selected) => selected.id === item.id)
-            );
             const saving = savingSegmentIds.has(segment.id);
+            const regenerating = regeneratingSegmentId === segment.id;
 
             return (
               <section
@@ -324,79 +374,73 @@ export function DailyRecommendation({ userId }: { userId: string }) {
                     </p>
                     <h3 className="text-sm font-semibold text-surface-900">{segment.label}</h3>
                   </div>
-                  <button
-                    onClick={() => void addToOutfits(segment)}
-                    disabled={saving || Boolean(segment.savedOutfitId)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-900 text-white text-xs font-medium hover:bg-surface-800 disabled:opacity-50 shrink-0"
-                  >
-                    {segment.savedOutfitId ? <Check size={13} /> : <ListPlus size={13} />}
-                    {segment.savedOutfitId ? "Saved" : saving ? "Saving…" : "Save segment"}
-                  </button>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      onClick={() => void dislikeSegment(segment)}
+                      disabled={worn || regenerating || Boolean(regeneratingSegmentId)}
+                      title="Rebuild only this segment — the other segments stay as they are"
+                      className="p-1.5 rounded-lg border border-surface-200 text-surface-400 hover:text-surface-700 transition-colors disabled:opacity-40"
+                    >
+                      {regenerating ? (
+                        <Loader2 size={13} className="animate-spin" />
+                      ) : (
+                        <RotateCcw size={13} />
+                      )}
+                    </button>
+                    <button
+                      onClick={() => setEditingSegmentId(segment.id)}
+                      disabled={worn || Boolean(regeneratingSegmentId)}
+                      title="Adjust this segment on the canvas"
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-surface-200 text-surface-600 text-xs font-medium hover:bg-surface-50 disabled:opacity-40"
+                    >
+                      <Pencil size={13} />
+                      Adjust
+                    </button>
+                    <button
+                      onClick={() => void addToOutfits(segment)}
+                      disabled={saving || Boolean(segment.savedOutfitId) || worn}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-900 text-white text-xs font-medium hover:bg-surface-800 disabled:opacity-50"
+                    >
+                      {segment.savedOutfitId ? <Check size={13} /> : <ListPlus size={13} />}
+                      {segment.savedOutfitId ? "Saved" : saving ? "Saving…" : "Save"}
+                    </button>
+                  </div>
                 </div>
 
-                <div className="p-4">
-                  {segment.changeFromPrevious && (
-                    <p className="text-xs text-brand-700 bg-brand-50 rounded-lg px-3 py-2 mb-4">
-                      Change: {segment.changeFromPrevious}
-                    </p>
+                {/* Collage left, copy right: a square collage stacked above full-width
+                    text left a lot of dead space beside it on wide screens. Collapses
+                    to a single column below sm. */}
+                <div className="p-4 grid gap-4 sm:grid-cols-[minmax(0,15rem)_1fr] sm:items-start">
+                  {segment.items.length > 0 ? (
+                    <OutfitCollage
+                      items={segment.items}
+                      layouts={layoutsFromRows(segment.items)}
+                    />
+                  ) : (
+                    <div className="flex aspect-square items-center justify-center gap-2 rounded-xl bg-surface-50 p-5 text-xs text-amber-700">
+                      <Shirt size={15} /> Add at least one item
+                    </div>
                   )}
 
-                  <div className="flex flex-wrap justify-center gap-3 bg-surface-50 rounded-lg p-5 mb-4 min-h-32">
-                    {segment.items.map((item) => (
-                      <div key={item.id} className="w-28 group">
-                        <div className="w-28 h-28 relative">
-                          <Image
-                            src={item.clean_url || item.original_url}
-                            alt={item.subcategory || item.category}
-                            fill
-                            className="object-contain"
-                            unoptimized
-                          />
-                          {!worn && (
-                            <button
-                              onClick={() => removeItem(segment.id, item.id)}
-                              title={`Remove ${itemLabel(item)}`}
-                              className="absolute top-0 right-0 p-1 rounded-full bg-white border border-surface-200 text-surface-500 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100 transition-opacity shadow-sm"
-                            >
-                              <X size={12} />
-                            </button>
-                          )}
-                        </div>
-                        <p className="text-[10px] text-surface-500 text-center truncate mt-1">
-                          {itemLabel(item)}
-                        </p>
-                      </div>
-                    ))}
+                  <div className="space-y-3">
+                    {segment.changeFromPrevious && (
+                      <p className="text-xs text-brand-700 bg-brand-50 rounded-lg px-3 py-2">
+                        Change: {segment.changeFromPrevious}
+                      </p>
+                    )}
 
-                    {segment.items.length === 0 && (
-                      <div className="flex items-center gap-2 text-xs text-amber-700">
-                        <Shirt size={15} /> Add at least one item
-                      </div>
+                    <p className="text-sm text-surface-700 leading-relaxed">{segment.reasoning}</p>
+
+                    {segment.items.length > 0 && (
+                      <ul className="space-y-1 border-t border-surface-100 pt-3">
+                        {segment.items.map((item) => (
+                          <li key={item.id} className="text-[11px] text-surface-500 leading-relaxed">
+                            {itemLabel(item)}
+                          </li>
+                        ))}
+                      </ul>
                     )}
                   </div>
-
-                  {!worn && selectableItems.length > 0 && (
-                    <label className="flex items-center gap-2 mb-4">
-                      <Plus size={14} className="text-surface-400 shrink-0" />
-                      <span className="sr-only">Add an item to {segment.label}</span>
-                      <select
-                        value=""
-                        onChange={(event) => addItem(segment.id, event.target.value)}
-                        className="w-full max-w-sm rounded-lg border border-surface-200 bg-white px-3 py-2 text-xs text-surface-600 focus:outline-none focus:ring-2 focus:ring-brand-200"
-                      >
-                        <option value="">Adjust this segment — add an item…</option>
-                        {selectableItems.map((item) => (
-                          <option key={item.id} value={item.id}>
-                            {itemLabel(item)}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  )}
-
-                  <p className="text-sm text-surface-700 leading-relaxed">
-                    {segment.reasoning}
-                  </p>
                 </div>
               </section>
             );
@@ -416,16 +460,212 @@ export function DailyRecommendation({ userId }: { userId: string }) {
           <button
             onClick={() => void markWornToday()}
             disabled={
-              worn ||
-              markingWorn ||
-              data.segments.some((segment) => segment.items.length === 0)
+              worn || markingWorn || data.segments.some((segment) => segment.items.length === 0)
             }
             className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-brand-600 text-white text-xs font-semibold hover:bg-brand-700 disabled:opacity-50"
           >
-            {worn ? <Check size={14} /> : markingWorn ? <Loader2 size={14} className="animate-spin" /> : <Shirt size={14} />}
+            {worn ? (
+              <Check size={14} />
+            ) : markingWorn ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <Shirt size={14} />
+            )}
             {worn ? "Worn today" : markingWorn ? "Confirming…" : "Confirm worn today"}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * "Adjust this segment" used to be a plain <select> that could only append one
+ * item at a time. It is now the same freeform Canvas as /outfits, so arranging a
+ * daily look and arranging a saved look are one interaction, not two.
+ *
+ * Unlike the old dropdown, edits here are persisted immediately on Save — the
+ * plan is read back from the database on every load, so purely client-side edits
+ * were silently lost on refresh.
+ */
+function SegmentCanvasEditor({
+  segment,
+  availableItems,
+  onCancel,
+  onSaved,
+}: {
+  segment: DailySegmentResponse;
+  availableItems: DailyWardrobeItem[];
+  onCancel: () => void;
+  onSaved: (items: DailySegmentItem[]) => void;
+}) {
+  const supabase = useMemo(() => createClient(), []);
+  const [selectedIds, setSelectedIds] = useState<string[]>(() =>
+    segment.items.map((item) => item.id)
+  );
+  const [layouts, setLayouts] = useState<Record<string, CanvasItemLayout>>(() =>
+    layoutsFromRows(segment.items)
+  );
+  const [activeCategory, setActiveCategory] = useState<ItemCategory | "All">("All");
+  const [search, setSearch] = useState("");
+  const [isCanvasOver, setIsCanvasOver] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const itemById = useMemo(
+    () => new Map(availableItems.map((item) => [item.id, item])),
+    [availableItems]
+  );
+
+  const selectedItems = selectedIds
+    .map((id) => itemById.get(id))
+    .filter((item): item is DailyWardrobeItem => Boolean(item));
+
+  const pickerItems = availableItems.filter((item) => {
+    if (selectedIds.includes(item.id)) return false;
+    const inCategory = activeCategory === "All" || item.category === activeCategory;
+    const query = search.trim().toLowerCase();
+    const matchesSearch =
+      !query ||
+      [item.subcategory, item.category, item.color, item.brand]
+        .filter(Boolean)
+        .some((value) => value!.toLowerCase().includes(query));
+    return inCategory && matchesSearch;
+  });
+
+  function addItem(itemId: string, layout?: CanvasItemLayout) {
+    if (selectedIds.includes(itemId)) return;
+    setLayouts((current) => ({
+      ...current,
+      [itemId]: layout || defaultLayoutFor(selectedIds.length),
+    }));
+    setSelectedIds((current) => [...current, itemId]);
+  }
+
+  function removeItem(itemId: string) {
+    setSelectedIds((current) => current.filter((id) => id !== itemId));
+    setLayouts((current) => {
+      const next = { ...current };
+      delete next[itemId];
+      return next;
+    });
+  }
+
+  function moveItem(from: number, to: number) {
+    setSelectedIds((current) => {
+      if (from === to || from < 0 || to < 0 || from >= current.length || to >= current.length) {
+        return current;
+      }
+      const next = [...current];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+  }
+
+  function handleCanvasDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    setIsCanvasOver(false);
+    const payload = readDragPayload(event);
+    if (payload?.source !== "closet") return;
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const width = 28;
+    const itemHeight = (width * rect.width) / rect.height;
+    const x = Math.max(
+      0,
+      Math.min(100 - width, ((event.clientX - rect.left) / rect.width) * 100 - width / 2)
+    );
+    const y = Math.max(
+      0,
+      Math.min(100 - itemHeight, ((event.clientY - rect.top) / rect.height) * 100 - itemHeight / 2)
+    );
+    addItem(payload.itemId, { x, y, width });
+  }
+
+  async function save() {
+    if (selectedIds.length === 0) {
+      toast.error("Keep at least one item in this segment");
+      return;
+    }
+
+    setSaving(true);
+    const items: DailySegmentItem[] = selectedItems.map((item) => ({
+      ...item,
+      x: layouts[item.id]?.x ?? null,
+      y: layouts[item.id]?.y ?? null,
+      width: layouts[item.id]?.width ?? null,
+    }));
+
+    const { error } = await supabase.rpc("update_outfit_plan_segment_items", {
+      p_segment_id: segment.id,
+      p_items: items.map((item) => ({
+        itemId: item.id,
+        x: item.x,
+        y: item.y,
+        width: item.width,
+      })),
+    });
+
+    setSaving(false);
+
+    if (error) {
+      toast.error(error.message || "Couldn't save this segment");
+      return;
+    }
+
+    toast.success(`Updated “${segment.label}”`);
+    onSaved(items);
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-surface-200 bg-white px-4 py-3">
+        <div>
+          <p className="text-[11px] uppercase tracking-wide text-surface-400">Adjusting segment</p>
+          <h2 className="text-sm font-semibold text-surface-900">{segment.label}</h2>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onCancel}
+            disabled={saving}
+            className="px-3 py-2 rounded-lg border border-surface-200 text-xs font-medium text-surface-600 hover:bg-surface-50 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => void save()}
+            disabled={saving || selectedIds.length === 0}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-brand-600 text-white text-xs font-semibold hover:bg-brand-700 disabled:opacity-50"
+          >
+            {saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+            {saving ? "Saving…" : "Done"}
+          </button>
+        </div>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
+        <ClosetPicker
+          items={pickerItems}
+          activeCategory={activeCategory}
+          search={search}
+          onSearch={setSearch}
+          onCategory={setActiveCategory}
+          onAdd={addItem}
+          minHeightClass="min-h-[420px]"
+          maxListHeightClass="max-h-[420px]"
+        />
+        <OutfitCanvas
+          items={selectedItems}
+          layouts={layouts}
+          isOver={isCanvasOver}
+          onOver={setIsCanvasOver}
+          onDrop={handleCanvasDrop}
+          onRemove={removeItem}
+          onMove={moveItem}
+          onLayoutChange={(id, layout) =>
+            setLayouts((current) => ({ ...current, [id]: layout }))
+          }
+        />
       </div>
     </div>
   );

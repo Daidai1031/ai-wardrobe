@@ -18,10 +18,22 @@ export interface DailyOccasion {
   time: string;
 }
 
+/**
+ * A wardrobe item as it sits inside a plan segment, carrying the freeform
+ * Canvas geometry the user arranged. x/y/width are null for a freshly generated
+ * segment — the model never produces layout — and the UI falls back to the
+ * shared default grid in that case.
+ */
+export interface DailySegmentItem extends DailyWardrobeItem {
+  x: number | null;
+  y: number | null;
+  width: number | null;
+}
+
 export interface DailySegmentResponse {
   id: string;
   label: string;
-  items: DailyWardrobeItem[];
+  items: DailySegmentItem[];
   reasoning: string;
   changeFromPrevious?: string;
   eventIds: string[];
