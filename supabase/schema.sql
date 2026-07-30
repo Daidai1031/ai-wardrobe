@@ -14,6 +14,8 @@ create table public.profiles (
   email       text,
   name        text,
   city        text,
+  lat         numeric,                  -- geocoded once from `city` via geocodeCity() on profile save, not re-derived per weather call
+  lng         numeric,
   -- body profile
   height_cm   numeric,
   weight_kg   numeric,
@@ -168,6 +170,8 @@ create table public.travel_plans (
   id              uuid primary key default uuid_generate_v4(),
   user_id         uuid not null references public.profiles(id) on delete cascade,
   destination     text not null,
+  destination_lat numeric,              -- geocoded once from `destination` via geocodeCity() on trip creation
+  destination_lng numeric,
   start_date      date not null,
   end_date        date not null,
   travel_goals    text[] default '{}',  -- meetings, leisure, networking
@@ -359,6 +363,13 @@ alter table public.travel_plans  add column if not exists destination_timezone t
 alter table public.outfit_items  add column if not exists x numeric;
 alter table public.outfit_items  add column if not exists y numeric;
 alter table public.outfit_items  add column if not exists width numeric;
+
+-- 15a-2. Weather provider lat/lng caching (Phase 6.0-E follow-up): geocoded once via
+--        geocodeCity() when the user saves a city / creates a trip, not per weather call.
+alter table public.profiles      add column if not exists lat numeric;
+alter table public.profiles      add column if not exists lng numeric;
+alter table public.travel_plans  add column if not exists destination_lat numeric;
+alter table public.travel_plans  add column if not exists destination_lng numeric;
 
 -- 15b. New tables (Phase 6.0). Definitions mirror sections 10-12 above.
 create table if not exists public.google_connections (

@@ -178,9 +178,9 @@ Gmail 的价值不是「读邮件」，而是三类**结构化信号**：
 - UI 上必须是「我们从你的邮箱发现了这段行程，是否确认？」的**建议式**交互，不能默默替用户建行程。
 - **Gmail 永远只是加速器，不是主路径（D1）**：出差模式的主流程必须是手填行程也能完整走通。没授权 Gmail、Testing 模式下 token 过期、或者邮箱里根本没有确认邮件，功能都不能残废——最多是少一个「从邮箱导入」按钮。所有 Gmail 相关代码路径都在 `hasScope(userId, 'gmail.readonly')` 后面。
 
-**E. 天气 provider 接口（D2）**
+**E. 天气 provider 接口（D2）—— ✅ 已实现（2026-07-30）**
 
-`src/lib/weather.ts` 现在是直接写死 OpenWeather 的。抽成：
+`src/lib/weather/` 已经拆好：
 
 ```ts
 interface WeatherProvider {
@@ -189,11 +189,16 @@ interface WeatherProvider {
 }
 ```
 
-- `src/lib/weather/openweather.ts` —— 现有实现搬过来，只提供 `current()`，daily 继续用它，**不改行为**
-- `src/lib/weather/open-meteo.ts` —— 新增，提供 `forecast()`，weekly/travel 用。无需 API key
+- `src/lib/weather/openweather.ts` —— `getCurrentWeather(lat, lon)`，daily 继续用它，**行为不变**
+- `src/lib/weather/open-meteo.ts` —— `getForecast(lat, lon, days)`，weekly/travel 用（尚未接线，等 6.2/6.3）。无需 API key
 - `DailyForecast` 统一成 `{ date, tempMin, tempMax, precipitation, code, isEstimate }`
 - `isEstimate` 是给出差模式用的：超出预报范围（Open-Meteo 是 16 天）的日期退化成历史气候均值，UI 上必须标注这是估算，不能和真预报混在一起显示
 - 记账提醒：Open-Meteo 免费档限非商业用途 + CC BY 4.0 署名，商业化时要处理（见 D2）
+
+**城市名 → 坐标，只在两个时间点转换一次，不是每次查天气都转**：provider 层（`openweather.ts`/`open-meteo.ts`）只认 `lat`/`lon`，完全不知道「城市名」这个概念；城市名解析单独放在 `src/lib/weather/geocode.ts` 的 `geocodeCity(city)`，只在下面两处调用：
+- `profiles.city` 保存时 → 顺手转存进新增的 `profiles.lat`/`profiles.lng`（`profile-form.tsx` 的 `handleSave()`，只在城市文本真的改了才调用 `GET /api/geocode`，未改动则沿用已存的坐标）
+- 建 `travel_plans` 时 → 顺手转存进新增的 `travel_plans.destination_lat`/`destination_lng`（列已建好，写入逻辑等 6.3 出差模式落地时接上）
+`GET /api/geocode?city=` 是这条转换逻辑唯一的入口路由；`GET /api/weather` 仍额外支持直接传 `city`（每次请求都转换）纯粹是为了这个独立调试端点的方便，不代表调用惯例，daily/weekly/travel 的热路径一律读已存坐标。
 
 ### 6.1 Daily planning（升级现有 `/home`）
 

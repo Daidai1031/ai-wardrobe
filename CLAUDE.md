@@ -21,7 +21,7 @@ Next.js 16 App Router app ("ai-wardrobe") using Server Components + Route Handle
 
 - `src/app/(auth)/` — `login`, `signup` pages, unauthenticated.
 - `src/app/(dashboard)/` — the main app: `closet`, `closet/[id]`, `outfits`, `stylist`, `analytics`, `profile`, `travel`. Protected by `src/proxy.ts`.
-- `src/app/api/ai/` — server-side AI pipeline endpoints: `classify`, `convert`, `stylist`, `daily`; `src/app/api/weather/` proxies OpenWeatherMap.
+- `src/app/api/ai/` — server-side AI pipeline endpoints: `classify`, `convert`, `stylist`, `daily`; `src/app/api/weather/` proxies OpenWeatherMap; `src/app/api/geocode/` resolves a city name to coordinates (see "Weather & geocoding" below).
 - `src/app/api/keep-alive/` — a Vercel Cron target (schedule in `vercel.json`, every 3 days) that runs a trivial `select id from profiles limit 1` and returns an empty `200`, purely to keep the free-tier Supabase project from being paused after ~7 days of inactivity. Not part of any user flow; no auth (runs as anon under RLS, which is fine — the query still counts as DB activity). See README's "Keeping Supabase awake" for details.
 
 ### Auth & routing
@@ -31,6 +31,21 @@ Next.js 16 App Router app ("ai-wardrobe") using Server Components + Route Handle
 Two Supabase client factories exist and are not interchangeable:
 - `src/lib/supabase/client.ts` — browser client, for use in Client Components.
 - `src/lib/supabase/server.ts` — server client bound to Next's `cookies()`, for use in Server Components / Route Handlers.
+
+### Weather & geocoding
+
+`src/lib/weather/` is a provider abstraction (ROADMAP Phase 6.0-E / decision D2), split so the providers only ever deal in coordinates:
+
+- `types.ts` — shared `WeatherData`/`DailyForecast`/`GeoPoint` types and the `WeatherProvider` contract (`current(lat, lon)`, `forecast(lat, lon, days)`).
+- `openweather.ts` — `getCurrentWeather(lat, lon)`, used by `/api/ai/daily` (unchanged behavior, D2).
+- `open-meteo.ts` — `getForecast(lat, lon, days)`, for weekly/travel planning (not wired up yet — Phase 6.2/6.3). No API key; free tier is non-commercial + CC BY 4.0 attribution, see D2 for the commercial exit.
+- `geocode.ts` — `geocodeCity(city)`, the **only** place a city name becomes coordinates. Neither provider above knows what a city is.
+
+Coordinates are geocoded once and cached on the row, not re-derived per weather call — geocoding on every fetch would be a wasted external request per daily/weekly/travel generation for a city that never moves. The two call sites:
+- `profiles.city` → `profiles.lat`/`lng`, geocoded in `profile-form.tsx`'s `handleSave()` only when the city text actually changed (via `GET /api/geocode?city=`), then saved in the same `profiles` update.
+- `travel_plans.destination` → `destination_lat`/`destination_lng`, meant to be geocoded once at trip-creation time the same way — not implemented yet since `/travel` is still a placeholder (Phase 6.3).
+
+`GET /api/weather` is a standalone ad-hoc lookup endpoint (not on the daily/weekly/travel hot path) — it accepts either `lat`/`lon` directly or a `city` param that it geocodes per-request for convenience; that per-request geocode is fine there specifically because the endpoint isn't called repeatedly for the same city, unlike the cached paths above.
 
 ### The upload pipeline (core flow)
 

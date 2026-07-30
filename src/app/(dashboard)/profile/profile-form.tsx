@@ -40,11 +40,35 @@ export function ProfileForm({ profile }: { profile: Profile | null }) {
 
   async function handleSave() {
     setSaving(true);
+
+    // Re-geocode when the city text changed, or when it hasn't but we still have no
+    // coordinates for it (e.g. a profile whose city was saved before lat/lng existed).
+    // Coordinates barely ever change for a given city name, so this stays a one-time
+    // lookup per edit, not a per-save (let alone per-weather-fetch) cost.
+    const cityChanged = form.city !== (profile?.city || "");
+    const missingCoords = !!form.city && (profile?.lat == null || profile?.lng == null);
+    let geo: { lat: number | null; lng: number | null } = {
+      lat: profile?.lat ?? null,
+      lng: profile?.lng ?? null,
+    };
+    if (cityChanged || missingCoords) {
+      if (form.city) {
+        const res = await fetch(`/api/geocode?city=${encodeURIComponent(form.city)}`);
+        const data = res.ok ? await res.json() : null;
+        geo = { lat: data?.lat ?? null, lng: data?.lon ?? null };
+        if (!data) toast.error("Couldn't locate that city — saved anyway, but weather won't work for it yet");
+      } else {
+        geo = { lat: null, lng: null };
+      }
+    }
+
     const { error } = await supabase
       .from("profiles")
       .update({
         name: form.name || null,
         city: form.city || null,
+        lat: geo.lat,
+        lng: geo.lng,
         height_cm: form.height_cm ? Number(form.height_cm) : null,
         weight_kg: form.weight_kg ? Number(form.weight_kg) : null,
         body_shape: form.body_shape || null,

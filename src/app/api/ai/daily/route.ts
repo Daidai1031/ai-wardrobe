@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { createServerSupabase } from "@/lib/supabase/server";
-import { getWeather, type WeatherData } from "@/lib/weather";
+import { getCurrentWeather } from "@/lib/weather/openweather";
+import type { WeatherData } from "@/lib/weather/types";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
@@ -43,7 +44,7 @@ export async function GET() {
 
     const { data: profile } = await supabase
       .from("profiles")
-      .select("name, city, body_shape, preference_dna")
+      .select("name, city, lat, lng, body_shape, preference_dna")
       .eq("id", user.id)
       .single();
 
@@ -63,9 +64,11 @@ export async function GET() {
       });
     }
 
+    // Uses the profile's stored coordinates (geocoded once when the city was saved,
+    // see /api/geocode) — never re-geocodes here.
     let weather: WeatherData | null = null;
-    if (profile?.city) {
-      weather = await getWeather(profile.city);
+    if (profile?.lat != null && profile?.lng != null) {
+      weather = await getCurrentWeather(profile.lat, profile.lng);
     }
 
     const wardrobeSummary = wardrobe.map((item) => ({

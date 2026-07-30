@@ -7,6 +7,8 @@ export interface Profile {
   email: string | null;
   name: string | null;
   city: string | null;
+  lat: number | null;
+  lng: number | null;
   height_cm: number | null;
   weight_kg: number | null;
   body_shape: BodyShape | null;
@@ -108,6 +110,8 @@ export interface TravelPlan {
   id: string;
   user_id: string;
   destination: string;
+  destination_lat: number | null;
+  destination_lng: number | null;
   start_date: string;
   end_date: string;
   travel_goals: string[];
