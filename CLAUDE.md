@@ -75,7 +75,7 @@ When adding a schema change, update it in `supabase/schema.sql` and apply manual
 
 ### Environment variables
 
-Required: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `FAL_KEY`, `ANTHROPIC_API_KEY`. Optional: `OPENWEATHER_API_KEY` (weather-dependent features degrade gracefully without it).
+Required: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `FAL_KEY`, `ANTHROPIC_API_KEY`. Optional: `OPENWEATHER_API_KEY` (weather-dependent features degrade gracefully without it); `KEEP_ALIVE_ALERT_WEBHOOK` (Slack/Discord webhook the keep-alive cron pings on failure — unset means log-only).
 
 ## Doc maintenance (keep these files in sync with the code)
 

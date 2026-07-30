@@ -134,7 +134,7 @@
 | Vercel 部署 | ✅ 完成 | 自动部署 from GitHub |
 | 自定义域名 | ✅ 完成 | `closet.daidingrdesigns.com` → Vercel Domains 添加 |
 | 环境变量 | ✅ 完成 | SUPABASE_URL, SUPABASE_ANON_KEY, FAL_KEY, ANTHROPIC_API_KEY |
-| Supabase 心跳（防免费版暂停） | ✅ 完成 | `vercel.json` 里的 Vercel Cron（`0 0 */3 * *`，每 3 天）打 `GET /api/keep-alive` → 跑 `select id from profiles limit 1` 制造 DB 活动，避开免费版 7 天无活动自动暂停；返回空 200，无 body、无认证（anon 角色下 RLS 返回 0 行也算活动，不报错） |
+| Supabase 心跳（防免费版暂停） | ✅ 完成 | `vercel.json` 里的 Vercel Cron（`0 0 */3 * *`，每 3 天）打 `GET /api/keep-alive` → 跑 `select id from profiles limit 1` 制造 DB 活动，避开免费版 7 天无活动自动暂停；返回空 200，无 body、无认证（anon 角色下 RLS 返回 0 行也算活动，不报错）。查询失败时 best-effort POST 到可选的 `KEEP_ALIVE_ALERT_WEBHOOK`（Slack/Discord）再返回 500；**局限**：只能报「跑了但失败」，抓不到「cron 根本没触发」，后者需外部 dead-man's-switch（如 healthchecks.io） |
 
 ---
 

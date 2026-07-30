@@ -35,6 +35,7 @@ Fill in:
 - `FAL_KEY` — your existing fal.ai key
 - `ANTHROPIC_API_KEY` — from console.anthropic.com
 - `OPENWEATHER_API_KEY` — free at openweathermap.org/api (optional for Phase 1)
+- `KEEP_ALIVE_ALERT_WEBHOOK` — optional Slack/Discord incoming webhook; if set, the keep-alive cron pings it when the Supabase check fails (see "Keeping Supabase awake")
 
 ### 5. Install & Run
 
@@ -57,6 +58,8 @@ Add the same env vars in Vercel Dashboard → Project → Settings → Environme
 ### Keeping Supabase awake (free tier)
 
 Supabase pauses a free-tier project after ~7 days with no activity. `vercel.json` registers a Vercel Cron job (`0 0 */3 * *` — every 3 days at 00:00 UTC, comfortably inside the 7-day window) that hits `GET /api/keep-alive`. That route runs a trivial `select id from profiles limit 1` — enough DB activity to reset the inactivity timer — and returns an empty `200` (no body, `no-store`, `noindex`). No auth cookie is present on a cron request, so the query runs as the anon role and returns zero rows under RLS; that still counts as activity and is not an error. Vercel Cron is picked up automatically from `vercel.json` on deploy — no extra dashboard config. If you self-host or move off Vercel, replace this with any external uptime pinger on the same endpoint.
+
+**Failure alerts:** if the DB check itself fails (Supabase actually unreachable), the route best-effort POSTs to `KEEP_ALIVE_ALERT_WEBHOOK` (a Slack or Discord incoming webhook — the payload includes both `text` and `content` so either works) before returning `500`. Leave the env var unset to just log. **Limitation:** this only catches a *failed* run — it cannot detect the cron *not firing at all* (a route that never runs can't alert on itself). For a true dead-man's-switch, point an external monitor (e.g. a healthchecks.io "expected every N days" check) at this endpoint too.
 
 ### Custom Domain
 
