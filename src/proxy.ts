@@ -32,6 +32,7 @@ export default async function proxy(request: NextRequest) {
 
   // Redirect unauthenticated users away from dashboard
   const isDashboard = request.nextUrl.pathname.startsWith("/home") ||
+    request.nextUrl.pathname.startsWith("/plan") ||
     request.nextUrl.pathname.startsWith("/closet") ||
     request.nextUrl.pathname.startsWith("/outfits") ||
     request.nextUrl.pathname.startsWith("/stylist") ||

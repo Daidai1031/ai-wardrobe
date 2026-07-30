@@ -21,6 +21,7 @@ import { useState } from "react";
 
 const NAV_ITEMS = [
   { href: "/home", label: "Home", icon: Home },
+  { href: "/plan", label: "This Week", icon: Calendar },
   { href: "/closet", label: "My Closet", icon: Shirt },
   { href: "/outfits", label: "Outfits", icon: Sparkles },
   { href: "/stylist", label: "AI Stylist", icon: MessageCircle },

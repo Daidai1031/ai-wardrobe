@@ -513,8 +513,13 @@ create table if not exists public.outfit_plans (
     (source = 'travel' and travel_plan_id is not null)
     or (source <> 'travel' and travel_plan_id is null)
   ),
+  -- One plan per (user, local date). `source` is NOT part of this key: it records
+  -- how the plan was produced, not which plan a date has. Keying on it would let a
+  -- date carry both a 'daily' and a 'weekly' row -- two independent generations
+  -- with different inputs and different constraints, which would show the user
+  -- different outfits for the same day on /home and /plan with nothing syncing them.
   constraint outfit_plans_cache_key unique nulls not distinct
-    (user_id, plan_date, source, travel_plan_id)
+    (user_id, plan_date, travel_plan_id)
 );
 
 -- Upgrade the already-created Phase 6.0 table from one flat outfit/day to the
@@ -534,11 +539,27 @@ alter table public.outfit_plans
     (source = 'travel' and travel_plan_id is not null)
     or (source <> 'travel' and travel_plan_id is null)
   );
+-- Phase 6.2: drop `source` from the cache key so a date has exactly one plan.
+-- Collapse any pre-existing duplicates first, preferring a worn row (that one is
+-- history and must not be discarded) and otherwise the most recently generated.
+delete from public.outfit_plans p
+using public.outfit_plans q
+where p.user_id = q.user_id
+  and p.plan_date = q.plan_date
+  and p.travel_plan_id is not distinct from q.travel_plan_id
+  and p.id <> q.id
+  and (
+    (q.status = 'worn') > (p.status = 'worn')
+    or ((q.status = 'worn') = (p.status = 'worn') and q.generated_at > p.generated_at)
+    or ((q.status = 'worn') = (p.status = 'worn')
+        and q.generated_at = p.generated_at and q.id > p.id)
+  );
+
 alter table public.outfit_plans
   drop constraint if exists outfit_plans_cache_key;
 alter table public.outfit_plans
   add constraint outfit_plans_cache_key unique nulls not distinct
-    (user_id, plan_date, source, travel_plan_id);
+    (user_id, plan_date, travel_plan_id);
 
 create index if not exists idx_plans_user_date on public.outfit_plans(user_id, plan_date);
 
@@ -830,6 +851,11 @@ begin
   )
   on conflict on constraint outfit_plans_cache_key
   do update set
+    -- `source` is no longer part of the key, so an existing row must be retagged:
+    -- a week generation taking over a day previously planned ad hoc becomes
+    -- 'weekly', and regenerating one day from /home turns it back into 'daily'
+    -- because it is no longer bound by the week's cross-day constraints.
+    source = excluded.source,
     gap = excluded.gap,
     weather = excluded.weather,
     status = 'suggested',
@@ -891,6 +917,66 @@ begin
 end;
 $$;
 
+-- Write a whole week in one transaction (Phase 6.2). A partial week is worse than
+-- no week: the cross-day constraints that justify weekly planning at all (a
+-- statement piece not repeating inside 7 days, laundry realism) only hold if every
+-- day lands together.
+--
+-- Days already marked worn are skipped rather than overwritten -- that row records
+-- what the user actually wore, and a plan generated afterwards must not rewrite
+-- history. The skipped dates are returned so the UI can explain why a day was left
+-- alone instead of appearing to have silently failed.
+create or replace function public.replace_weekly_plans(p_days jsonb)
+returns date[]
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_day jsonb;
+  v_plan_date date;
+  v_skipped date[] := '{}';
+begin
+  if v_user_id is null then
+    raise exception 'Unauthorized';
+  end if;
+
+  if coalesce(jsonb_typeof(p_days), 'null') <> 'array'
+    or jsonb_array_length(p_days) = 0 then
+    raise exception 'A weekly plan must contain at least one day';
+  end if;
+
+  for v_day in select value from jsonb_array_elements(p_days)
+  loop
+    v_plan_date := (v_day ->> 'planDate')::date;
+
+    if exists (
+      select 1
+      from public.outfit_plans
+      where user_id = v_user_id
+        and plan_date = v_plan_date
+        and travel_plan_id is null
+        and status = 'worn'
+    ) then
+      v_skipped := v_skipped || v_plan_date;
+      continue;
+    end if;
+
+    perform public.replace_outfit_plan(
+      v_plan_date,
+      'weekly',
+      null,
+      v_day ->> 'gap',
+      coalesce(v_day -> 'weather', '{}'::jsonb),
+      coalesce(v_day -> 'segments', '[]'::jsonb)
+    );
+  end loop;
+
+  return v_skipped;
+end;
+$$;
+
 create or replace function public.mark_outfit_plan_worn(
   p_plan_id uuid,
   p_segments jsonb
@@ -915,16 +1001,19 @@ begin
     raise exception 'Unauthorized';
   end if;
 
+  -- No `source` filter (Phase 6.2): a date has exactly one plan, and confirming
+  -- what was worn is about the day, not about how the plan happened to be produced.
+  -- Restricting to 'daily' here would make a day taken over by a week plan
+  -- unconfirmable from /home.
   select *
   into v_plan
   from public.outfit_plans
   where id = p_plan_id
     and user_id = v_user_id
-    and source = 'daily'
   for update;
 
   if not found then
-    raise exception 'Daily plan not found';
+    raise exception 'Plan not found';
   end if;
 
   if v_plan.status = 'worn' then
@@ -1296,6 +1385,11 @@ revoke execute on function public.replace_outfit_plan(date, text, uuid, text, js
 grant execute on function public.replace_outfit_plan(date, text, uuid, text, jsonb, jsonb)
   to authenticated;
 
+revoke execute on function public.replace_weekly_plans(jsonb)
+  from public, anon;
+grant execute on function public.replace_weekly_plans(jsonb)
+  to authenticated;
+
 revoke execute on function public.mark_outfit_plan_worn(uuid, jsonb)
   from public, anon;
 grant execute on function public.mark_outfit_plan_worn(uuid, jsonb)
@@ -1305,3 +1399,65 @@ revoke execute on function public.save_outfit_plan_segment(uuid, jsonb, text)
   from public, anon;
 grant execute on function public.save_outfit_plan_segment(uuid, jsonb, text)
   to authenticated;
+
+-- ============================================================
+-- 16. HUMAN STYLIST BOOKINGS
+-- Re-runnable against an existing database. Availability is generated from the
+-- service schedule in /api/stylist/bookings; this table is the source of truth
+-- for occupied intervals. The exclusion constraint prevents two requests from
+-- racing into overlapping bookings, including a full in-person day colliding
+-- with one or more 30-minute online slots.
+-- ============================================================
+create table if not exists public.stylist_bookings (
+  id           uuid primary key default uuid_generate_v4(),
+  user_id      uuid not null references public.profiles(id) on delete cascade,
+  service_type text not null check (service_type in ('online_30', 'in_person_day')),
+  starts_at    timestamptz not null,
+  ends_at      timestamptz not null,
+  timezone     text not null,
+  status       text not null default 'confirmed'
+               check (status in ('confirmed', 'cancelled')),
+  notes        text,
+  created_at   timestamptz default now(),
+  updated_at   timestamptz default now(),
+  constraint stylist_bookings_valid_interval check (ends_at > starts_at),
+  constraint stylist_bookings_no_overlap
+    exclude using gist (
+      tstzrange(starts_at, ends_at, '[)') with &&
+    )
+    where (status = 'confirmed')
+);
+
+create index if not exists idx_stylist_bookings_user_start
+  on public.stylist_bookings(user_id, starts_at);
+
+-- `create table if not exists` cannot add a constraint to a pre-existing table.
+-- Keep the race-proof overlap guard present when this section is re-run.
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'stylist_bookings_no_overlap'
+      and conrelid = 'public.stylist_bookings'::regclass
+  ) then
+    alter table public.stylist_bookings
+      add constraint stylist_bookings_no_overlap
+      exclude using gist (
+        tstzrange(starts_at, ends_at, '[)') with &&
+      )
+      where (status = 'confirmed');
+  end if;
+end
+$$;
+
+alter table public.stylist_bookings enable row level security;
+
+drop policy if exists "Users read own stylist bookings" on public.stylist_bookings;
+create policy "Users read own stylist bookings"
+  on public.stylist_bookings for select
+  using (auth.uid() = user_id);
+
+-- There is deliberately no client insert/update/delete policy. The authenticated
+-- booking route validates offered slots, checks the global calendar through the
+-- service role, and writes on the caller's behalf. Direct browser writes are denied.

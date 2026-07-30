@@ -42,9 +42,19 @@ export interface DailySegmentResponse {
 
 export type DailyPlanStatus = "suggested" | "accepted" | "rejected" | "worn";
 
+/**
+ * How the plan for this date was produced. Since Phase 6.2 a date has exactly one
+ * plan, so this is provenance only — it never decides which plan a date has. `/home`
+ * uses it to tell the user today's outfit came from their week plan, and regenerating
+ * a day from `/home` flips it back to `"daily"` because that day is no longer bound
+ * by the week's cross-day constraints.
+ */
+export type DailyPlanSource = "daily" | "weekly" | "travel";
+
 export interface DailyResponse {
   planId: string | null;
   date: string;
+  source: DailyPlanSource;
   weather: WeatherData | null;
   occasions: DailyOccasion[];
   segments: DailySegmentResponse[];

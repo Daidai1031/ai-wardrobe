@@ -29,6 +29,8 @@ const CLASSIFICATION_PROMPT = `You are an expert fashion stylist AI. Analyze thi
   "confidence": 0.0 to 1.0 indicating how confident you are in the classification
 }
 
+Category rule: anything worn as a LAYER over something else — cardigans, sweaters, blazers, vests, jackets, coats — is "Outerwear", not "Tops". "Tops" is only for the garment worn directly against the body. Planning treats these differently: outerwear may be layered over a dress, tops may not, and outerwear is dropped on hot days.
+
 Return ONLY valid JSON, no markdown fences, no explanation.`;
 
 const MAX_DIMENSION = 1024;

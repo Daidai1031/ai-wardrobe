@@ -2,17 +2,28 @@ import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { createServerSupabase } from "@/lib/supabase/server";
 import { getCurrentWeather } from "@/lib/weather/openweather";
+import { getForecastAsCurrent } from "@/lib/weather/open-meteo";
 import type { WeatherData } from "@/lib/weather/types";
 import { eventsOnLocalDay } from "@/lib/calendar/day-bucket";
+import { describeGroups, groupOccasions } from "@/lib/planning/occasion-groups";
+import {
+  hydrateSegments,
+  readPlanForDate,
+  type StoredPlanBundle,
+} from "@/lib/planning/plans";
+import {
+  INCOMPATIBLE_WITH,
+  MAX_PER_CATEGORY_IN_SEGMENT,
+  REQUIRED_SLOTS,
+  TOO_WARM_FOR_SLEEVES_C,
+  buildCandidatePool,
+  enforceComposition,
+  enforceCoverage,
+  enforceWeather,
+  isLongSleeve,
+} from "@/lib/planning/plan-rules";
 import type { CalendarEvent } from "@/types/database";
-import type {
-  DailyOccasion,
-  DailyPlanStatus,
-  DailyResponse,
-  DailySegmentItem,
-  DailySegmentResponse,
-  DailyWardrobeItem,
-} from "@/types/daily";
+import type { DailyOccasion, DailyResponse, DailyWardrobeItem } from "@/types/daily";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
@@ -27,34 +38,6 @@ interface GeneratedSegment {
 interface GeneratedPlan {
   segments: GeneratedSegment[];
   gap?: string;
-}
-
-interface StoredPlan {
-  id: string;
-  plan_date: string;
-  gap: string | null;
-  weather: unknown;
-  status: DailyPlanStatus;
-  generated_at: string;
-}
-
-interface StoredSegment {
-  id: string;
-  position: number;
-  label: string;
-  reasoning: string;
-  change_from_previous: string | null;
-  event_ids: string[] | null;
-  saved_outfit_id: string | null;
-}
-
-interface StoredSegmentItem {
-  segment_id: string;
-  item_id: string;
-  position: number;
-  x: number | null;
-  y: number | null;
-  width: number | null;
 }
 
 const WARDROBE_SELECT =
@@ -204,85 +187,19 @@ function parseStoredWeather(value: unknown): WeatherData | null {
     : null;
 }
 
-async function readStoredPlan(
-  supabase: Awaited<ReturnType<typeof createServerSupabase>>,
-  userId: string,
-  localDate: string
-): Promise<{ plan: StoredPlan; segments: StoredSegment[]; segmentItems: StoredSegmentItem[] } | null> {
-  const { data: plan, error: planError } = await supabase
-    .from("outfit_plans")
-    .select("id, plan_date, gap, weather, status, generated_at")
-    .eq("user_id", userId)
-    .eq("plan_date", localDate)
-    .eq("source", "daily")
-    .is("travel_plan_id", null)
-    .maybeSingle();
-
-  if (planError) throw planError;
-  if (!plan) return null;
-
-  const { data: segments, error: segmentsError } = await supabase
-    .from("outfit_plan_segments")
-    .select("id, position, label, reasoning, change_from_previous, event_ids, saved_outfit_id")
-    .eq("outfit_plan_id", plan.id)
-    .order("position");
-
-  if (segmentsError) throw segmentsError;
-  const storedSegments = (segments || []) as StoredSegment[];
-  if (storedSegments.length === 0) return null;
-
-  const { data: segmentItems, error: itemsError } = await supabase
-    .from("outfit_plan_segment_items")
-    .select("segment_id, item_id, position, x, y, width")
-    .in(
-      "segment_id",
-      storedSegments.map((segment) => segment.id)
-    )
-    .order("position");
-
-  if (itemsError) throw itemsError;
-
-  return {
-    plan: plan as StoredPlan,
-    segments: storedSegments,
-    segmentItems: (segmentItems || []) as StoredSegmentItem[],
-  };
-}
-
 function buildStoredResponse(
-  stored: NonNullable<Awaited<ReturnType<typeof readStoredPlan>>>,
+  stored: StoredPlanBundle,
   wardrobe: Record<string, unknown>[],
   occasions: DailyOccasion[],
   cached: boolean
 ): DailyResponse {
   const byId = new Map(wardrobe.map((item) => [String(item.id), toClientItem(item)]));
-  const itemsBySegment = new Map<string, StoredSegmentItem[]>();
-
-  for (const row of stored.segmentItems) {
-    const existing = itemsBySegment.get(row.segment_id) || [];
-    existing.push(row);
-    itemsBySegment.set(row.segment_id, existing);
-  }
-
-  const segments: DailySegmentResponse[] = stored.segments.map((segment) => ({
-    id: segment.id,
-    label: segment.label,
-    reasoning: segment.reasoning,
-    changeFromPrevious: segment.change_from_previous || undefined,
-    eventIds: segment.event_ids || [],
-    savedOutfitId: segment.saved_outfit_id,
-    items: (itemsBySegment.get(segment.id) || [])
-      .sort((a, b) => a.position - b.position)
-      .map((row) => {
-        const item = byId.get(row.item_id);
-        return item ? { ...item, x: row.x, y: row.y, width: row.width } : null;
-      })
-      .filter((item): item is DailySegmentItem => Boolean(item)),
-  }));
+  const segments = hydrateSegments(stored, byId);
 
   return {
     planId: stored.plan.id,
     date: stored.plan.plan_date,
+    source: stored.plan.source,
     weather: parseStoredWeather(stored.plan.weather),
     occasions,
     segments,
@@ -342,6 +259,7 @@ function emptyResponse(
   return {
     planId: null,
     date: localDate,
+    source: "daily",
     weather,
     occasions: [],
     segments: [],
@@ -391,7 +309,7 @@ async function loadDailyContext(request: NextRequest) {
       .eq("user_id", user.id)
       .eq("archived", false)
       .limit(150),
-    readStoredPlan(supabase, user.id, localDate),
+    readPlanForDate(supabase, user.id, localDate),
     readDailyOccasions(supabase, user.id, localDate, timeZone),
   ]);
 
@@ -442,6 +360,79 @@ function formatDateLabel(localDate: string, timeZone: string) {
   }).format(new Date(`${localDate}T12:00:00Z`));
 }
 
+/**
+ * Current conditions for today, forecast for anything else. `?date=` lets a future
+ * day be (re)generated from the week view, and reasoning about Thursday's outfit
+ * using this moment's weather would be wrong in exactly the season where it matters
+ * most. Returns null rather than guessing when there are no coordinates or the date
+ * is outside the forecast horizon; the prompt then says the weather is unknown.
+ */
+async function weatherForDate(
+  profile: { lat?: number | null; lng?: number | null; city?: string | null } | null,
+  localDate: string,
+  timeZone: string
+): Promise<WeatherData | null> {
+  if (profile?.lat == null || profile?.lng == null) return null;
+
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone }).format(new Date());
+  return localDate === today
+    ? getCurrentWeather(profile.lat, profile.lng)
+    : getForecastAsCurrent(profile.lat, profile.lng, localDate, profile.city ?? null);
+}
+
+/**
+ * The rule lookups a single day needs. Built per request because they close over
+ * that request's wardrobe and weather.
+ *
+ * Unlike weekly, which has a real daily maximum from the forecast, daily only has
+ * one representative temperature (current conditions today, the forecast midpoint
+ * otherwise) — so the sleeve rule is marginally less strict here on a day that
+ * merely peaks above the threshold.
+ */
+function buildDailyRules(
+  wardrobe: Record<string, unknown>[],
+  candidateWardrobe: Record<string, unknown>[],
+  weather: WeatherData | null
+) {
+  const byId = new Map(wardrobe.map((item) => [String(item.id), item]));
+  const categoryFor = (itemId: string) => String(byId.get(itemId)?.category ?? "");
+  const isLongSleeveFor = (itemId: string) => {
+    const item = byId.get(itemId);
+    return item
+      ? isLongSleeve({
+          category: String(item.category),
+          subcategory: item.subcategory as string | null,
+          material: item.material as string | null,
+        })
+      : false;
+  };
+
+  return {
+    categoryFor,
+    isLongSleeveFor,
+    tempFor: () => weather?.temp ?? null,
+    pool: buildCandidatePool(candidateWardrobe.map((item) => String(item.id)), categoryFor),
+  };
+}
+
+/** Same order as weekly: removing can open a hole, and filling one can create a repeat. */
+function applyDailyRules(
+  days: { planDate: string; segments: { itemIds: string[] }[] }[],
+  localDate: string,
+  rules: ReturnType<typeof buildDailyRules>
+) {
+  const { categoryFor, isLongSleeveFor, tempFor, pool } = rules;
+  return enforceCoverage(
+    enforceWeather(enforceComposition(days, categoryFor), categoryFor, isLongSleeveFor, tempFor, pool),
+    categoryFor,
+    pool,
+    (itemId) => {
+      const temp = tempFor();
+      return temp != null && temp > TOO_WARM_FOR_SLEEVES_C && isLongSleeveFor(itemId);
+    }
+  );
+}
+
 function describeWeather(weather: WeatherData | null) {
   return weather
     ? `WEATHER: ${weather.temp}°C (feels like ${weather.feels_like}°C), ${weather.description}, wind ${weather.wind_speed} m/s, in ${weather.city}`
@@ -485,10 +476,7 @@ async function handleDaily(request: NextRequest, regenerate: boolean, body: Dail
       );
     }
 
-    let weather: WeatherData | null = null;
-    if (profile?.lat != null && profile?.lng != null) {
-      weather = await getCurrentWeather(profile.lat, profile.lng);
-    }
+    const weather = await weatherForDate(profile, localDate, timeZone);
 
     const wardrobeSummary = describeWardrobe(candidateWardrobe);
     const dateLabel = formatDateLabel(localDate, timeZone);
@@ -500,6 +488,11 @@ async function handleDaily(request: NextRequest, regenerate: boolean, body: Dail
       formality: occasion.formality,
       time: occasion.time,
     }));
+
+    // Segment count is decided here, not by the model: grouping consecutive
+    // occasions by formality is arithmetic, and leaving it to judgement produced
+    // the same day as two segments on one run and one on the next.
+    const occasionGroups = groupOccasions(occasionData.occasions);
 
     const exclusionInstruction =
       rejectedItemIds.length > 0
@@ -521,10 +514,26 @@ ${profile?.preference_dna ? `Preferences: ${JSON.stringify(profile.preference_dn
 USER'S AVAILABLE WARDROBE (${wardrobeSummary.length} items):
 ${JSON.stringify(wardrobeSummary, null, 2)}
 
-Build the plan as a sequence of "segments" — one segment per distinct look the user actually needs today. The number of segments is NOT fixed and must NOT just mirror the number of calendar occasions:
-- No occasions, or all occasions are similar in formality → 1 segment for the whole day.
-- Occasions with a meaningfully different formality or type (e.g. gym then a board meeting) → a separate segment for each.
-- Adjacent occasions with similar formality/type → merge them into one segment instead of repeating the same outfit as a separate entry.
+REQUIRED SEGMENTS — build EXACTLY these, in this order, one per entry. Occasions are already grouped by formality, so consecutive occasions that share an outfit are in the same entry and ones needing a change are separate. Do not merge or split them further:
+${
+  occasionGroups.length > 0
+    ? JSON.stringify(describeGroups(occasionGroups), null, 2)
+    : "(no calendar events today — build exactly ONE segment for the whole day)"
+}
+Each segment's "eventIds" must be exactly the "eventIds" of its entry above.
+
+Items that cannot be worn together in one segment:
+${JSON.stringify(INCOMPATIBLE_WITH, null, 2)}
+A dress already covers torso and legs, so it is never combined with a top or with trousers. Layer with outerwear instead.
+
+If today is above ${TOO_WARM_FOR_SLEEVES_C}°C, use NO outerwear and NO long-sleeve tops or dresses.
+
+Within one segment, at most this many items of each category can physically be worn at once:
+${JSON.stringify(MAX_PER_CATEGORY_IN_SEGMENT, null, 2)}
+These are hard caps on the whole segment, not per-occasion. Two pairs of trousers in one outfit is never valid; two tops (a shirt under a cardigan) is.
+
+Every segment must also be a COMPLETE outfit — each of these slots needs at least one item (a dress covers both torso and legs):
+${JSON.stringify(REQUIRED_SLOTS, null, 2)}
 
 For every segment after the first, prefer changing only what's necessary from the previous one rather than recomposing the whole outfit, unless the formality gap is too large. Every segment's "itemIds" must list the COMPLETE set worn during that segment. Put every calendar event covered by a segment in that segment's "eventIds"; use only event IDs shown above.
 
@@ -568,20 +577,34 @@ Respond with ONLY this JSON, no other text:
       );
     }
 
+    // Same last line of defence as weekly. Both rules are stated in the prompt too,
+    // but a model that ignores them must not be able to persist the result: weekly
+    // once produced a whole day whose outfit was a single pair of sandals, and
+    // another with two pairs of trousers in one look.
+    const rules = buildDailyRules(wardrobe, candidateWardrobe, weather);
+    const [wearableDay] = applyDailyRules(
+      [{ planDate: localDate, segments: generated.segments }],
+      localDate,
+      rules
+    );
+
     const { data: planId, error: persistError } = await supabase.rpc("replace_outfit_plan", {
       p_plan_date: localDate,
       p_source: "daily",
       p_travel_plan_id: null,
       p_gap: generated.gap || null,
       p_weather: weather || {},
-      p_segments: generated.segments,
+      p_segments: generated.segments.map((segment, index) => ({
+        ...segment,
+        itemIds: wearableDay.segments[index]?.itemIds ?? segment.itemIds,
+      })),
     });
 
     if (persistError || !planId) {
       throw persistError || new Error("Daily plan was generated but could not be saved");
     }
 
-    const persisted = await readStoredPlan(supabase, userId, localDate);
+    const persisted = await readPlanForDate(supabase, userId, localDate);
     if (!persisted) {
       throw new Error("Daily plan was saved but could not be read back");
     }
@@ -741,19 +764,25 @@ Respond with ONLY this JSON, no other text:
       );
     }
 
+    const [wearableSegmentDay] = applyDailyRules(
+      [{ planDate: localDate, segments: [{ itemIds: generated.itemIds }] }],
+      localDate,
+      buildDailyRules(wardrobe, candidateWardrobe, weather)
+    );
+
     const { error: persistError } = await supabase.rpc("regenerate_outfit_plan_segment", {
       p_segment_id: target.id,
       p_label: generated.label,
       p_reasoning: generated.reasoning,
       p_change_from_previous: previousSegment ? generated.changeFromPrevious ?? null : null,
       p_event_ids: generated.eventIds,
-      p_item_ids: generated.itemIds,
+      p_item_ids: wearableSegmentDay.segments[0].itemIds,
       p_next_change_from_previous: nextSegment ? generated.nextChangeFromPrevious ?? null : null,
     });
 
     if (persistError) throw persistError;
 
-    const persisted = await readStoredPlan(supabase, userId, localDate);
+    const persisted = await readPlanForDate(supabase, userId, localDate);
     if (!persisted) {
       throw new Error("Segment was regenerated but the plan could not be read back");
     }

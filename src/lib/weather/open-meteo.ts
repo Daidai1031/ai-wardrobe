@@ -1,4 +1,4 @@
-import type { DailyForecast } from "./types";
+import type { DailyForecast, WeatherData } from "./types";
 
 /**
  * Open-Meteo provider — multi-day forecast for weekly (Phase 6.2) and travel (Phase 6.3)
@@ -140,6 +140,83 @@ async function fetchClimateEstimate(
  * (`isEstimate: true`). Throws only if the live forecast request itself fails — the estimate
  * portion degrades to an empty tail rather than throwing.
  */
+/** WMO weather codes → plain English, so a forecast can describe itself the way OpenWeather's `description` does. */
+const WMO_DESCRIPTIONS: Record<number, string> = {
+  0: "clear sky",
+  1: "mainly clear",
+  2: "partly cloudy",
+  3: "overcast",
+  45: "fog",
+  48: "freezing fog",
+  51: "light drizzle",
+  53: "drizzle",
+  55: "heavy drizzle",
+  56: "freezing drizzle",
+  57: "heavy freezing drizzle",
+  61: "light rain",
+  63: "rain",
+  65: "heavy rain",
+  66: "freezing rain",
+  67: "heavy freezing rain",
+  71: "light snow",
+  73: "snow",
+  75: "heavy snow",
+  77: "snow grains",
+  80: "light rain showers",
+  81: "rain showers",
+  82: "violent rain showers",
+  85: "light snow showers",
+  86: "snow showers",
+  95: "thunderstorm",
+  96: "thunderstorm with hail",
+  99: "thunderstorm with heavy hail",
+};
+
+export function describeWeatherCode(code: number): string {
+  return WMO_DESCRIPTIONS[code] ?? "unsettled";
+}
+
+/**
+ * A forecast day expressed in the `WeatherData` shape the daily plan stores and
+ * renders. Needed because a plan can be generated for a date that isn't today —
+ * regenerating Thursday from the week view must reason about Thursday's weather,
+ * not this moment's. `temp` is the midpoint of the day's range and `feels_like`
+ * mirrors it, since a daily forecast has no apparent-temperature equivalent;
+ * `wind_speed` is 0 for the same reason. Returns null when the date is outside the
+ * forecast horizon rather than guessing.
+ */
+export async function getForecastAsCurrent(
+  lat: number,
+  lon: number,
+  date: string,
+  city: string | null
+): Promise<WeatherData | null> {
+  const today = new Date().toISOString().slice(0, 10);
+  const offset = Math.round(
+    (new Date(`${date}T00:00:00Z`).getTime() - new Date(`${today}T00:00:00Z`).getTime()) / 86_400_000
+  );
+  if (offset < 0) return null;
+
+  try {
+    const forecast = await getForecast(lat, lon, offset + 1);
+    const day = forecast.find((entry) => entry.date === date);
+    if (!day) return null;
+
+    return {
+      city: city || "your location",
+      temp: Math.round((day.tempMin + day.tempMax) / 2),
+      feels_like: Math.round((day.tempMin + day.tempMax) / 2),
+      humidity: 0,
+      description: describeWeatherCode(day.code),
+      icon: "",
+      wind_speed: 0,
+    };
+  } catch (err) {
+    console.error("getForecastAsCurrent error:", err);
+    return null;
+  }
+}
+
 export async function getForecast(
   lat: number,
   lon: number,
