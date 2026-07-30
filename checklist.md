@@ -90,9 +90,9 @@
 | AI Stylist Chat | ✅ 完成 | 基于真实衣橱推荐；**目前只回复纯文字**，下一步计划改成 Canvas 形式展示推荐搭配并可编辑（呼应 outfits 的自由拼贴 Canvas） |
 | 搭配创建/保存 + 编辑 | ✅ 完成 | `outfits-view.tsx`：衣橱单品拖入/点击加入、自由定位、缩放、层级调整、名称/合集/备注及 Supabase 保存；Canvas 使用去背图透明展示；已保存搭配可从库卡片「Edit」按钮打开进 Canvas 编辑并保存回原 outfit（`outfit_items` 新增 `x`/`y`/`width` 持久化自由坐标，见「已完成任务详情」） |
 | 天气 API 集成 | ✅ API 就绪 | 需要 OpenWeather Key；`stylist` route 已预留 `context.weather` 字段待接入 |
-| 每日推荐 (Home Page) | ✅ 天气+衣橱版完成 / ❌ Calendar 部分待开发 | `/` 现在重定向到 `/home`（登录）或 `/login`；`/home` 拉取 profile `lat`/`lng`（保存 city 时经 `geocodeCity()` 转一次存下，见下方「天气 provider + 坐标缓存」）→ OpenWeather 天气 + 活跃衣橱，让 Claude Haiku 从真实衣橱里选一套当日搭配并给出理由/衣橱缺口提示；Google Calendar 部分仍未接入（无 token 存储，`context.calendar` 暂未使用），见任务 1 详情。**ROADMAP Phase 6.1 会接日历 + 把结果从 localStorage 迁到新表 `outfit_plans`** |
+| 每日推荐 (Home Page) | ✅ Phase 6.1 完成且已真实验证（2026-07-30） | `/home` 已接天气 + `eventsOnLocalDay()` + 活跃衣橱，Haiku 动态输出 1–N 个 segments；三层数据库结构是唯一缓存，普通同日 GET 不再调 Claude；Dislike 明确排除旧 item IDs；segment 可编辑和单独保存；Worn 原子写 journal，并让当天出现过的每件单品统一 `times_worn +1`。端到端验证详见下方「任务 1」 |
 | Weekly planning (7 天规划) | ❌ 待开发 | ROADMAP Phase 6.2。需要 OpenWeather 5day/3hour 预报 + 当周日历 + 「7 天内 statement piece 不重复」等约束 |
-| Google Calendar 集成 | ❌ 待开发 | ROADMAP Phase 6.0。`stylist` route 已预留 `context.calendar` 字段；schema 里没有存 token/事件的表，需新增 `google_connections` + `calendar_events` |
+| Google Calendar 集成 | ✅ OAuth/事件同步/语义化/daily 接线 / ❌ stylist/weekly 待接 | daily 已用真实缓存事件构建动态 segments；`stylist` route 的 `context.calendar` 仍未接线 |
 | Gmail 集成（行程/dress code 信号） | ❌ 待开发 | ROADMAP Phase 6.0/6.3。用途是行程确认邮件 → 自动发现出差、活动邀请、邮件里的明文 dress code；只存抽取后的结构化字段，不存正文。注意 Gmail readonly 属于 Google restricted scope，上线前需通过 Google 验证审核 |
 
 ### Phase 4 — Calendar + Analytics (Module 10, 11)
@@ -117,10 +117,11 @@
 
 | 功能 | 状态 | 依赖 / 备注 |
 |------|------|------|
-| Phase 6.0 schema（3 张新表 + 字段） | ✅ 已执行（表就绪） | 2026-07-30，分支 `phase-6.0-schema`。`google_connections` / `calendar_events` / `outfit_plans` + `profiles.roles/timezone` + `travel_plans.destination_timezone` + 补跑 `outfit_items.x/y/width` 已写进 `schema.sql`（底部 section 15 迁移块）**并已在 Supabase SQL Editor 跑通**。⚠️ 仍待办：`database.ts` 类型未同步、无代码读写。`google_connections` 故意开 RLS 不建 policy（只 service role 可访问 token） |
-| Google OAuth 底座（Calendar + Gmail scope、token 刷新） | ❌ 待开发（表已就绪） | Phase 6.0，Daily/Weekly/出差三者共用的前置条件。`google_connections` 表已在 schema 里 |
-| `outfit_plans` 统一计划表 | ❌ 代码待开发（表已就绪） | Phase 6.0。日/周/出差三种来源共用，替掉现在 `/home` 的 localStorage 缓存 |
-| 日历事件语义化（occasion + formality） | ❌ 待开发（表已就绪） | Phase 6.0。按周批量调一次 Haiku 并缓存进 `calendar_events`，不按事件逐个调 |
+| Phase 6.0/6.1 schema | ✅ 全部已在生产库执行（2026-07-30） | 6.0 的三张表已在生产建好；6.1 把扁平 `outfit_plans` 升级为父表 + `outfit_plan_segments` + `outfit_plan_segment_items`，修正 nullable unique，并增加 journal 快照及三个原子 RPC。`database.ts` 已补齐 6.0/6.1 类型。`google_connections` 继续保持只有 service role 可访问。执行后已用 `information_schema`/`pg_constraint` 复核：两张新表、三个 RPC、`UNIQUE NULLS NOT DISTINCT` 约束、`outfit_plans` 旧扁平列已清、`outfit_journal` 的 `plan_segment_id`/`item_ids` 均到位 |
+| Google OAuth 底座 — Calendar 一路 | ✅ 已实现且已真实跑通 | 2026-07-30，分支 `phase-6.0-google-oauth`。`GET /api/google/auth?scope=calendar`（CSRF state + httpOnly cookie）→ Google consent（`calendar.readonly`，`access_type=offline&prompt=consent`）→ `GET /api/google/callback` 换 token、upsert `google_connections`（真实拿到的 `scopes` 数组，不是请求时设的）→ `src/lib/google/client.ts` 的 `getAccessToken()`/`hasScope()`，走 `src/lib/supabase/service.ts` 新增的 service-role client（`google_connections` 无 RLS policy，只有它能读写）。refresh 失败会打 `invalid_at` 时间戳、返回 `null`，不抛 500。**已真实验证（2026-07-30）**：在 Testing 模式项目下完整走通 consent（含「Google hasn't verified this app」→ Advanced → 继续）→ callback → `/profile?google_calendar=connected`，直接查库确认 `google_connections` 行写入正确（`scopes=["…/calendar.readonly"]`、`expires_at` 约 1 小时后、`invalid_at=null`、`google_email=null`——预期如此，因为只请求了 calendar scope，没带 email/openid）。没有设置页面 UI（连接/断开按钮）。Gmail 那一路（`?scope=gmail`）故意没写，下一个任务再做 |
+| `outfit_plans` 统一计划结构 | ✅ 完成且已真实验证 | 日/周/出差共用日期父行，动态段落与单品使用关系型子表；daily 已读写并完全替换 localStorage |
+| 日历事件抓取 + 语义化（occasion + formality） | ✅ 已实现且已真实验证 | 2026-07-30，分支 `phase-6.0-google-oauth`。`GET /api/google/calendar/sync` 拉真实 Google Calendar 事件（`src/lib/google/calendar.ts`）→ upsert 进 `calendar_events` → 对 `occasion IS NULL` 的行批量调一次 Haiku（`src/lib/calendar/classify-events.ts`，只喂 title/location/attendee_count，不喂 description，避免用户自己写的「预期答案」污染分类）。**已用真实 Google Calendar 里手动建的 8 个覆盖不同场合的测试事件跑通**：occasion 标签基本准确（`board_meeting`/`gym`/`travel`/`dinner`/`coffee`/`doctor_appointment` 等），6/8 formality 完全命中用户预期，2 个（board meeting、client call）低了 1 档——board meeting 期望 5 实际给 4，可能是模型把 5 分留给纯黑领结场合、公司会议算 4，如果要卡死「board meeting=5」需要在 prompt 里显式区分「business formal」和「black tie」。重跑同一批事件验证了「同一个 `google_event_id` 只分类一次」：occasion 已存在的行不会再触发 Haiku 调用 |
+| 本地日期分桶工具（`day-bucket.ts`） | ✅ 已实现且已真实验证 | 2026-07-30。`src/lib/calendar/day-bucket.ts` 的 `eventsOnLocalDay(events, localDate, timeZone)`——daily（6.1）和 weekly（6.2）共用同一份时区转换 + 跨天事件重叠判断逻辑，不各写一份。全天事件特殊处理：按 UTC 日期字符串直接比较，不经过时区转换（因为全天事件本来就没有真实的时刻，硬转时区会把它错误地挪到相邻的本地日）。**已用真实 8 个测试事件验证**：`America/New_York` 时区下，9:45am/3pm/8:15pm（跨 UTC 日期）三个事件正确落进同一个本地日——命中用户「一天三个场合」的测试意图；2 天的 Boston 出差全天事件正确出现在两个本地日上、且不出现在 exclusive 的结束日；换成 `Asia/Shanghai` 时区后分桶结果确实不同（不是写死某个时区）。这一步做完才开始 6.1 的 daily 专属逻辑 |
 | 冷启动 Onboarding（问卷 + 风格滑卡） | ❌ 待开发 | Phase 7。`preference_swipes` 表 + `profiles.preference_dna` 字段都已就绪；ROADMAP 里建议把它排在 Avatar/Shopping 之前，因为它是所有推荐质量的上游且成本最低。唯一非代码工作量是准备 20–40 张风格参考图 |
 | Avatar 生成（fal.ai） | ❌ 待开发 | Phase 8。`profiles` 的 `skin_tone`/`hair_color`/`hair_length`/`body_shape` 就是给这个预留的。**成本量级和文本调用不同，必须缓存 + 限流**；虚拟试穿比静态 avatar 难得多，建议分两步 |
 | Shopping Recommendations | ❌ 待开发 | Phase 9。缺口信号已经在产出（daily 的 `gap`、出差 capsule 缺口、Analytics 类别失衡）只是丢掉了。**最大未决问题是商品数据源**，建议先接一个联盟 feed 而不是做通用爬虫 |
@@ -140,11 +141,11 @@
 
 ## 下一步开发任务
 
-> **完整的优先级和技术方案已移到 [`ROADMAP.md`](./ROADMAP.md)。** 当前第一步是 ROADMAP Phase 6.0（Google OAuth 底座 + `google_connections`/`calendar_events`/`outfit_plans` 三张新表 + 事件语义化），它是 Daily 接日历、Weekly 规划、出差模式三者共同的前置条件。
+> **完整的优先级和技术方案已移到 [`ROADMAP.md`](./ROADMAP.md)。** Phase 6.0 共用底座和 6.1 Daily 均已完成并真实验证（含 section 15 migration 已在生产库执行）；进入 Phase 6.2 Weekly 之前先清「6.1 收尾」两项：按 segment 单独 Dislike、「Adjust this segment」改 Canvas 编辑。
 >
 > 下面两条保留下来，是因为它们记录了已经落地的实现细节和明确的剩余缺口：
 
-### 任务 1: 每日推荐 (Home Page) — ✅ 天气+衣橱版完成，❌ Google Calendar 部分待开发（→ ROADMAP Phase 6.1）
+### 任务 1: 每日推荐 (Home Page) — ✅ Phase 6.1 完成且已真实验证（2026-07-30）
 
 - 需求: dashboard 需要一个真正的首页，结合 Google Calendar（当天日程）+ OpenWeather（当天天气）生成每日穿搭推荐。原来 `/` (`src/app/page.tsx`) 只是重定向到 `/closet` 或 `/login`，dashboard 路由组下没有独立首页。
 - 已实现:
@@ -160,7 +161,20 @@
 - **后续修正 (2026-07-10)**:
   - 修了一个"每次打开/刷新页面都会自己重新生成一次推荐"的问题：`daily-recommendation.tsx` 现在把当天的推荐结果（含反馈状态）缓存进 `localStorage`（key 按 `userId + 当天日期`），挂载时先读缓存，有就直接用，不重新 fetch；只有用户主动 Dislike 才会重新请求 `/api/ai/daily` 并覆盖缓存。移除了原来单独的「Regenerate」按钮，改成 Like/Dislike 两个按钮：Like 只是记录反馈（不重新生成），Dislike 直接重新生成一套新推荐。
   - 新增「Add to outfits」按钮：直接复用 `outfits-view.tsx` saveOutfit 同款客户端 Supabase insert 逻辑（浏览器端 `createClient()`），把当天推荐的 items 写入 `outfits`（`ai_generated: true`，`ai_reasoning` 存 Claude 给的理由，`folder: "Everyday"`）+ `outfit_items`，写完标记为已保存并禁用按钮防止重复保存。
-- 待做 (Google Calendar 部分，未在本次任务中实现): OAuth 接入（schema 里没有存 token/事件的表，需要新表或复用 `profiles`）；把当天日程传给 `/api/ai/daily` 的 prompt（`context.calendar` 字段目前只在 `stylist` route 里预留，`daily` route 还没接这个字段）。
+- **Phase 6.1 升级（2026-07-30）**:
+  - `outfit_plans` 改为每天/来源/出差范围一个父行，新增 `outfit_plan_segments` 和 `outfit_plan_segment_items`；原普通 nullable unique 改成 `UNIQUE NULLS NOT DISTINCT`，保证 daily/weekly 的 `travel_plan_id=NULL` 也会正确命中 upsert。
+  - `GET /api/ai/daily` 先查数据库缓存；只有 miss 才取天气、调用 Haiku 并通过 `replace_outfit_plan` 原子写入。日历输入来自已验证的 `eventsOnLocalDay()`，输出是动态 1–N 个完整 segments。
+  - `POST /api/ai/daily` 是唯一显式重生成入口：接收当前所有 segment item IDs 的去重集合，验证都是用户自有单品，在候选集和 prompt 两层排除后覆盖同一计划并更新 `generated_at`。
+  - `/home` 删除全部 localStorage 读写；按 segment 展示、增删实际单品、单独通过 `save_outfit_plan_segment` 保存到 Looks。Like 状态也写回 `outfit_plans.status`。
+  - `mark_outfit_plan_worn` 在单个事务内保存调整后的 segment items、为每段写一条带 `item_ids` 快照的 `outfit_journal`，并更新 distinct 单品的 `times_worn/last_worn_at`。已确认计数口径：同一单品跨多个 segment，当天只 `+1`。这是本次唯一新增的 `wardrobe_items` 写路径。
+  - **已真实验证（2026-07-30，真实账号 + 生产库）**：section 15 migration 在 Supabase SQL Editor 执行并复核通过后，用真实 Google Calendar 事件（当天 = 全天 Conference + 傍晚 Gym）跑通全链路：
+    - **动态分段**：Haiku 按当天两个真实场合输出 2 段，label 为 `Conference`/`Gym`，两段 `event_ids` 各自绑定正确的事件行，第 2 段的 `change_from_previous` 正确描述了换装动作。
+    - **缓存**：连续刷新 `/home` 只有 1 条 `outfit_plans` 行、`generated_at` 完全不变、`GET /api/ai/daily` 稳定在 ~300ms（真调 Haiku 是秒级）。证明 `UNIQUE NULLS NOT DISTINCT` 的 upsert 命中，而不是每次插新行——**没有这个修饰符时会静默地每次刷新都插一条新计划并重复计费**，是这次最值得盯的一项。
+    - **Dislike**：`plan_id` 不变（覆盖同一父行）、`generated_at` 刷新、新旧 item IDs **零重叠**，推荐内容实质变化（黑西裤西装 → 海军蓝连衣裙叠白衬衫）。
+    - **保存到 Looks**：`saved_outfit_id` 回填，`outfits` 行为 `ai_generated=true`/`folder='Everyday'`/`ai_reasoning` = 该段 reasoning，`outfit_items` 件数等于用户调整后的件数（5，不是 Claude 原始的 6）。
+    - **Worn**：两段各写一条 `outfit_journal`；Conference 段因单品集合与已保存 outfit 一致而带上 `outfit_id`、Gym 段为 `NULL`——`mark_outfit_plan_worn` 的两个分支一次覆盖。人为让一件黑配饰同时出现在两段后，**它的 `times_worn` 只 `+1` 而不是 `+2`**；被用户从 Conference 删掉的 navy 连衣裙保持 `0`（证明计数跟的是调整后的集合，不是 Claude 的原始输出，即 D10）；8 件参与单品的 `last_worn_at` 全部是同一时间戳，未参与的 40+ 件纹丝不动。`status` 置为 `worn`。
+  - **验证过程中踩到的两个坑（不是代码 bug，但要知道）**：① Supabase SQL Editor 里 `auth.uid()` 永远返回 `NULL`（以 `postgres` 角色直连、无 JWT），所有排查用的 SQL 必须换成字面 uuid，否则一律「0 rows」；② SQL Editor 一次运行多条语句只显示最后一条的结果集，多项检查要 `union all` 合并成一个结果。
+  - **发现的行为与缺口**：天气在生成时快照进 `outfit_plans.weather`、当天不再刷新（改城市后旧计划仍显示旧城天气，需 Dislike 重生成）；`profiles.timezone` 为 NULL 时静默回落 `"UTC"` 而前端不传 `?timezone=`；Dislike 只能整天重生成、不能按 segment 单独重来；「Adjust this segment」仍是 `<select>` 下拉而非 Canvas。后两条列为「6.1 收尾」，方案见 ROADMAP。
 
 ### 任务 2: AI Stylist 用 Canvas 展示推荐并可编辑 — ❌ 待开发（建议并入 ROADMAP Phase 6.1 一起做，因为两者都要给搭配加结构化输出）
 
