@@ -9,7 +9,7 @@
 
 ## 一、进度快照（截至 2026-07-30）
 
-仓库只有 1 个 commit（`ecdda57`），但代码量已覆盖 Phase 1–4 的大部分。
+Phase 1–4 已基本覆盖，Phase 6.0 / 6.1 / 6.2 均已落地（6.0/6.1 已真实验证，6.2 待验证）。
 
 ### ✅ 已完成且已真实验证
 
@@ -23,25 +23,28 @@
 | Analytics | Style DNA 分布、穿着统计、Closet Health、Declutter 建议 |
 | Profile | 身体数据 + 外貌字段（`skin_tone`/`hair_color`/`hair_length`/`body_shape` 已预留给 avatar） |
 | Home 每日推荐 | `/home` + `GET/POST /api/ai/daily`：天气 + 当日本地日历事件 + 活跃衣橱 → Haiku 动态生成 1–N 个 segments；数据库按日本地缓存；Dislike 排除旧单品；segment 可编辑/单独保存；Worn 原子写 journal 和穿着次数 |
-| AI Stylist | 文字聊天，system prompt 内联真实衣橱 JSON |
+| AI Stylist | 多轮需求澄清 → 真实衣橱 ID 校验 → 可视化 Canvas + 理由/造型细节；Canvas 可编辑并保存到 Looks |
+| Google Calendar | 独立 OAuth + `/profile` 连接/断开设置页；事件同步与 Haiku 语义化；`eventsOnLocalDay()` 本地日分桶。daily 和 weekly 都已接入 |
+| Human Stylist 预约 | `/stylist` 内提供 30 分钟线上 / 9–5 线下全天两种服务；服务工时固定在搭配师时区、转换成用户本地时间显示，后台排除已占用区间并防止并发重复预约 |
 
 ### ⚠️ 代码完成但未验证
 
 - 耳环/手镯的泛化配对路径（只验证过鞋子）
 - `mode="single"` 跳过检测这条路径未在真实账号点过上传
+- AI Stylist 的多轮澄清 → Canvas → 编辑/保存已过 type/build；真实 Anthropic 首次返回暴露的纯文本解析 502 已改为 forced tool call + 文本降级，修复后尚待登录账号重新跑完整链路
+- Human Stylist 预约代码已完成，但生产库尚需手动执行 `schema.sql` section 16 后再真实预约验证
 - ~~`/home` 的 Phase 6.1 多段计划~~ ✅ 已真实验证（2026-07-30），见 6.1 小节
 - ~~`outfit_items` 的 `x/y/width` 三列需要在 Supabase SQL Editor 手动跑~~ ✅ 已随 Phase 6.0 section 15 迁移块一起在生产库执行（2026-07-30）
+- **Phase 6.2 Weekly planning（`/plan`）**：代码完成、type/build 通过，但需重跑 section 15（唯一键去掉 `source` + `replace_weekly_plans`），且规则引擎（轮换/结构/完整度/天气）的最后一版尚未真实生成验证
+- `/profile` 的 Connected accounts 设置页只过了 build，未真人点过连接/断开
 
 ### ❌ 未开始
 
 | 项 | 现状 |
 |---|---|
-| Google Calendar | OAuth、事件抓取/语义化、本地日期分桶、`/profile` 的连接/断开设置 UI 均已完成；daily 已调用 `eventsOnLocalDay()` 并把事件 ID/标题/occasion/formality/本地时间交给动态 segment prompt。Weekly 尚未接入 |
-| Gmail | 从未进入过计划 |
-| Weekly planning | 无 |
+| Gmail | 从未进入过计划（D1 里定了策略，`?scope=gmail` 目前 400） |
 | 出差模式 | `/travel` 是纯占位页；`travel_plans` 表建好了但零读写 |
 | Capsule Wardrobe / Packing List | 无 |
-| Stylist Canvas 化 | stylist route 仍只返回 `{ reply }` 纯文字 |
 | Folders UI | schema 就绪，无前端 |
 | Outfit Journal / 日历视图 | schema 就绪，无前端 |
 | Preference Engine（滑卡） | `preference_swipes` 表就绪，无前端 |
@@ -254,7 +257,25 @@ interface WeatherProvider {
 
 **已真实验证（2026-07-30）**：单段 ↺ 后目标段单品全换、**其它段一字不动**、下一段的 `change_from_previous` 正确改写成引用新单品；Canvas 排完版刷新页面版式仍在；存进 Looks 后在 `/outfits` 打开是同一张拼贴；Worn 确认后几何未被抹掉。逐条细节见 `checklist.md` 任务 1b。
 
-### 6.2 Weekly planning（新页面 `/plan`）
+### 6.2 Weekly planning（新页面 `/plan`）— ✅ 代码完成（2026-07-30），⚠️ 待重跑 section 15 后真实验证
+
+**落地时敲定的两个结构决策（原方案没写）：**
+
+- **一个日期只有一条计划。** `outfit_plans` 的唯一键从 `(user_id, plan_date, source, travel_plan_id)` 改成 `(user_id, plan_date, travel_plan_id)`。原来含 `source` 意味着同一天可以并存 daily 和 weekly 两行，而那是**两次独立的 Claude 调用**（输入不同、跨天约束不同），必然选出不同衣服 —— 同一个周四在 `/home` 和 `/plan` 显示两套，且没有任何机制让它们同步。现在 `source` 退化成溯源标记：`/home` 读「今天的计划」不问出处并标注「From your week plan」，单天重算会把它翻回 `daily`（因为这天不再受整周约束），`/plan` 上标「Adjusted」。**代价**：动了 6.1 刚验完的 daily 代码，那几条要回归验。
+- **周边界 = 从今天起 7 天**，不是周一到周日。周六打开也有 7 天有效内容，且和 Open-Meteo 从今天起算的预报窗口天然对齐。
+
+**另外两个和原方案不同的实现选择：**
+
+- **`GET /api/ai/weekly` 只读、绝不调 Claude**，生成走 `POST`。和 daily 的「cache miss 就生成」不同——日推是一次小调用、用户预期它自动发生；周计划吃整个衣橱，打开 `/plan` 就烧掉一次不合理。所以 GET 只展示预报/日历/已有计划，生成是主动按钮。
+- **单天重生成复用 `POST /api/ai/daily?date=`**，没有新开端点。那条路径本来就处理单个日期，而且会把 `source` 正确翻回 `daily`。接的时候发现一个真 bug：daily 一直用 `getCurrentWeather()`，在 `/plan` 上重算周四会拿**此刻**的天气去推理周四的穿搭，换季时错得最厉害。已加 `weatherForDate()`：是今天才用实况，否则走 Open-Meteo 预报（新增 `getForecastAsCurrent()`）。
+
+**新增的共用模块**：`src/lib/planning/plans.ts`（daily 读 1 天、weekly 读 7 天，join/排序/带 layout 完全一样，抽出来共用）和 `src/lib/planning/candidates.ts`（D8 硬过滤，分级放宽 + 每品类保底，避免过滤到没东西可选）。
+
+⚠️ **需要重跑 section 15**（唯一键变更含去重、`replace_weekly_plans` 新函数、`replace_outfit_plan` 和 `mark_outfit_plan_worn` 有改动）。
+
+原始方案如下，保留为对照：
+
+
 
 - `GET /api/ai/weekly?start=YYYY-MM-DD`
   - 天气：**Open-Meteo**（D2），`forecast_days=7`，`daily=temperature_2m_max,temperature_2m_min,precipitation_sum,weather_code`，`timezone=auto`
@@ -350,6 +371,8 @@ interface WeatherProvider {
 - 关键产品判断：推荐必须**和已有衣橱挂钩**（"这件能和你已有的 6 件搭"），否则就是普通导购，没有差异化
 
 ### Phase 10：搭配师授权访问 + Folk CRM 集成
+
+**预约入口已提前完成（2026-07-30，待生产迁移/真实验证）**：`/stylist` 已有 30 分钟线上与 9–5 线下全天两种服务的弹窗式 slot picker。服务工时固定在 `STYLIST_TIME_ZONE`（默认 `America/New_York`），同一批 UTC 时段转换成浏览器 IANA 时区显示，避免每个客户的浏览器各自“生成一套搭配师工时”；`GET/POST /api/stylist/bookings` 用 service role 读取全局占用、服务端重验被选 slot，`stylist_bookings` 的 exclusion constraint 兜底阻止任何两个 confirmed 区间重叠。当前是「一个共享搭配师产能日历」的 MVP；还没有人员分配、付款、改期/取消、日历邀请或 Folk 同步。这一层只负责预约，也**不会因为预约成功自动授予衣橱访问权**——后者仍必须走下方 `wardrobe_grants`。
 
 **决策（2026-07-27）**：公司是自有的少数长期搭配师，不做第三方入驻平台。因此 **Phase 11「双端」取消**，改为「Folk CRM 承担客户列表与流程管理，App 只做授权访问」。
 
@@ -476,7 +499,7 @@ Folk 有完整 REST API（workspace 级 Bearer key）、自定义字段、pipeli
 - ~~`outfit_items.x/y/width` 的 alter table 还没在生产库跑~~ ✅ 已跑（2026-07-30，随 Phase 6.0 迁移块）
 - 耳环/手镯配对路径的真实照片验证
 - ~~Analytics 的 `times_worn` 没有真实写入来源~~ ✅ 6.1 Worn RPC 已提供唯一新增写入路径（同日同件统一 +1）
-- Stylist Canvas 化（原任务 2，可以并到 6.1 一起做，因为都要动搭配的结构化输出）
+- AI Stylist 修复后的真实链路复验（澄清问题 → structured tool response → Canvas → 编辑 → 保存/再次更新）
 - 多件识别的勾选确认 UI
 
 ---

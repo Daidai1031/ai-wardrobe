@@ -1,11 +1,11 @@
 # AI Wardrobe — Implementation Checklist
 
-> Last updated: 2026-07-27（进度重整 + 范围扩充）
+> Last updated: 2026-07-30（Phase 6.2 Weekly planning + 规划规则引擎；AI Stylist Canvas + Human Stylist 预约）
 >
 > **本文件只负责「已完成的实现细节 + Debug Log」。未来要做什么、按什么顺序做、新功能的技术方案，全部移到 [`ROADMAP.md`](./ROADMAP.md)。**
 >
 > 当前优先级：Phase 6 = Daily/Weekly outfit planning + 出差模式（天气 + Google Calendar + Gmail）。
-> 新增但尚未排期的范围：双端（C 端/B 端）、Human Stylist Consultation 预约、Shopping Recommendations、冷启动 Onboarding、Avatar（fal.ai）。详见 ROADMAP.md 第四节。
+> 新增范围中 Human Stylist 预约入口已完成代码；人员分配/付款/改期通知、衣橱授权与 Folk CRM 仍未排期。Shopping Recommendations、冷启动 Onboarding、Avatar（fal.ai）详见 ROADMAP.md 第四节。
 >
 > **动手前已敲定的 14 条决策记在 ROADMAP.md 第二节「决策记录」，改动前先读理由。**
 >
@@ -50,6 +50,12 @@
 | 分类图片大小 | 原图 (可能 10MB+) | Sharp 缩到 1024px JPEG (~200KB) | token 费大幅降低 |
 | 月成本估算 (3用户×50件) | ~$4.50/月 | ~$1.20/月 | ~73% |
 
+### AI Stylist 结构化回答
+
+| # | 问题 | 原因 | 修复 |
+|---|------|------|------|
+| 15 | 正常的澄清问题被显示成 `The stylist couldn't structure that answer`，route 返回 502 | 旧协议只在 prompt 里要求 Haiku 输出 `FINAL:{...}`；模型仍可能直接写自然语言，解析器找不到 JSON 就把有效回答当故障 | 改为 Anthropic forced `tool_choice`，要求模型必须调用 `return_stylist_response` 并按 JSON Schema 返回 question/recommendation；同时保留纯文本降级，供应商异常跳过 tool 时把文字作为正常 question 返回 200，不再让格式问题中断对话 |
+
 ---
 
 ## 功能实现状态
@@ -87,12 +93,13 @@
 
 | 功能 | 状态 | 备注 |
 |------|------|------|
-| AI Stylist Chat | ✅ 完成 | 基于真实衣橱推荐；**目前只回复纯文字**，下一步计划改成 Canvas 形式展示推荐搭配并可编辑（呼应 outfits 的自由拼贴 Canvas） |
-| 搭配创建/保存 + 编辑 | ✅ 完成 | `outfits-view.tsx`：衣橱单品拖入/点击加入、自由定位、缩放、层级调整、名称/合集/备注及 Supabase 保存；Canvas 使用去背图透明展示；已保存搭配可从库卡片「Edit」按钮打开进 Canvas 编辑并保存回原 outfit（`outfit_items` 新增 `x`/`y`/`width` 持久化自由坐标，见「已完成任务详情」） |
-| 天气 API 集成 | ✅ API 就绪 | 需要 OpenWeather Key；`stylist` route 已预留 `context.weather` 字段待接入 |
+| AI Stylist 深挖 + Canvas | ✅ 代码完成 / ⚠️ 待真实验证 | 客户端发送完整对话历史；Haiku 在信息不足时每轮只追问 1–2 个高价值问题，足够后返回经真实衣橱 ID 校验的结构化 Look。前端以 Canvas + 理由/造型细节展示，可进入共享 Closet/Canvas 编辑并保存或更新到 Looks |
+| Human Stylist 预约 | ✅ 代码完成 / ⚠️ 待 section 16 + 真实验证 | `/stylist` 弹窗提供 30 分钟线上和 9–5 线下全天；工时固定在 `STYLIST_TIME_ZONE`、转换成浏览器 IANA 时区显示，服务端排除全局已占用区间并重验，Postgres exclusion constraint 防并发撞期。尚无付款、人员分配、取消/改期和邀请通知 |
+| 搭配创建/保存 + 编辑/删除 | ✅ 完成 | `outfits-view.tsx`：衣橱单品拖入/点击加入、自由定位、缩放、层级调整、名称/合集/备注及 Supabase 保存；Canvas 使用去背图透明展示；已保存搭配可从库卡片打开进 Canvas 编辑，也可经确认后删除（只删 Look，衣橱单品保留）；`outfit_items.x/y/width` 持久化自由坐标（见「已完成任务详情」） |
+| 天气 API 集成 | ✅ API 就绪 | 需要 OpenWeather Key；daily/weekly 已接天气，Stylist 目前通过需求澄清询问与当次穿搭相关的天气/室内外约束 |
 | 每日推荐 (Home Page) | ✅ Phase 6.1 完成且已真实验证（2026-07-30） | `/home` 已接天气 + `eventsOnLocalDay()` + 活跃衣橱，Haiku 动态输出 1–N 个 segments；三层数据库结构是唯一缓存，普通同日 GET 不再调 Claude；Dislike 明确排除旧 item IDs；segment 可编辑和单独保存；Worn 原子写 journal，并让当天出现过的每件单品统一 `times_worn +1`。端到端验证详见下方「任务 1」 |
-| Weekly planning (7 天规划) | ❌ 待开发 | ROADMAP Phase 6.2。需要 OpenWeather 5day/3hour 预报 + 当周日历 + 「7 天内 statement piece 不重复」等约束 |
-| Google Calendar 集成 | ✅ OAuth/事件同步/语义化/daily 接线 / ❌ stylist/weekly 待接 | daily 已用真实缓存事件构建动态 segments；`stylist` route 的 `context.calendar` 仍未接线 |
+| Weekly planning (7 天规划) | ✅ Phase 6.2 代码完成 / ⚠️ 待重跑 section 15 后真实验证 | `/plan` 一次规划从今天起的 7 天。Open-Meteo 逐日预报 + 当周日历 + D8 的 TS 硬过滤（压到 ~45 件再进 prompt）+ 跨天约束（statement piece 7 天内不重复、基础款间隔 ≥2 天、贴身衣物不连穿、覆盖当周全部 formality）。**关键结构变更：`outfit_plans` 的唯一键去掉了 `source`**，一个日期只有一条计划，`source` 退化为溯源标记 |
+| Google Calendar 集成 | ✅ OAuth/设置页/事件同步/语义化/daily/weekly 接线 / ❌ stylist 待接 | daily 和 weekly 都用真实缓存事件构建动态 segments（weekly 同一次查询拉整周、按 `eventsOnLocalDay` 逐日分桶）；`stylist` route 的 `context.calendar` 仍未接线 |
 | Gmail 集成（行程/dress code 信号） | ❌ 待开发 | ROADMAP Phase 6.0/6.3。用途是行程确认邮件 → 自动发现出差、活动邀请、邮件里的明文 dress code；只存抽取后的结构化字段，不存正文。注意 Gmail readonly 属于 Google restricted scope，上线前需通过 Google 验证审核 |
 
 ### Phase 4 — Calendar + Analytics (Module 10, 11)
@@ -125,7 +132,7 @@
 | 冷启动 Onboarding（问卷 + 风格滑卡） | ❌ 待开发 | Phase 7。`preference_swipes` 表 + `profiles.preference_dna` 字段都已就绪；ROADMAP 里建议把它排在 Avatar/Shopping 之前，因为它是所有推荐质量的上游且成本最低。唯一非代码工作量是准备 20–40 张风格参考图 |
 | Avatar 生成（fal.ai） | ❌ 待开发 | Phase 8。`profiles` 的 `skin_tone`/`hair_color`/`hair_length`/`body_shape` 就是给这个预留的。**成本量级和文本调用不同，必须缓存 + 限流**；虚拟试穿比静态 avatar 难得多，建议分两步 |
 | Shopping Recommendations | ❌ 待开发 | Phase 9。缺口信号已经在产出（daily 的 `gap`、出差 capsule 缺口、Analytics 类别失衡）只是丢掉了。**最大未决问题是商品数据源**，建议先接一个联盟 feed 而不是做通用爬虫 |
-| 搭配师授权访问 + Folk CRM 集成 | ❌ 待开发 | Phase 10（原「Human Stylist Consultation」，已简化）。需要 `stylists`/`stylist_availability`/`consultations` 等表 + Stripe Connect + 显式限时可撤销的衣橱授权（`wardrobe_grants`），不能靠角色一刀切放开 RLS |
+| 搭配师授权访问 + Folk CRM 集成 | 🟡 预约入口已完成 / 授权与 CRM 待开发 | 已完成单一共享产能日历的线上/线下预约 MVP；人员分配、付款、取消/改期、通知，以及显式限时可撤销的 `wardrobe_grants` 和 Folk CRM 流程仍待开发。预约成功不会隐式放开衣橱数据 |
 | 双端（C 端客户 + B 端公司/造型师） | 🚫 **已取消**（2026-07-30，D12） | 公司为自有少数长期搭配师，不做第三方入驻平台。改为 Folk CRM 管客户列表/阶段/跟进 + App 只做 `wardrobe_grants` 授权访问。省掉 Stripe Connect 分账、入驻审核、评价体系 |
 
 ### 部署
@@ -176,6 +183,38 @@
   - **验证过程中踩到的两个坑（不是代码 bug，但要知道）**：① Supabase SQL Editor 里 `auth.uid()` 永远返回 `NULL`（以 `postgres` 角色直连、无 JWT），所有排查用的 SQL 必须换成字面 uuid，否则一律「0 rows」；② SQL Editor 一次运行多条语句只显示最后一条的结果集，多项检查要 `union all` 合并成一个结果。
   - **发现的行为与缺口**：天气在生成时快照进 `outfit_plans.weather`、当天不再刷新（改城市后旧计划仍显示旧城天气，需 Dislike 重生成）；`profiles.timezone` 为 NULL 时静默回落 `"UTC"` 而前端不传 `?timezone=`；Dislike 只能整天重生成、不能按 segment 单独重来；「Adjust this segment」仍是 `<select>` 下拉而非 Canvas。后两条列为「6.1 收尾」，已于同日实现，见下方。
 
+### 任务 1c: Phase 6.2 Weekly planning（`/plan`） — ✅ 代码完成，⚠️ 待重跑 section 15 后真实验证
+
+- 动手前敲定的两个决策（2026-07-30）:
+  - **一个日期只有一条计划**。原来 `outfit_plans` 的唯一键含 `source`，同一天可以并存 `daily` 和 `weekly` 两行——那是**两次独立的 Claude 调用**（输入不同、约束不同），必然选出不同衣服，于是同一个周四在 `/home` 和 `/plan` 会显示两套，且没有任何机制让它们同步。去掉 `source` 后 `/home` 读「今天的计划」不问出处，`source` 退化成溯源标记。**代价**：碰了 6.1 刚验完的 daily 代码（`readPlanForDate` 去掉 source 过滤、`mark_outfit_plan_worn` 放开 `source='daily'` 限制），这两条要回归验。
+  - **周边界 = 从今天起的未来 7 天**，不是周一到周日。周六打开也有 7 天有效内容，且和 Open-Meteo 从今天起算的预报窗口天然对齐。
+- 已实现:
+  - `supabase/schema.sql`：唯一键改成 `(user_id, plan_date, travel_plan_id)`（迁移里先去重、优先保留 `worn` 行再按 `generated_at` 取新）；`replace_outfit_plan` 的 `on conflict` 补上 `source = excluded.source`；新增 `replace_weekly_plans(p_days)` 一个事务写整周并跳过已 `worn` 的天、返回被跳过的日期。
+  - `src/lib/planning/plans.ts`（新增）：`readPlansForDates` / `readPlanForDate` / `hydrateSegments`。daily 读 1 天、weekly 读 7 天，但 join/排序/带 layout 完全一样，抽出来共用而不是各写一份。
+  - `src/lib/planning/candidates.ts`（新增）：D8 硬过滤。按当周温区推季节、按当周事件 formality 推 occasion 标签（两套词表原本各自独立，这里是唯一对齐处）。**过滤器真正的风险是过滤到没东西可选**，所以分级放宽（季节且场合 → 任一 → 不过滤）并保证每个品类最少 3 件；无标签一律通过——缺数据不能变成排除理由。
+  - `src/app/api/ai/weekly/route.ts`（新增）：`GET` **只读、绝不调 Claude**（和 daily 的「miss 就生成」不同——日推是用户预期自动发生的一次小调用，周计划是吃整个衣橱的大调用，该由用户主动按下）；`POST` 生成整周。
+  - `src/lib/weather/open-meteo.ts`：新增 `getForecastAsCurrent()` 和 `describeWeatherCode()`。
+  - `src/app/api/ai/daily/route.ts`：`weatherForDate()`——只有当 `localDate` 就是今天才用 OpenWeather 实况，否则走 Open-Meteo 预报。**这是接单天重生成时发现的真 bug**：`/plan` 上重算周四会用「此刻」的天气推理周四的穿搭，换季时错得最厉害。
+  - `/plan` 页面（7 列周视图 + 选中日详情）、sidebar 新增「This Week」、`proxy.ts` 的 `isDashboard` 加 `/plan`。
+- **`/plan` 上任意一天都能编辑**（2026-07-30 补）：最初 day detail 只有一个「Adjust on Home」链接，而 `/home` 永远只显示今天——点周四会跳到今天，等于其它六天不可编辑。后端从来没有日期限制（`POST /api/ai/daily?date=` 和三个 segment RPC 都不限今天），纯粹是 UI 没接。把 `SegmentCanvasEditor` 从 `daily-recommendation.tsx` 抽成 `src/components/outfit/segment-canvas-editor.tsx` 共用，`/plan` 的每个 segment 现在有「重生成 / Adjust / Save」三个按钮；「Open on Home」只在选中的是今天时才出现。
+- **单天重生成复用 `POST /api/ai/daily?date=`**，没有新开端点——那条路径本来就处理单个日期，而且会把 `source` 翻回 `daily`，正好符合「单独重算后不再受整周约束」的语义，`/plan` 上给这天打「Adjusted」标记。
+- **前两次真实生成暴露了同一个设计错误的两种形态（2026-07-30）**，根因都是我自己违反了 D8「不要指望 LLM 做硬约束满足」——把能精确判定的规则留在 prompt 里当软约束：
+  - **第一次**：跨天轮换。同一双棕鞋连穿 8/03–8/05、同一条黑裤连穿 8/03–8/05、同一个黑配饰连穿 8/01–8/03。**不是衣橱不够**（6 条下装 + 5 条连衣裙 + 7 件上装，7 天排得开），prompt 里写了「间隔 ≥2 天」，Haiku 直接无视。
+  - **第二次**（加了校验之后）：规则本身太一刀切 + 缺结构校验。墨镜被当成违规（每天戴同一副墨镜完全正常，纯噪音），而**一个 segment 里出现了两条裤子**——这是比轮换更基本的规则，我压根没写。
+  - **第三次**（按品类分档之后）：轮换和结构都对了，但 **8/02 那天整套只有一双凉鞋**，没有衣服没有包。因为我写的规则全是「最多几件」，从来没写「至少要有什么」——一个只有鞋的 segment 一路过关落库。
+- 修法（`src/lib/planning/plan-rules.ts`）:
+  - **结构规则** `MAX_PER_CATEGORY_IN_SEGMENT`：一套里最多 1 条下装 / 1 条连衣裙 / 1 双鞋 / 1 个包；上装和外套各 2 件（叠穿是真实的：衬衫 + 开衫、马甲 + 西装）；配饰 4 件。**包和配饰最初不限**，导致整套件数根本没有上限——用户衣橱里有 10 条腰带，模型完全可以合规地给出 6 条。全品类封顶后单套最多 11 件（2 上装 + 1 下装 + 2 外套 + 1 鞋 + 1 包 + 4 配饰），实际大多 5–7 件。`enforceComposition()` **确定性执行**，是入库前的最后一步，weekly 和 daily 都接了——「留一条裤子而不是两条」不需要任何判断，而且即使修复调用出问题也不能让不可能的搭配落库。
+  - **轮换规则** `REPEAT_GAP_BY_CATEGORY`：**按品类**设间隔。上装/下装/连衣裙/外套 = **7 天**（等于「一周内穿过就不再穿」，因为规划窗口就是 7 天）；鞋 = 2 天（鞋子数量通常多于衣服，一周穿两次同一双不违和）；包和配饰 = 0（豁免）。同一天内跨 segment 重复永远不算违规。
+  - **天气规则** `TOO_WARM_FOR_SLEEVES_C = 30`：超过 30°C 的日子不用外套、不用长袖上衣/连衣裙。季节标签管不了这个（很多单品同时标了 spring 和 summer），而候选过滤是按整周温区做的——一周里有一天 32°C 但也有冷天时，毛衣必须留在候选池里，所以只能做成**按天**的规则。没有袖长字段，靠品类（外套一律算）+ 保守的 subcategory/material 关键词推断。weekly 用预报的当日最高温，daily 只有一个代表温度，所以严格程度略低。
+  - **互斥规则** `INCOMPATIBLE_WITH`：连衣裙不与上装或下装同时出现——它本身已经覆盖上下身。按品类分别计数完全发现不了这个问题（每件都没超各自的上限）。外套故意**不**互斥（西装/马甲叠在连衣裙外是真实搭配）；副作用是被分类成 `Tops` 的开衫从此不会和连衣裙搭配，真需要的话应该把那件改归 `Outerwear`。裁剪时**保留连衣裙**——删它会让这套同时违反完整度规则。
+  - **分段数量改为 TS 计算** `src/lib/planning/occasion-groups.ts`：按 formality 把当天连续场合分组（差 <1 归一组），两个 prompt 都直接收到「要建哪几段、每段挂哪些 eventIds」。原来交给模型「相似就合并」的裁量不稳定——9:45 董事会(4) + 3pm 客户电话(3) + 8:15pm 晚餐(3) 这同一天，有时正确出两段，有时全并成一段。formality 未知的场合并入当前组而不是强制断开，避免缺数据凭空多出一次换装。
+  - **完整度规则** `REQUIRED_SLOTS`：一个 segment 必须覆盖 torso（Tops 或 Dresses）、legs（Bottoms 或 Dresses）、feet（Shoes）三个位置，连衣裙一件顶两个。`enforceCoverage()` 从候选池里挑一件补上，且挑的时候会避开「离得太近会造成轮换违规」的单品，所以补洞不会制造新问题。
+  - 有违规发**一次**定向修复调用只重建冲突的那几天（点名是哪件、和哪天冲突——重复陈述规则正是已经失败过的做法）。**之后三条规则一律确定性兜底**：`enforceComposition` → `enforceCoverage` → `enforceRotation`，顺序不能乱（补洞可能制造重复，所以轮换放最后）。代码挑的替换单品审美肯定不如模型，但连着三轮「prompt 写了它照样犯」已经证明这些不变量必须**保证**而不是**请求**。真的排不开的（衣橱某品类填不满）通过 `warnings` 返回并在 `/plan` 顶部显示，而不是咽下去。
+  - daily 路径也接了 composition + coverage —— `/home` 同样可能生成这些坏搭配，只是还没撞上。
+- **校验机制本身第一次就验对了**：3 条警告和数据库里 3 处连穿完全一一对应，说明问题在规则内容而非检测逻辑。
+- **已验证**: `tsc --noEmit` 与 `npm run build` 通过，`/plan` 和 `/api/ai/weekly` 出现在构建路由表。
+- **未验证**: section 15 需重跑（唯一键变更 + `replace_weekly_plans`）。待验：整周生成的跨天约束是否真的生效（同一件 statement piece 不在 7 天内重复）、已 `worn` 的天是否被正确跳过并出现在 `skippedDates`、`/home` 和 `/plan` 对同一天是否显示同一套、单天重算后 `source` 是否翻回 `daily`、以及 6.1 那几条回归（缓存命中、Worn 计数、Canvas 版式保留）。
+
 ### 任务 1b: 6.1 收尾（单段 Dislike + Canvas 编辑） — ✅ 完成且已真实验证（2026-07-30）
 
 - 需求（用户 2026-07-30 提出）: ① 应该能对单个 segment 点 Dislike，而不是只能整天重来；② 「Adjust this segment」的下拉选择应改为进入 Canvas 编辑（复用 `/outfits` 那套），搭配完返回 `/home` 展示用户改好的穿搭。
@@ -197,15 +236,35 @@
 - **模型层面的小瑕疵（非管线 bug，未处理）**：重算出的 `change_from_previous` 里写了「remove accessories (bangle, belt)」，但重生成后的那套里并没有 belt，是 Haiku 顺手多写的。不影响数据正确性。
 - **已验证**: `tsc --noEmit` 与 `npm run build` 均通过。`npm run lint` 在 Next 16 下已失效（`next lint` 把 `lint` 当成目录参数），是仓库既有问题，ESLint 实际由 `npm run build` 跑。
 
-### 任务 2: AI Stylist 用 Canvas 展示推荐并可编辑 — ❌ 待开发（建议并入 ROADMAP Phase 6.1 一起做，因为两者都要给搭配加结构化输出）
+### 任务 2: AI Stylist 深挖需求 + Canvas 回答/编辑/保存 — ✅ 代码完成，⚠️ 待真实验证
 
-- 需求: 目前 `POST /api/ai/stylist` 只返回纯文字 `{ reply }`（`src/app/(dashboard)/stylist/page.tsx` 就是一个文字聊天框）。推荐的搭配应该像 `outfits` 的自由拼贴 Canvas 一样，以图片拼贴的形式展示，并且用户可以直接在 Canvas 上编辑（挪动、替换单品等）。
-- 可复用: `src/app/(dashboard)/outfits/outfits-view.tsx` 里的自由拼贴 Canvas 组件（拖拽/缩放/层级/`clean_url` 透明展示逻辑）——目标是让 stylist 推荐结果能复用同一套 Canvas，而不是重新造一个。
-- 待做: stylist route 除了文字回复外，还要返回结构化的「推荐单品 id 列表 + 初始布局」；前端渲染 Canvas 而不是纯文字气泡；Canvas 编辑后要能「保存为搭配」（复用任务 3 的编辑/保存逻辑）。
+- 根因: 旧页面每次只发送最后一句 `{ message }`，route 也只返回 `{ reply }`，所以模型看不到之前问答，既无法真正澄清需求，也没有能映射到图片的结构化单品 ID。
+- 已实现:
+  - `POST /api/ai/stylist` 改为接收最近 14 条对话并返回两态协议：信息不足为 `{ type:"question", questions:[...] }`，每轮最多两个高价值问题；信息足够为 `{ type:"recommendation", look:{ itemIds, summary, reasoning, stylingNotes, gap } }`。第二次用户回答后默认做合理假设并出方案，避免无限盘问。
+  - 两态协议通过强制 Anthropic tool call + JSON Schema 落地，不再依赖模型遵守 `FINAL:{...}` 文本格式；若供应商异常只返回文字，route 将其作为 question 降级返回而不是 502。
+  - 模型 item IDs 在服务端和当前用户的活跃衣橱交叉校验，少于两件有效自有单品就拒绝结构化结果；前端只接收反查后的真实图片行。
+  - `/stylist` 把推荐直接显示成 `OutfitCollage`，解释「整体想法 / why it works / finishing notes」；Edit canvas 进入共享 `ClosetPicker` + `OutfitCanvas`，支持增删、拖动、缩放和层级。
+  - Save to Looks 写 `outfits(ai_generated=true)` + 带 `x/y/width` 的 `outfit_items`；保存后继续编辑会更新同一个 Look，不重复建一条。
+
+### 任务 2b: Human Stylist 预约 slot picker — ✅ 代码完成，⚠️ 待 section 16 + 真实验证
+
+- `/stylist` 的 Human Stylist 弹窗提供两种服务：`online_30`（工作日 30 分钟）和 `in_person_day`（周二/四/六 9–5 全天）；工时在 `STYLIST_TIME_ZONE`（默认纽约）生成，再转换成浏览器检测到的 IANA 时区显示。
+- `GET /api/stylist/bookings` 生成服务时段并通过 service role 排除所有用户已经占用的重叠区间；`POST` 不信任客户端时间，按同一服务日历重新验证并在写入前再查一次冲突。
+- `stylist_bookings` 只允许用户读自己的行、没有浏览器写 policy；写入必须经过认证 route。数据库 `tstzrange` exclusion constraint 是并发竞态的最终保护，线下全天与当天线上 slot 也互相排斥。
+- 当前边界: 单一共享搭配师产能；未做人员分配、定价/付款、取消/改期、邮件/日历邀请和 Folk CRM 同步；预约不会自动创建 `wardrobe_grants`。
+- **已验证**: `tsc --noEmit` 与 `npm run build` 通过，构建路由包含 `/api/ai/stylist`、`/api/stylist/bookings` 和 `/stylist`。**未验证**: 生产库还需手动执行 `supabase/schema.sql` section 16；执行前 availability route 会返回 503，而不是展示假 slot。
 
 ---
 
 ## 已完成任务详情（历史记录）
+
+### 任务: Saved Looks 支持删除 — ✅ 完成
+
+- 需求: `/outfits` 的 Saved Looks 除了编辑，也应该能删除不再需要的搭配。
+- 已实现 (`src/app/(dashboard)/outfits/outfits-view.tsx`):
+  - 每张已保存搭配卡片新增删除按钮；触屏尺寸下常显，鼠标尺寸下与 Edit 操作一起在悬停或键盘聚焦时显示。
+  - 删除前明确确认「只删除 saved look，衣橱单品仍保留」；确认后按 `id + user_id` 删除 `outfits` 行，现有外键级联清理 `outfit_items`。
+  - 删除期间只锁定目标卡片并显示加载状态；成功后立即从当前列表移除、提示成功并 `router.refresh()` 同步服务端数据；失败则保留卡片并显示错误。
 
 ### 任务: 已保存的 outfit 支持编辑 — ✅ 完成
 
@@ -308,11 +367,12 @@ ai-wardrobe/
 | HEIC 转换 | `src/app/api/ai/convert/route.ts` |
 | 上传 pipeline (计数→单件/多件分支→去背景→分类→存储) | `src/app/api/ai/classify/route.ts` |
 | 上传 UI（single/multi 切换、进度提示） | `src/components/closet/upload-zone.tsx` |
-| AI Stylist 对话 | `src/app/api/ai/stylist/route.ts` |
+| AI Stylist 多轮澄清 + structured tool response | `src/app/api/ai/stylist/route.ts` |
+| AI Stylist Canvas / 编辑 / 保存 / Human Stylist 弹窗 | `src/app/(dashboard)/stylist/page.tsx` |
+| Human Stylist slot 与预约 | `src/app/api/stylist/bookings/route.ts`, `supabase/schema.sql` section 16 |
 | 每日推荐 (Home) 数据+AI 逻辑 | `src/app/api/ai/daily/route.ts`, `src/lib/weather/openweather.ts` |
 | 天气 provider / 城市转坐标 | `src/lib/weather/` (`openweather.ts`, `open-meteo.ts`, `geocode.ts`), `src/app/api/geocode/route.ts` |
 | Home 首页 UI | `src/app/(dashboard)/home/page.tsx`, `daily-recommendation.tsx` |
-| AI Stylist 页面（目前纯文字聊天） | `src/app/(dashboard)/stylist/page.tsx` |
 | 搭配创建/保存、自由拼贴 Canvas | `src/app/(dashboard)/outfits/outfits-view.tsx` |
 | 搭配页服务端数据查询 | `src/app/(dashboard)/outfits/page.tsx` |
 | 数据库类型定义 | `src/types/database.ts` |
