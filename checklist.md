@@ -174,7 +174,28 @@
     - **保存到 Looks**：`saved_outfit_id` 回填，`outfits` 行为 `ai_generated=true`/`folder='Everyday'`/`ai_reasoning` = 该段 reasoning，`outfit_items` 件数等于用户调整后的件数（5，不是 Claude 原始的 6）。
     - **Worn**：两段各写一条 `outfit_journal`；Conference 段因单品集合与已保存 outfit 一致而带上 `outfit_id`、Gym 段为 `NULL`——`mark_outfit_plan_worn` 的两个分支一次覆盖。人为让一件黑配饰同时出现在两段后，**它的 `times_worn` 只 `+1` 而不是 `+2`**；被用户从 Conference 删掉的 navy 连衣裙保持 `0`（证明计数跟的是调整后的集合，不是 Claude 的原始输出，即 D10）；8 件参与单品的 `last_worn_at` 全部是同一时间戳，未参与的 40+ 件纹丝不动。`status` 置为 `worn`。
   - **验证过程中踩到的两个坑（不是代码 bug，但要知道）**：① Supabase SQL Editor 里 `auth.uid()` 永远返回 `NULL`（以 `postgres` 角色直连、无 JWT），所有排查用的 SQL 必须换成字面 uuid，否则一律「0 rows」；② SQL Editor 一次运行多条语句只显示最后一条的结果集，多项检查要 `union all` 合并成一个结果。
-  - **发现的行为与缺口**：天气在生成时快照进 `outfit_plans.weather`、当天不再刷新（改城市后旧计划仍显示旧城天气，需 Dislike 重生成）；`profiles.timezone` 为 NULL 时静默回落 `"UTC"` 而前端不传 `?timezone=`；Dislike 只能整天重生成、不能按 segment 单独重来；「Adjust this segment」仍是 `<select>` 下拉而非 Canvas。后两条列为「6.1 收尾」，方案见 ROADMAP。
+  - **发现的行为与缺口**：天气在生成时快照进 `outfit_plans.weather`、当天不再刷新（改城市后旧计划仍显示旧城天气，需 Dislike 重生成）；`profiles.timezone` 为 NULL 时静默回落 `"UTC"` 而前端不传 `?timezone=`；Dislike 只能整天重生成、不能按 segment 单独重来；「Adjust this segment」仍是 `<select>` 下拉而非 Canvas。后两条列为「6.1 收尾」，已于同日实现，见下方。
+
+### 任务 1b: 6.1 收尾（单段 Dislike + Canvas 编辑） — ✅ 完成且已真实验证（2026-07-30）
+
+- 需求（用户 2026-07-30 提出）: ① 应该能对单个 segment 点 Dislike，而不是只能整天重来；② 「Adjust this segment」的下拉选择应改为进入 Canvas 编辑（复用 `/outfits` 那套），搭配完返回 `/home` 展示用户改好的穿搭。
+- 两个动手前敲定的决策:
+  - **`change_from_previous` 过期 → 同一次调用里一并重算**。重生成第 N 段后，第 N+1 段的「相对上一段的变化」描述的是已经不存在的那套衣服。备选是置空或放任不管；选了重算，因为模型本来就拿到了整天的上下文，多返回一个 `nextChangeFromPrevious` 字段零额外成本，而置空会让「早上那套 → (无说明) → 晚上那套」的衔接感断掉。
+  - **Canvas 布局持久化**，给 `outfit_plan_segment_items` 加 `x/y/width`。备选是只把 Canvas 当选择器、不存版式；选了持久化，否则用户精心排的拼贴在返回 `/home` 时就丢了，和需求②「展示的是新的用户修改好的穿搭」不符。
+- 已实现:
+  - `src/components/outfit/outfit-canvas.tsx`（新增）：把 `outfits-view.tsx` 里的 `OutfitCanvas`/`ClosetPicker`/`defaultLayoutFor`/拖拽 payload 读写抽出来共享，泛型化为 `CanvasItem`（`WardrobeItem` 和 `DailyWardrobeItem` 都天然满足，调用方不用转数据）。新增 `layoutsFromRows()`（null 几何回退到默认网格）和只读的 `OutfitCollage`。`outfits-view.tsx` 改为 import，删掉本地副本。
+  - `supabase/schema.sql`：`outfit_plan_segment_items` 加 `x/y/width`；新增 `apply_plan_segment_items()`（所有改写 segment 单品的路径统一入口）、`update_outfit_plan_segment_items()`（Canvas 保存）、`regenerate_outfit_plan_segment()`（单段重生成）；`replace_outfit_plan`/`mark_outfit_plan_worn`/`save_outfit_plan_segment` 改为走 helper，后者额外把几何复制进 `outfit_items`。
+  - `src/app/api/ai/daily/route.ts`：抽出 `loadDailyContext()` 供三条路径共用（避免本地日期/日历窗口的推导逻辑分叉）；`POST` 带 `segmentId` 时走 `handleSegmentRegeneration`。
+  - `src/app/(dashboard)/home/daily-recommendation.tsx`：每段头部加「重生成本段」和「Adjust」两个按钮；`<select>` 下拉整个删除；段内容改用 `OutfitCollage` 按持久化版式展示；新增 `SegmentCanvasEditor` 子组件。
+- **顺带修掉的 bug**：旧的下拉编辑只是客户端 state，而计划每次加载都从数据库重读，所以用户改完不点「保存到 Looks」也不点 Worn 就刷新，改动会**静默丢失**。现在 Canvas 的「Done」立即落库。
+- **踩坑**：`apply_plan_segment_items` 里必须先把存活行的 `position` 挪到 `+1000` 再重编号——`(segment_id, position)` 是唯一约束且不可延迟，就地更新会瞬时冲突；`position >= 0` 的 check 又排除了「挪成负数」这个更常见的写法。
+- **已真实验证（2026-07-30，真实账号 + 生产库，section 15 重跑后）**，四条各自针对一种静默失败模式：
+  - **单段重生成**：点 Segment 1 的 ↺ 后，它的 6 个 item id 与之前 5 个**零重叠**，而 **Segment 2 的 item_ids 一字未变**——后者才是「单段」作用域的证据，整天重排会把它也换掉。Segment 2 的 `change_from_previous` 同时被改写：改前写「换掉 cream pants 和 navy 上衣」，改后写「换掉 black trousers / white shirt / blazer，把 cream pumps 换成白跑鞋」，引用的正是重生成后的新单品。没有这次重算，它会一直指向一套已不存在的衣服。重生成段的 `x/y/width` 正确重置为 null，`saved_outfit_id` 正确清空。
+  - **Canvas 落库**：排完版点 Done 后**刷新整个页面**，版式仍在——旧的下拉编辑只是客户端 state，刷新必丢。
+  - **几何进 Looks**：存成 Look 后在 `/outfits` 点 Edit 打开，是同一张拼贴。
+  - **Worn 不抹版式**：Confirm worn 后两段的 `x/y` 全部保留。这条在验 `mark_outfit_plan_worn` 走的是 `p_apply_layout = false`——它会重写 segment items（用户可能改过单品），传错成 `true` 就会把刚排好的几何静默抹成 null。
+- **模型层面的小瑕疵（非管线 bug，未处理）**：重算出的 `change_from_previous` 里写了「remove accessories (bangle, belt)」，但重生成后的那套里并没有 belt，是 Haiku 顺手多写的。不影响数据正确性。
+- **已验证**: `tsc --noEmit` 与 `npm run build` 均通过。`npm run lint` 在 Next 16 下已失效（`next lint` 把 `lint` 当成目录参数），是仓库既有问题，ESLint 实际由 `npm run build` 跑。
 
 ### 任务 2: AI Stylist 用 Canvas 展示推荐并可编辑 — ❌ 待开发（建议并入 ROADMAP Phase 6.1 一起做，因为两者都要给搭配加结构化输出）
 

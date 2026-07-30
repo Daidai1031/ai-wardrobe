@@ -231,23 +231,28 @@ interface WeatherProvider {
 **验证时发现的行为与缺口**（前两条已确认为设计使然，后两条是待补的产品缺口）：
 - **天气在生成时快照进 `outfit_plans.weather`，当天不再刷新。** 用户中途改城市或天气突变，今天这条计划不会自动更新，只能靠 Dislike 重生成。符合「数据库是唯一缓存」的设计，但要知道有这个行为。
 - **`profiles.timezone` 为 NULL 时静默回落到 `"UTC"`**（`daily/route.ts` 的 `timeZone` 取值链），而前端不传 `?timezone=`。非 UTC 用户不填时区会在跨 UTC 日边界的事件上错一天，且不报错。Onboarding（Phase 7）应该把时区设成必填或自动探测。
-- ❌ **Dislike 只能整天重生成，不能按 segment 单独重来** —— 一段满意一段不满意时，好的那段会被一起丢掉，还多花 token。见下方「6.1 收尾」。
-- ❌ **「Adjust this segment」目前是个 `<select>` 下拉**（一次加一件），应改为进 `/outfits` 那套 Canvas 编辑再返回。见下方「6.1 收尾」。
+- ~~Dislike 只能整天重生成~~ ✅ 已做，见下方「6.1 收尾」
+- ~~「Adjust this segment」是个 `<select>` 下拉~~ ✅ 已改为 Canvas，见下方「6.1 收尾」
 
-### 6.1 收尾（验证后新增，做 6.2 之前先清）
+### 6.1 收尾 — ✅ 已实现且已真实验证（2026-07-30）
 
-**A. 按 segment 单独 Dislike**
+**A. 按 segment 单独 Dislike —— ✅ 已实现**
 
-- `POST /api/ai/daily` 增加 `segmentId` 参数走单段分支；prompt 收窄成「只为这一个场合出一套」，不重排整天
-- 需要**新增 RPC**：现有 `replace_outfit_plan` 是「删光全部 segment 再重插」，单段替换必须单独写一个
-- ⚠️ **`change_from_previous` 会过期**：它描述的是「相对上一段的变化」，重生成第 N 段后，第 N+1 段的这个字段说的是已经不存在的那套衣服。要么重生成后一并重算下一段的该字段，要么显式接受过期——动手前先定
-- 边界：该段已 `saved_outfit_id` 非空时是否允许重生成（建议允许但清空关联）；`status='worn'` 的计划一律拒绝
+- `POST /api/ai/daily` 带 `segmentId` 走单段分支（`handleSegmentRegeneration`），不带则仍是整天重排。单段 prompt 把**整天的 segments 当上下文**喂进去，只重建目标那一段
+- 新增 RPC `regenerate_outfit_plan_segment`（现有 `replace_outfit_plan` 是「删光全部 segment 再重插」，单段替换必须单独写）
+- **`change_from_previous` 过期问题按「同一次调用里一并重算」落地**（决策 2026-07-30）：模型在同一次响应里额外返回 `nextChangeFromPrevious`，RPC 顺手更新第 N+1 段的该字段。一次调用、零额外成本，衔接描述始终指向真实存在的那套衣服
+- 排除范围**只含目标段自己的单品**：其它段保留的单品仍可用——同一件西装外套穿一整天是正常搭配，不是需要规避的重复
+- 天气读父行快照而不是重新拉取，否则重建出来的这一段会基于和当天其它段不同的天气推理
+- 边界：重生成会**清空该段的 `saved_outfit_id`**（已保存的 Look 是改动前的快照，留着链接会让 UI 显示「已保存」但内容已变；Look 本身不删，用户可以把新版本再存一次）；`status='worn'` 的计划一律拒绝
 
-**B. 「Adjust this segment」改为 Canvas 编辑**
+**B. 「Adjust this segment」改为 Canvas 编辑 —— ✅ 已实现**
 
-- 现状是 `daily-recommendation.tsx` 里的一个 `<select>`，只能一件件加，删除靠单品上的 ✕
-- 目标：复用 `/outfits` 的自由拼贴 Canvas（拖拽/缩放/层级/`clean_url` 透明展示），编辑完返回 `/home` 展示用户改好的搭配
-- 注意 `outfit_plan_segment_items` 目前**只有 `position`，没有 `x/y/width`**——和 `outfit_items` 不同。如果要保留 Canvas 的自由坐标，得给这张表也加三列；如果只借 Canvas 做「选哪几件」的交互、不持久化布局，则不用动 schema。**这个取舍要先定**，别把几何编进 `position`
+- `/outfits` 的 Canvas 抽成 `src/components/outfit/outfit-canvas.tsx`，`/outfits` 和 `/home` 共用同一份（拖拽/缩放/层级/边界钳制/closet picker）。**没有复制两份**——指针手势代码抄两遍必然分叉
+- **布局持久化**（决策 2026-07-30）：`outfit_plan_segment_items` 加 `x/y/width` 三列，和 `outfit_items` 同构。`/home` 用只读的 `OutfitCollage` 按用户排好的版式展示；`save_outfit_plan_segment` 把几何一并写进 `outfit_items`，所以存进 Looks 后在 `/outfits` 打开还是同一张拼贴
+- 顺带修掉一个更隐蔽的 bug：**旧的下拉编辑只是客户端状态，刷新就丢**（计划每次都从数据库重读）。现在 Canvas 的「Done」通过新 RPC `update_outfit_plan_segment_items` 立即落库
+- 所有改写 segment 单品的路径统一走新的 `apply_plan_segment_items()` helper，它负责三件容易各写各的错事：`(segment_id, position)` 唯一且不可延迟，就地重编号会瞬时冲突（先把存活行挪到 `+1000`）；归属靠 join `wardrobe_items` 的 user_id 强制；**只有显式 Canvas 保存才改写 x/y/width**，重生成和 Worn 确认都不能顺手抹掉用户排好的版式
+
+**已真实验证（2026-07-30）**：单段 ↺ 后目标段单品全换、**其它段一字不动**、下一段的 `change_from_previous` 正确改写成引用新单品；Canvas 排完版刷新页面版式仍在；存进 Looks 后在 `/outfits` 打开是同一张拼贴；Worn 确认后几何未被抹掉。逐条细节见 `checklist.md` 任务 1b。
 
 ### 6.2 Weekly planning（新页面 `/plan`）
 
