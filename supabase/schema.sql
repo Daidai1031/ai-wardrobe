@@ -128,14 +128,16 @@ create table public.outfit_items (
 -- 5. OUTFIT CALENDAR / JOURNAL
 -- ============================================================
 create table public.outfit_journal (
-  id          uuid primary key default uuid_generate_v4(),
-  user_id     uuid not null references public.profiles(id) on delete cascade,
-  outfit_id   uuid references public.outfits(id) on delete set null,
-  worn_date   date not null,
-  event_name  text,   -- "Board Meeting", "Conference Day 1"
-  event_type  text,   -- meeting, presentation, networking, casual, etc.
-  notes       text,
-  created_at  timestamptz default now()
+  id              uuid primary key default uuid_generate_v4(),
+  user_id         uuid not null references public.profiles(id) on delete cascade,
+  outfit_id       uuid references public.outfits(id) on delete set null,
+  plan_segment_id uuid,       -- FK is added after outfit_plan_segments is created below
+  item_ids        uuid[] not null default '{}', -- immutable snapshot of what was actually worn
+  worn_date       date not null,
+  event_name      text,       -- "Board Meeting", "Conference Day 1"
+  event_type      text,       -- meeting, presentation, networking, casual, etc.
+  notes           text,
+  created_at      timestamptz default now()
 );
 
 create index idx_journal_user_date on public.outfit_journal(user_id, worn_date);
@@ -237,28 +239,68 @@ create table public.calendar_events (
 create index idx_calendar_user_start on public.calendar_events(user_id, starts_at);
 
 -- ============================================================
--- 12. OUTFIT PLANS (unified daily/weekly/travel plans — Phase 6.0)
+-- 12. OUTFIT PLANS (unified daily/weekly/travel plans — Phase 6.0 / 6.1)
 -- ============================================================
--- Replaces the localStorage cache currently used by /home; daily/weekly/travel all write here.
+-- One parent row represents one local date. A date can contain any number of
+-- ordered segments, and each segment owns an ordered set of wardrobe items.
 create table public.outfit_plans (
   id             uuid primary key default uuid_generate_v4(),
   user_id        uuid not null references public.profiles(id) on delete cascade,
   plan_date      date not null,        -- D4: local date of the plan's location
   source         text not null check (source in ('daily','weekly','travel')),
   travel_plan_id uuid references public.travel_plans(id) on delete cascade,
-  outfit_id      uuid references public.outfits(id) on delete set null,
-  item_ids       uuid[] default '{}',
-  reasoning      text,
   gap            text,
   weather        jsonb default '{}',
-  event_ids      uuid[] default '{}',
   status         text default 'suggested' check (status in ('suggested','accepted','rejected','worn')),
   generated_at   timestamptz default now(),  -- D9: rate-limiting regeneration
   created_at     timestamptz default now(),
-  unique (user_id, plan_date, source, travel_plan_id)
+  updated_at     timestamptz default now(),
+  constraint outfit_plans_source_travel_check check (
+    (source = 'travel' and travel_plan_id is not null)
+    or (source <> 'travel' and travel_plan_id is null)
+  ),
+  -- `nulls not distinct` is required: ordinary UNIQUE allows duplicate daily/
+  -- weekly rows because their travel_plan_id is NULL.
+  constraint outfit_plans_cache_key unique nulls not distinct
+    (user_id, plan_date, source, travel_plan_id)
 );
 
 create index idx_plans_user_date on public.outfit_plans(user_id, plan_date);
+
+create table public.outfit_plan_segments (
+  id                   uuid primary key default uuid_generate_v4(),
+  outfit_plan_id       uuid not null references public.outfit_plans(id) on delete cascade,
+  position             int not null check (position >= 0),
+  label                text not null,
+  reasoning            text not null default '',
+  change_from_previous text,
+  event_ids            uuid[] not null default '{}',
+  saved_outfit_id      uuid references public.outfits(id) on delete set null,
+  created_at           timestamptz default now(),
+  updated_at           timestamptz default now(),
+  unique (outfit_plan_id, position)
+);
+
+create index idx_plan_segments_plan on public.outfit_plan_segments(outfit_plan_id, position);
+
+create table public.outfit_plan_segment_items (
+  segment_id uuid not null references public.outfit_plan_segments(id) on delete cascade,
+  item_id    uuid not null references public.wardrobe_items(id) on delete cascade,
+  position   int not null check (position >= 0),
+  created_at timestamptz default now(),
+  primary key (segment_id, item_id),
+  unique (segment_id, position)
+);
+
+create index idx_plan_segment_items_item on public.outfit_plan_segment_items(item_id);
+
+alter table public.outfit_journal
+  add constraint outfit_journal_plan_segment_id_fkey
+  foreign key (plan_segment_id) references public.outfit_plan_segments(id) on delete set null;
+
+create unique index idx_journal_plan_segment
+  on public.outfit_journal(plan_segment_id)
+  where plan_segment_id is not null;
 
 -- ============================================================
 -- 13. ROW-LEVEL SECURITY
@@ -276,6 +318,8 @@ alter table public.preference_swipes enable row level security;
 alter table public.google_connections enable row level security;
 alter table public.calendar_events enable row level security;
 alter table public.outfit_plans enable row level security;
+alter table public.outfit_plan_segments enable row level security;
+alter table public.outfit_plan_segment_items enable row level security;
 
 -- Profiles: users see/edit only their own
 create policy "Users read own profile"   on public.profiles for select using (auth.uid() = id);
@@ -298,7 +342,9 @@ create policy "Users manage outfit items" on public.outfit_items for all
   using (exists (select 1 from public.outfits where outfits.id = outfit_items.outfit_id and outfits.user_id = auth.uid()));
 
 -- Journal
-create policy "Users manage own journal" on public.outfit_journal for all using (auth.uid() = user_id);
+create policy "Users manage own journal" on public.outfit_journal for all
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
 
 -- Folders
 create policy "Users manage own folders" on public.folders for all using (auth.uid() = user_id);
@@ -318,7 +364,49 @@ create policy "Users manage own swipes" on public.preference_swipes for all usin
 create policy "Users manage own events" on public.calendar_events for all using (auth.uid() = user_id);
 
 -- Outfit plans
-create policy "Users manage own plans" on public.outfit_plans for all using (auth.uid() = user_id);
+create policy "Users manage own plans" on public.outfit_plans for all
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+create policy "Users manage own plan segments" on public.outfit_plan_segments for all
+  using (
+    exists (
+      select 1
+      from public.outfit_plans
+      where outfit_plans.id = outfit_plan_segments.outfit_plan_id
+        and outfit_plans.user_id = auth.uid()
+    )
+  )
+  with check (
+    exists (
+      select 1
+      from public.outfit_plans
+      where outfit_plans.id = outfit_plan_segments.outfit_plan_id
+        and outfit_plans.user_id = auth.uid()
+    )
+  );
+
+create policy "Users manage own plan segment items" on public.outfit_plan_segment_items for all
+  using (
+    exists (
+      select 1
+      from public.outfit_plan_segments
+      join public.outfit_plans
+        on outfit_plans.id = outfit_plan_segments.outfit_plan_id
+      where outfit_plan_segments.id = outfit_plan_segment_items.segment_id
+        and outfit_plans.user_id = auth.uid()
+    )
+  )
+  with check (
+    exists (
+      select 1
+      from public.outfit_plan_segments
+      join public.outfit_plans
+        on outfit_plans.id = outfit_plan_segments.outfit_plan_id
+      where outfit_plan_segments.id = outfit_plan_segment_items.segment_id
+        and outfit_plans.user_id = auth.uid()
+    )
+  );
 
 -- NOTE: public.google_connections has RLS enabled above but intentionally NO policy → client denied entirely.
 
@@ -346,11 +434,12 @@ create policy "Users delete own images"
   using (bucket_id = 'wardrobe' and (storage.foldername(name))[1] = auth.uid()::text);
 
 -- ============================================================
--- 15. MIGRATIONS (existing DB — run this whole block ONCE in the Supabase SQL Editor)
+-- 15. MIGRATIONS + DATABASE FUNCTIONS
 -- ============================================================
--- This repo has no migration tooling. Sections 1-14 above are for building a
--- database from scratch. If you already have a production DB, DO NOT re-run those;
--- copy-paste and run THIS section 15 block once. It is safe to run as a unit:
+-- This repo has no migration tooling. For an existing production DB, DO NOT
+-- re-run sections 1-14; copy-paste and run THIS section 15 block. For a fresh DB,
+-- run the whole file so the shared RPC functions in 15d are installed too.
+-- This section is safe to re-run as a unit:
 --   - column adds use `add column if not exists` (idempotent)
 --   - `create table if not exists` skips tables that already exist
 --   - each policy is dropped-if-exists before create, so re-running won't error
@@ -407,27 +496,578 @@ create table if not exists public.outfit_plans (
   plan_date      date not null,
   source         text not null check (source in ('daily','weekly','travel')),
   travel_plan_id uuid references public.travel_plans(id) on delete cascade,
-  outfit_id      uuid references public.outfits(id) on delete set null,
-  item_ids       uuid[] default '{}',
-  reasoning      text,
   gap            text,
   weather        jsonb default '{}',
-  event_ids      uuid[] default '{}',
   status         text default 'suggested' check (status in ('suggested','accepted','rejected','worn')),
   generated_at   timestamptz default now(),
   created_at     timestamptz default now(),
-  unique (user_id, plan_date, source, travel_plan_id)
+  updated_at     timestamptz default now(),
+  constraint outfit_plans_source_travel_check check (
+    (source = 'travel' and travel_plan_id is not null)
+    or (source <> 'travel' and travel_plan_id is null)
+  ),
+  constraint outfit_plans_cache_key unique nulls not distinct
+    (user_id, plan_date, source, travel_plan_id)
 );
+
+-- Upgrade the already-created Phase 6.0 table from one flat outfit/day to the
+-- Phase 6.1 parent row. The table had no application reads/writes before this
+-- migration, so the obsolete flat columns contain no production plan data.
+alter table public.outfit_plans add column if not exists updated_at timestamptz default now();
+alter table public.outfit_plans drop column if exists outfit_id;
+alter table public.outfit_plans drop column if exists item_ids;
+alter table public.outfit_plans drop column if exists reasoning;
+alter table public.outfit_plans drop column if exists event_ids;
+alter table public.outfit_plans
+  drop constraint if exists outfit_plans_user_id_plan_date_source_travel_plan_id_key;
+alter table public.outfit_plans
+  drop constraint if exists outfit_plans_source_travel_check;
+alter table public.outfit_plans
+  add constraint outfit_plans_source_travel_check check (
+    (source = 'travel' and travel_plan_id is not null)
+    or (source <> 'travel' and travel_plan_id is null)
+  );
+alter table public.outfit_plans
+  drop constraint if exists outfit_plans_cache_key;
+alter table public.outfit_plans
+  add constraint outfit_plans_cache_key unique nulls not distinct
+    (user_id, plan_date, source, travel_plan_id);
+
 create index if not exists idx_plans_user_date on public.outfit_plans(user_id, plan_date);
+
+create table if not exists public.outfit_plan_segments (
+  id                   uuid primary key default uuid_generate_v4(),
+  outfit_plan_id       uuid not null references public.outfit_plans(id) on delete cascade,
+  position             int not null check (position >= 0),
+  label                text not null,
+  reasoning            text not null default '',
+  change_from_previous text,
+  event_ids            uuid[] not null default '{}',
+  saved_outfit_id      uuid references public.outfits(id) on delete set null,
+  created_at           timestamptz default now(),
+  updated_at           timestamptz default now(),
+  unique (outfit_plan_id, position)
+);
+create index if not exists idx_plan_segments_plan
+  on public.outfit_plan_segments(outfit_plan_id, position);
+
+create table if not exists public.outfit_plan_segment_items (
+  segment_id uuid not null references public.outfit_plan_segments(id) on delete cascade,
+  item_id    uuid not null references public.wardrobe_items(id) on delete cascade,
+  position   int not null check (position >= 0),
+  created_at timestamptz default now(),
+  primary key (segment_id, item_id),
+  unique (segment_id, position)
+);
+create index if not exists idx_plan_segment_items_item
+  on public.outfit_plan_segment_items(item_id);
+
+alter table public.outfit_journal
+  add column if not exists plan_segment_id uuid;
+alter table public.outfit_journal
+  add column if not exists item_ids uuid[] not null default '{}';
+alter table public.outfit_journal
+  drop constraint if exists outfit_journal_plan_segment_id_fkey;
+alter table public.outfit_journal
+  add constraint outfit_journal_plan_segment_id_fkey
+  foreign key (plan_segment_id) references public.outfit_plan_segments(id) on delete set null;
+create unique index if not exists idx_journal_plan_segment
+  on public.outfit_journal(plan_segment_id)
+  where plan_segment_id is not null;
 
 -- 15c. RLS for the new tables.
 -- google_connections: RLS ON, NO policy → client denied entirely; service role only.
 alter table public.google_connections enable row level security;
 alter table public.calendar_events    enable row level security;
 alter table public.outfit_plans        enable row level security;
+alter table public.outfit_plan_segments enable row level security;
+alter table public.outfit_plan_segment_items enable row level security;
 
 drop policy if exists "Users manage own events" on public.calendar_events;
 create policy "Users manage own events" on public.calendar_events for all using (auth.uid() = user_id);
 
 drop policy if exists "Users manage own plans" on public.outfit_plans;
-create policy "Users manage own plans" on public.outfit_plans for all using (auth.uid() = user_id);
+create policy "Users manage own plans" on public.outfit_plans for all
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+drop policy if exists "Users manage own plan segments" on public.outfit_plan_segments;
+create policy "Users manage own plan segments" on public.outfit_plan_segments for all
+  using (
+    exists (
+      select 1
+      from public.outfit_plans
+      where outfit_plans.id = outfit_plan_segments.outfit_plan_id
+        and outfit_plans.user_id = auth.uid()
+    )
+  )
+  with check (
+    exists (
+      select 1
+      from public.outfit_plans
+      where outfit_plans.id = outfit_plan_segments.outfit_plan_id
+        and outfit_plans.user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users manage own plan segment items" on public.outfit_plan_segment_items;
+create policy "Users manage own plan segment items" on public.outfit_plan_segment_items for all
+  using (
+    exists (
+      select 1
+      from public.outfit_plan_segments
+      join public.outfit_plans
+        on outfit_plans.id = outfit_plan_segments.outfit_plan_id
+      where outfit_plan_segments.id = outfit_plan_segment_items.segment_id
+        and outfit_plans.user_id = auth.uid()
+    )
+  )
+  with check (
+    exists (
+      select 1
+      from public.outfit_plan_segments
+      join public.outfit_plans
+        on outfit_plans.id = outfit_plan_segments.outfit_plan_id
+      where outfit_plan_segments.id = outfit_plan_segment_items.segment_id
+        and outfit_plans.user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users manage own journal" on public.outfit_journal;
+create policy "Users manage own journal" on public.outfit_journal for all
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+
+-- 15d. Atomic plan replacement, segment saving, and Worn-today confirmation.
+-- Supabase JS does not expose multi-statement transactions, so both workflows
+-- enter through these security-invoker functions and remain covered by RLS.
+create or replace function public.replace_outfit_plan(
+  p_plan_date date,
+  p_source text,
+  p_travel_plan_id uuid,
+  p_gap text,
+  p_weather jsonb,
+  p_segments jsonb
+)
+returns uuid
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_plan_id uuid;
+  v_segment jsonb;
+  v_segment_id uuid;
+  v_segment_position int;
+  v_requested_count int;
+  v_inserted_count int;
+begin
+  if v_user_id is null then
+    raise exception 'Unauthorized';
+  end if;
+
+  if p_source not in ('daily', 'weekly', 'travel') then
+    raise exception 'Invalid plan source';
+  end if;
+
+  if (p_source = 'travel' and p_travel_plan_id is null)
+    or (p_source <> 'travel' and p_travel_plan_id is not null) then
+    raise exception 'travel_plan_id does not match plan source';
+  end if;
+
+  if coalesce(jsonb_typeof(p_segments), 'null') <> 'array'
+    or jsonb_array_length(p_segments) = 0 then
+    raise exception 'A plan must contain at least one segment';
+  end if;
+
+  if p_source = 'travel' and not exists (
+    select 1
+    from public.travel_plans
+    where travel_plans.id = p_travel_plan_id
+      and travel_plans.user_id = v_user_id
+  ) then
+    raise exception 'Travel plan not found';
+  end if;
+
+  insert into public.outfit_plans (
+    user_id,
+    plan_date,
+    source,
+    travel_plan_id,
+    gap,
+    weather,
+    status,
+    generated_at,
+    updated_at
+  )
+  values (
+    v_user_id,
+    p_plan_date,
+    p_source,
+    p_travel_plan_id,
+    nullif(p_gap, ''),
+    coalesce(p_weather, '{}'::jsonb),
+    'suggested',
+    now(),
+    now()
+  )
+  on conflict on constraint outfit_plans_cache_key
+  do update set
+    gap = excluded.gap,
+    weather = excluded.weather,
+    status = 'suggested',
+    generated_at = now(),
+    updated_at = now()
+  returning id into v_plan_id;
+
+  delete from public.outfit_plan_segments
+  where outfit_plan_id = v_plan_id;
+
+  for v_segment, v_segment_position in
+    select entry.value, (entry.ordinality - 1)::int
+    from jsonb_array_elements(p_segments) with ordinality as entry(value, ordinality)
+  loop
+    if coalesce(jsonb_typeof(v_segment -> 'itemIds'), 'null') <> 'array'
+      or jsonb_array_length(v_segment -> 'itemIds') = 0 then
+      raise exception 'Every segment must contain at least one item';
+    end if;
+
+    insert into public.outfit_plan_segments (
+      outfit_plan_id,
+      position,
+      label,
+      reasoning,
+      change_from_previous,
+      event_ids
+    )
+    values (
+      v_plan_id,
+      v_segment_position,
+      coalesce(nullif(v_segment ->> 'label', ''), 'Outfit'),
+      coalesce(v_segment ->> 'reasoning', ''),
+      nullif(v_segment ->> 'changeFromPrevious', ''),
+      coalesce(
+        (
+          select array_agg(requested.event_id order by requested.ordinality)
+          from (
+            select value::uuid as event_id, ordinality
+            from jsonb_array_elements_text(
+              coalesce(v_segment -> 'eventIds', '[]'::jsonb)
+            ) with ordinality
+          ) requested
+          join public.calendar_events
+            on calendar_events.id = requested.event_id
+           and calendar_events.user_id = v_user_id
+        ),
+        '{}'::uuid[]
+      )
+    )
+    returning id into v_segment_id;
+
+    v_requested_count := jsonb_array_length(v_segment -> 'itemIds');
+
+    insert into public.outfit_plan_segment_items (segment_id, item_id, position)
+    select
+      v_segment_id,
+      requested.item_id,
+      (requested.ordinality - 1)::int
+    from (
+      select value::uuid as item_id, ordinality
+      from jsonb_array_elements_text(v_segment -> 'itemIds') with ordinality
+    ) requested
+    join public.wardrobe_items
+      on wardrobe_items.id = requested.item_id
+     and wardrobe_items.user_id = v_user_id;
+
+    get diagnostics v_inserted_count = row_count;
+    if v_inserted_count <> v_requested_count then
+      raise exception 'A segment contains an invalid wardrobe item';
+    end if;
+  end loop;
+
+  return v_plan_id;
+end;
+$$;
+
+create or replace function public.mark_outfit_plan_worn(
+  p_plan_id uuid,
+  p_segments jsonb
+)
+returns void
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_plan public.outfit_plans%rowtype;
+  v_segment public.outfit_plan_segments%rowtype;
+  v_payload_segment jsonb;
+  v_segment_id uuid;
+  v_requested_count int;
+  v_inserted_count int;
+  v_item_ids uuid[];
+  v_all_item_ids uuid[];
+  v_journal_outfit_id uuid;
+  v_now timestamptz := now();
+begin
+  if v_user_id is null then
+    raise exception 'Unauthorized';
+  end if;
+
+  select *
+  into v_plan
+  from public.outfit_plans
+  where id = p_plan_id
+    and user_id = v_user_id
+    and source = 'daily'
+  for update;
+
+  if not found then
+    raise exception 'Daily plan not found';
+  end if;
+
+  if v_plan.status = 'worn' then
+    raise exception 'This plan is already marked as worn';
+  end if;
+
+  if coalesce(jsonb_typeof(p_segments), 'null') <> 'array'
+    or jsonb_array_length(p_segments) = 0 then
+    raise exception 'Worn confirmation requires every segment';
+  end if;
+
+  if jsonb_array_length(p_segments) <> (
+    select count(*)
+    from public.outfit_plan_segments
+    where outfit_plan_id = p_plan_id
+  ) or (
+    select count(distinct (entry.value ->> 'segmentId'))
+    from jsonb_array_elements(p_segments) entry(value)
+  ) <> jsonb_array_length(p_segments) then
+    raise exception 'Worn confirmation must include every segment exactly once';
+  end if;
+
+  for v_payload_segment in
+    select value
+    from jsonb_array_elements(p_segments)
+  loop
+    v_segment_id := (v_payload_segment ->> 'segmentId')::uuid;
+
+    select *
+    into v_segment
+    from public.outfit_plan_segments
+    where id = v_segment_id
+      and outfit_plan_id = p_plan_id;
+
+    if not found then
+      raise exception 'A segment does not belong to this plan';
+    end if;
+
+    if coalesce(jsonb_typeof(v_payload_segment -> 'itemIds'), 'null') <> 'array'
+      or jsonb_array_length(v_payload_segment -> 'itemIds') = 0 then
+      raise exception 'Every worn segment must contain at least one item';
+    end if;
+
+    delete from public.outfit_plan_segment_items
+    where segment_id = v_segment_id;
+
+    v_requested_count := jsonb_array_length(v_payload_segment -> 'itemIds');
+
+    insert into public.outfit_plan_segment_items (segment_id, item_id, position)
+    select
+      v_segment_id,
+      requested.item_id,
+      (requested.ordinality - 1)::int
+    from (
+      select value::uuid as item_id, ordinality
+      from jsonb_array_elements_text(v_payload_segment -> 'itemIds') with ordinality
+    ) requested
+    join public.wardrobe_items
+      on wardrobe_items.id = requested.item_id
+     and wardrobe_items.user_id = v_user_id;
+
+    get diagnostics v_inserted_count = row_count;
+    if v_inserted_count <> v_requested_count then
+      raise exception 'A worn segment contains an invalid wardrobe item';
+    end if;
+
+    select array_agg(item_id order by position)
+    into v_item_ids
+    from public.outfit_plan_segment_items
+    where segment_id = v_segment_id;
+
+    v_journal_outfit_id := null;
+    if v_segment.saved_outfit_id is not null
+      and (
+        select array_agg(item_id order by item_id)
+        from public.outfit_items
+        where outfit_id = v_segment.saved_outfit_id
+      ) = (
+        select array_agg(item_id order by item_id)
+        from unnest(v_item_ids) item_id
+      ) then
+      v_journal_outfit_id := v_segment.saved_outfit_id;
+    end if;
+
+    insert into public.outfit_journal (
+      user_id,
+      outfit_id,
+      plan_segment_id,
+      item_ids,
+      worn_date,
+      event_name
+    )
+    values (
+      v_user_id,
+      v_journal_outfit_id,
+      v_segment_id,
+      v_item_ids,
+      v_plan.plan_date,
+      v_segment.label
+    );
+  end loop;
+
+  -- Count a physical item once for the whole local day even if it appears in
+  -- several segments (for example, the same blazer from morning through dinner).
+  select array_agg(distinct segment_items.item_id)
+  into v_all_item_ids
+  from public.outfit_plan_segment_items segment_items
+  join public.outfit_plan_segments segments
+    on segments.id = segment_items.segment_id
+  where segments.outfit_plan_id = p_plan_id;
+
+  update public.wardrobe_items
+  set
+    times_worn = coalesce(times_worn, 0) + 1,
+    last_worn_at = v_now,
+    updated_at = v_now
+  where user_id = v_user_id
+    and id = any(v_all_item_ids);
+
+  update public.outfit_plans
+  set
+    status = 'worn',
+    updated_at = v_now
+  where id = p_plan_id;
+end;
+$$;
+
+create or replace function public.save_outfit_plan_segment(
+  p_segment_id uuid,
+  p_item_ids jsonb,
+  p_name text
+)
+returns uuid
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_segment public.outfit_plan_segments%rowtype;
+  v_outfit_id uuid;
+  v_requested_count int;
+  v_inserted_count int;
+  v_now timestamptz := now();
+begin
+  if v_user_id is null then
+    raise exception 'Unauthorized';
+  end if;
+
+  select segments.*
+  into v_segment
+  from public.outfit_plan_segments segments
+  join public.outfit_plans plans
+    on plans.id = segments.outfit_plan_id
+  where segments.id = p_segment_id
+    and plans.user_id = v_user_id
+  for update of segments;
+
+  if not found then
+    raise exception 'Plan segment not found';
+  end if;
+
+  if v_segment.saved_outfit_id is not null then
+    return v_segment.saved_outfit_id;
+  end if;
+
+  if coalesce(jsonb_typeof(p_item_ids), 'null') <> 'array'
+    or jsonb_array_length(p_item_ids) < 2 then
+    raise exception 'At least two items are required to save an outfit';
+  end if;
+
+  delete from public.outfit_plan_segment_items
+  where segment_id = p_segment_id;
+
+  v_requested_count := jsonb_array_length(p_item_ids);
+
+  insert into public.outfit_plan_segment_items (segment_id, item_id, position)
+  select
+    p_segment_id,
+    requested.item_id,
+    (requested.ordinality - 1)::int
+  from (
+    select value::uuid as item_id, ordinality
+    from jsonb_array_elements_text(p_item_ids) with ordinality
+  ) requested
+  join public.wardrobe_items
+    on wardrobe_items.id = requested.item_id
+   and wardrobe_items.user_id = v_user_id;
+
+  get diagnostics v_inserted_count = row_count;
+  if v_inserted_count <> v_requested_count then
+    raise exception 'The segment contains an invalid wardrobe item';
+  end if;
+
+  insert into public.outfits (
+    user_id,
+    name,
+    folder,
+    ai_generated,
+    ai_reasoning,
+    created_at,
+    updated_at
+  )
+  values (
+    v_user_id,
+    coalesce(nullif(p_name, ''), v_segment.label),
+    'Everyday',
+    true,
+    nullif(v_segment.reasoning, ''),
+    v_now,
+    v_now
+  )
+  returning id into v_outfit_id;
+
+  insert into public.outfit_items (outfit_id, item_id, position)
+  select v_outfit_id, item_id, position
+  from public.outfit_plan_segment_items
+  where segment_id = p_segment_id
+  order by position;
+
+  update public.outfit_plan_segments
+  set
+    saved_outfit_id = v_outfit_id,
+    updated_at = v_now
+  where id = p_segment_id;
+
+  return v_outfit_id;
+end;
+$$;
+
+revoke execute on function public.replace_outfit_plan(date, text, uuid, text, jsonb, jsonb)
+  from public, anon;
+grant execute on function public.replace_outfit_plan(date, text, uuid, text, jsonb, jsonb)
+  to authenticated;
+
+revoke execute on function public.mark_outfit_plan_worn(uuid, jsonb)
+  from public, anon;
+grant execute on function public.mark_outfit_plan_worn(uuid, jsonb)
+  to authenticated;
+
+revoke execute on function public.save_outfit_plan_segment(uuid, jsonb, text)
+  from public, anon;
+grant execute on function public.save_outfit_plan_segment(uuid, jsonb, text)
+  to authenticated;

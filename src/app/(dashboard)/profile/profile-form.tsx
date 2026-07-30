@@ -15,6 +15,33 @@ const BODY_SHAPES: { value: BodyShape; label: string }[] = [
   { value: "inverted_triangle", label: "Inverted Triangle" },
 ];
 
+// Curated, not exhaustive (ROADMAP D4) — one representative IANA zone per common UTC
+// offset/region, not the full ~400-zone Intl.supportedValuesOf("timeZone") list. Feeds
+// day-bucket.ts's eventsOnLocalDay() via GET /api/ai/daily so calendar occasions land
+// on the correct local day.
+const COMMON_TIMEZONES: { value: string; label: string }[] = [
+  { value: "Pacific/Honolulu", label: "Hawaii (Honolulu)" },
+  { value: "America/Anchorage", label: "Alaska (Anchorage)" },
+  { value: "America/Los_Angeles", label: "Pacific Time (Los Angeles)" },
+  { value: "America/Denver", label: "Mountain Time (Denver)" },
+  { value: "America/Chicago", label: "Central Time (Chicago)" },
+  { value: "America/New_York", label: "Eastern Time (New York)" },
+  { value: "America/Sao_Paulo", label: "São Paulo" },
+  { value: "Europe/London", label: "London" },
+  { value: "Europe/Paris", label: "Central Europe (Paris, Berlin)" },
+  { value: "Europe/Athens", label: "Eastern Europe (Athens, Helsinki)" },
+  { value: "Europe/Moscow", label: "Moscow" },
+  { value: "Asia/Dubai", label: "Dubai" },
+  { value: "Asia/Karachi", label: "Karachi" },
+  { value: "Asia/Kolkata", label: "India (Kolkata)" },
+  { value: "Asia/Dhaka", label: "Dhaka" },
+  { value: "Asia/Bangkok", label: "Bangkok" },
+  { value: "Asia/Shanghai", label: "China / Singapore (Shanghai)" },
+  { value: "Asia/Tokyo", label: "Japan / Korea (Tokyo)" },
+  { value: "Australia/Sydney", label: "Sydney" },
+  { value: "Pacific/Auckland", label: "Auckland" },
+];
+
 export function ProfileForm({ profile }: { profile: Profile | null }) {
   const router = useRouter();
   const supabase = createClient();
@@ -23,6 +50,7 @@ export function ProfileForm({ profile }: { profile: Profile | null }) {
   const [form, setForm] = useState({
     name: profile?.name || "",
     city: profile?.city || "",
+    timezone: profile?.timezone || "",
     height_cm: profile?.height_cm || "",
     weight_kg: profile?.weight_kg || "",
     body_shape: profile?.body_shape || "",
@@ -69,6 +97,7 @@ export function ProfileForm({ profile }: { profile: Profile | null }) {
         city: form.city || null,
         lat: geo.lat,
         lng: geo.lng,
+        timezone: form.timezone || null,
         height_cm: form.height_cm ? Number(form.height_cm) : null,
         weight_kg: form.weight_kg ? Number(form.weight_kg) : null,
         body_shape: form.body_shape || null,
@@ -118,6 +147,18 @@ export function ProfileForm({ profile }: { profile: Profile | null }) {
             <div>
               <label className={labelClass}>City</label>
               <input value={form.city} onChange={(e) => update("city", e.target.value)} className={inputClass} placeholder="For weather-based styling" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3 mt-3">
+            <div>
+              <label className={labelClass}>Timezone</label>
+              <select value={form.timezone} onChange={(e) => update("timezone", e.target.value)} className={inputClass}>
+                <option value="">Select…</option>
+                {COMMON_TIMEZONES.map((tz) => (
+                  <option key={tz.value} value={tz.value}>{tz.label}</option>
+                ))}
+              </select>
+              <p className="text-xs text-surface-400 mt-1">Used to line up calendar events with the right day for daily/weekly outfit planning.</p>
             </div>
           </div>
         </section>

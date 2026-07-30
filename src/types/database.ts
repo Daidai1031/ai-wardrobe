@@ -9,6 +9,8 @@ export interface Profile {
   city: string | null;
   lat: number | null;
   lng: number | null;
+  timezone: string | null;
+  roles: string[];
   height_cm: number | null;
   weight_kg: number | null;
   body_shape: BodyShape | null;
@@ -88,6 +90,8 @@ export interface OutfitJournalEntry {
   id: string;
   user_id: string;
   outfit_id: string | null;
+  plan_segment_id: string | null;
+  item_ids: string[];
   worn_date: string;
   event_name: string | null;
   event_type: string | null;
@@ -112,6 +116,7 @@ export interface TravelPlan {
   destination: string;
   destination_lat: number | null;
   destination_lng: number | null;
+  destination_timezone: string | null;
   start_date: string;
   end_date: string;
   travel_goals: string[];
@@ -120,6 +125,72 @@ export interface TravelPlan {
   weather_data: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+}
+
+// google_connections is service-role-only (no client-facing RLS policy) — this type
+// exists for src/lib/google/client.ts, not for use with the browser/server Supabase clients.
+export interface GoogleConnection {
+  user_id: string;
+  access_token: string;
+  refresh_token: string | null;
+  expires_at: string | null;
+  scopes: string[];
+  google_email: string | null;
+  invalid_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CalendarEvent {
+  id: string;
+  user_id: string;
+  google_event_id: string;
+  title: string | null;
+  location: string | null;
+  starts_at: string;
+  ends_at: string | null;
+  all_day: boolean;
+  attendee_count: number;
+  occasion: string | null;
+  formality: number | null;
+  synced_at: string;
+}
+
+export type OutfitPlanSource = "daily" | "weekly" | "travel";
+export type OutfitPlanStatus = "suggested" | "accepted" | "rejected" | "worn";
+
+export interface OutfitPlan {
+  id: string;
+  user_id: string;
+  plan_date: string;
+  source: OutfitPlanSource;
+  travel_plan_id: string | null;
+  gap: string | null;
+  weather: Record<string, unknown>;
+  status: OutfitPlanStatus;
+  generated_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OutfitPlanSegment {
+  id: string;
+  outfit_plan_id: string;
+  position: number;
+  label: string;
+  reasoning: string;
+  change_from_previous: string | null;
+  event_ids: string[];
+  saved_outfit_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OutfitPlanSegmentItem {
+  segment_id: string;
+  item_id: string;
+  position: number;
+  created_at: string;
 }
 
 // ── AI Classification result ──
