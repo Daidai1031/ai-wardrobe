@@ -199,6 +199,22 @@ export interface OutfitPlanSegmentItem {
   created_at: string;
 }
 
+export type StylistBookingService = "online_30" | "in_person_day";
+export type StylistBookingStatus = "confirmed" | "cancelled";
+
+export interface HumanStylistBooking {
+  id: string;
+  user_id: string;
+  service_type: StylistBookingService;
+  starts_at: string;
+  ends_at: string;
+  timezone: string;
+  status: StylistBookingStatus;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 // ── AI Classification result ──
 
 export interface AIClassification {

@@ -16,6 +16,7 @@ import {
   RotateCcw,
   Shirt,
   Sparkles,
+  Trash2,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -86,7 +87,10 @@ export function OutfitsView({ outfits, wardrobeItems, userId }: OutfitsViewProps
   const [folder, setFolder] = useState("Uncategorized");
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
+  const [deletingOutfitId, setDeletingOutfitId] = useState<string | null>(null);
+  const [deletedOutfitIds, setDeletedOutfitIds] = useState<Set<string>>(() => new Set());
   const [isCanvasOver, setIsCanvasOver] = useState(false);
+  const visibleOutfits = outfits.filter((outfit) => !deletedOutfitIds.has(outfit.id));
 
   const itemById = useMemo(
     () => new Map(wardrobeItems.map((item) => [item.id, item])),
@@ -303,6 +307,40 @@ export function OutfitsView({ outfits, wardrobeItems, userId }: OutfitsViewProps
     router.refresh();
   }
 
+  async function deleteOutfit(outfit: SavedOutfit) {
+    if (deletingOutfitId) return;
+
+    const outfitName = outfit.name || "Untitled outfit";
+    const confirmed = window.confirm(
+      `Delete “${outfitName}”? This removes the saved look, but keeps every item in your closet.`
+    );
+    if (!confirmed) return;
+
+    setDeletingOutfitId(outfit.id);
+    const { data: deletedOutfit, error } = await supabase
+      .from("outfits")
+      .delete()
+      .eq("id", outfit.id)
+      .eq("user_id", userId)
+      .select("id")
+      .maybeSingle();
+
+    if (error || !deletedOutfit) {
+      toast.error(error?.message || "Failed to delete saved look");
+      setDeletingOutfitId(null);
+      return;
+    }
+
+    setDeletedOutfitIds((current) => {
+      const next = new Set(current);
+      next.add(outfit.id);
+      return next;
+    });
+    setDeletingOutfitId(null);
+    toast.success("Saved look deleted");
+    router.refresh();
+  }
+
   if (isCreating) {
     return (
       <div className="min-h-[calc(100vh-7rem)]">
@@ -352,10 +390,12 @@ export function OutfitsView({ outfits, wardrobeItems, userId }: OutfitsViewProps
 
   return (
     <OutfitLibrary
-      outfits={outfits}
+      outfits={visibleOutfits}
       wardrobeCount={wardrobeItems.length}
       onCreate={startCreate}
       onEdit={startEdit}
+      onDelete={deleteOutfit}
+      deletingOutfitId={deletingOutfitId}
     />
   );
 }
@@ -514,11 +554,15 @@ function OutfitLibrary({
   wardrobeCount,
   onCreate,
   onEdit,
+  onDelete,
+  deletingOutfitId,
 }: {
   outfits: SavedOutfit[];
   wardrobeCount: number;
   onCreate: () => void;
   onEdit: (outfit: SavedOutfit) => void;
+  onDelete: (outfit: SavedOutfit) => void;
+  deletingOutfitId: string | null;
 }) {
   return (
     <div>
@@ -621,13 +665,30 @@ function OutfitLibrary({
                 className="group overflow-hidden rounded-2xl border border-surface-200 bg-white transition-all hover:-translate-y-0.5 hover:shadow-lg"
               >
                 <div className="relative aspect-square overflow-hidden bg-[#f1eee9]">
-                  <button
-                    type="button"
-                    onClick={() => onEdit(outfit)}
-                    className="absolute right-3 top-3 z-20 flex items-center gap-1.5 rounded-full bg-white/90 px-3 py-1.5 text-[11px] font-semibold text-surface-600 opacity-0 shadow-sm transition-all hover:bg-surface-900 hover:text-white group-hover:opacity-100"
-                  >
-                    <Pencil size={12} /> Edit
-                  </button>
+                  <div className="absolute right-3 top-3 z-20 flex items-center gap-1.5 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100">
+                    <button
+                      type="button"
+                      onClick={() => onEdit(outfit)}
+                      disabled={deletingOutfitId === outfit.id}
+                      className="flex items-center gap-1.5 rounded-full bg-white/90 px-3 py-1.5 text-[11px] font-semibold text-surface-600 shadow-sm transition-colors hover:bg-surface-900 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <Pencil size={12} /> Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onDelete(outfit)}
+                      disabled={deletingOutfitId === outfit.id}
+                      aria-label={`Delete ${outfit.name || "untitled outfit"}`}
+                      title="Delete saved look"
+                      className="flex h-7 w-7 items-center justify-center rounded-full bg-white/90 text-surface-500 shadow-sm transition-colors hover:bg-red-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {deletingOutfitId === outfit.id ? (
+                        <Loader2 size={13} className="animate-spin" />
+                      ) : (
+                        <Trash2 size={13} />
+                      )}
+                    </button>
+                  </div>
                   {joinedItems.map((join, index) => {
                     const item = join.wardrobe_items;
                     const layout =

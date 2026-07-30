@@ -38,6 +38,7 @@ Fill in:
 - `KEEP_ALIVE_ALERT_WEBHOOK` — optional Slack/Discord incoming webhook; if set, the keep-alive cron pings it when the Supabase check fails (see "Keeping Supabase awake")
 - `SUPABASE_SERVICE_ROLE_KEY` — Settings → API → `service_role` key. Server-only, never expose via `NEXT_PUBLIC_`. Needed for `google_connections` (see "Google Calendar OAuth" below), which has RLS enabled with no client policy — only the service role can read/write it.
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — see "Google Calendar OAuth" below.
+- `STYLIST_TIME_ZONE` — optional IANA timezone for the Human Stylist's working calendar (defaults to `America/New_York`). Slots are generated in this timezone, then displayed in each client's browser timezone.
 
 ### Google Calendar OAuth (Phase 6.0-A)
 
