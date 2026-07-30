@@ -68,6 +68,7 @@ src/
 ├── app/
 │   ├── (auth)/login, signup     — auth pages
 │   ├── (dashboard)/             — main app (sidebar layout)
+│   │   ├── home/                — daily pick (weather + wardrobe)
 │   │   ├── closet/              — browse & upload items
 │   │   ├── closet/[id]/         — item detail & edit
 │   │   ├── outfits/             — outfit library + freeform Canvas builder
@@ -75,11 +76,12 @@ src/
 │   │   ├── analytics/           — closet stats & style DNA
 │   │   ├── profile/             — user profile & body data
 │   │   └── travel/              — travel planner (placeholder pages only)
-│   └── api/ai/                  — AI processing endpoints
-│       ├── classify/            — upload → detect count → bg removal or SAM segmentation → classify → store
-│       ├── convert/             — HEIC/HEIF → JPEG (client calls this before upload)
-│       ├── stylist/             — chat with wardrobe context
-│       └── weather/             — OpenWeatherMap proxy
+│   ├── api/ai/                  — AI processing endpoints
+│   │   ├── classify/            — upload → detect count → bg removal or SAM segmentation → classify → store
+│   │   ├── convert/             — HEIC/HEIF → JPEG (client calls this before upload)
+│   │   ├── daily/               — Home daily pick (profile.city → weather → Claude selects a look)
+│   │   └── stylist/             — chat with wardrobe context
+│   └── api/weather/             — OpenWeatherMap proxy
 ├── components/
 │   ├── closet/                  — upload zone (single/multi toggle), item card
 │   ├── layout/                  — sidebar navigation
@@ -91,7 +93,12 @@ src/
 └── types/                       — TypeScript domain types
 ```
 
-There is no dashboard home page yet — `/` just redirects to `/closet` or `/login`. See `CLAUDE.md` and `checklist.md` for the current architecture and in-progress work in detail; this file only covers setup/deployment.
+`/` redirects to `/home` (authenticated) or `/login`. `/home` is the dashboard landing page: it reads `profile.city` → OpenWeather → active wardrobe and asks Claude for a daily outfit pick (cached per-day in `localStorage`).
+
+Three docs cover the rest, and this file only covers setup/deployment:
+- `CLAUDE.md` — current architecture / code layout
+- `checklist.md` — what's already built + debug log
+- `Roadmap.md` — what's next + technical design for unbuilt features
 
 ## Architecture Decisions
 

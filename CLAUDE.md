@@ -74,6 +74,26 @@ When adding a schema change, update it in `supabase/schema.sql` and apply manual
 
 Required: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `FAL_KEY`, `ANTHROPIC_API_KEY`. Optional: `OPENWEATHER_API_KEY` (weather-dependent features degrade gracefully without it).
 
+## Doc maintenance (keep these files in sync with the code)
+
+After making a change, update the matching doc **in the same working session** — don't leave it for later. This repo has no migration tooling and no test suite, so these docs are the only record of intent and state; a stale doc is worse than none.
+
+Route the update by *what kind of change it was*:
+
+| If the change is… | Update… |
+|---|---|
+| Architecture, code layout, a new/renamed route or module, a pipeline behavior change | `CLAUDE.md` (this file) |
+| A feature reaching "done", or a bug fixed (root cause + fix) | `checklist.md` (feature-status table and/or Debug Log) |
+| A plan, priority, or technical design for unbuilt work | `Roadmap.md` |
+| Setup, environment variables, or deployment steps | `README.md` |
+
+`AGENTS.md` is a thin pointer to this file — never copy content into it; it needs no per-change update.
+
+Scope, so this stays signal not noise:
+- **Update on**: meaningful changes to architecture, feature status, plans, or setup — the things above.
+- **Skip for**: styling tweaks, variable renames, comment edits, and other changes that don't alter behavior, status, or plan. Not every commit needs a doc edit.
+- When code and a doc disagree, the code is truth — fix the doc, and note the correction if it was a documented decision.
+
 ## Status / in-progress work
 
 Three docs, three jobs — read the right one:
