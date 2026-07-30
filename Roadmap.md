@@ -30,13 +30,13 @@
 - 耳环/手镯的泛化配对路径（只验证过鞋子）
 - `mode="single"` 跳过检测这条路径未在真实账号点过上传
 - `/home` 未在浏览器里真实登录看过效果（依赖 `OPENWEATHER_API_KEY` + profile 填了 city）
-- `outfit_items` 的 `x/y/width` 三列需要在 Supabase SQL Editor 手动跑 `schema.sql` 底部的 `alter table`（本仓库无 migration 工具）
+- ~~`outfit_items` 的 `x/y/width` 三列需要在 Supabase SQL Editor 手动跑~~ ✅ 已随 Phase 6.0 section 15 迁移块一起在生产库执行（2026-07-30）
 
 ### ❌ 未开始
 
 | 项 | 现状 |
 |---|---|
-| Google Calendar | 完全没接。`stylist` route 里只有一个空的 `context.calendar` 字段；schema 里没有存 token 的表 |
+| Google Calendar | 未接。`stylist` route 里只有一个空的 `context.calendar` 字段。**Phase 6.0 schema 已落地并在生产库执行（2026-07-30）**：`google_connections` / `calendar_events` / `outfit_plans` 三张表 + `roles`/`timezone`/`destination_timezone` 字段已建；但还没有任何代码读写它们，`database.ts` 类型也未同步 |
 | Gmail | 从未进入过计划 |
 | Weekly planning | 无 |
 | 出差模式 | `/travel` 是纯占位页；`travel_plans` 表建好了但零读写 |
@@ -94,7 +94,7 @@
 
 Google Cloud 项目**保持 Testing 模式**（D1），测试用户手动加进 OAuth consent screen 的 test users 列表。Testing 模式下 refresh_token 有效期较短（通常 7 天）会过期，所以 `google/client.ts` 必须能优雅处理「refresh 失败 → 标记连接失效 → 前端提示重新授权」，不能抛 500。这一条在正式 verification 之后才会消失。
 
-**B. 新增数据表**（追加进 `supabase/schema.sql`）
+**B. 新增数据表**（追加进 `supabase/schema.sql`）— ✅ **schema 已写好且已在生产库执行（2026-07-30，分支 `phase-6.0-schema`）**，三张表 + 字段都在文件里并整理进底部 section 15「MIGRATIONS」，已在 Supabase SQL Editor 跑通。⚠️ 仍待办：`database.ts` 类型未同步、无代码读写。下面 SQL 保留作为字段说明参考。
 
 ```sql
 -- Google 授权令牌：只允许 service role 访问，客户端一律拒绝
@@ -424,7 +424,7 @@ Folk 有完整 REST API（workspace 级 Bearer key）、自定义字段、pipeli
 ```
 
 **穿插的技术债**（可以在 Phase 6 期间顺手清）：
-- `outfit_items.x/y/width` 的 alter table 还没在生产库跑
+- ~~`outfit_items.x/y/width` 的 alter table 还没在生产库跑~~ ✅ 已跑（2026-07-30，随 Phase 6.0 迁移块）
 - 耳环/手镯配对路径的真实照片验证
 - Analytics 的 `times_worn` 没有真实写入来源（6.1 的 Worn 按钮会解决）
 - Stylist Canvas 化（原任务 2，可以并到 6.1 一起做，因为都要动搭配的结构化输出）

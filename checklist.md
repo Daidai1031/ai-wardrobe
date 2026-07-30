@@ -117,9 +117,10 @@
 
 | 功能 | 状态 | 依赖 / 备注 |
 |------|------|------|
-| Google OAuth 底座（Calendar + Gmail scope、token 刷新） | ❌ 待开发 | Phase 6.0，Daily/Weekly/出差三者共用的前置条件 |
-| `outfit_plans` 统一计划表 | ❌ 待开发 | Phase 6.0。日/周/出差三种来源共用，替掉现在 `/home` 的 localStorage 缓存 |
-| 日历事件语义化（occasion + formality） | ❌ 待开发 | Phase 6.0。按周批量调一次 Haiku 并缓存进 `calendar_events`，不按事件逐个调 |
+| Phase 6.0 schema（3 张新表 + 字段） | ✅ 已执行（表就绪） | 2026-07-30，分支 `phase-6.0-schema`。`google_connections` / `calendar_events` / `outfit_plans` + `profiles.roles/timezone` + `travel_plans.destination_timezone` + 补跑 `outfit_items.x/y/width` 已写进 `schema.sql`（底部 section 15 迁移块）**并已在 Supabase SQL Editor 跑通**。⚠️ 仍待办：`database.ts` 类型未同步、无代码读写。`google_connections` 故意开 RLS 不建 policy（只 service role 可访问 token） |
+| Google OAuth 底座（Calendar + Gmail scope、token 刷新） | ❌ 待开发（表已就绪） | Phase 6.0，Daily/Weekly/出差三者共用的前置条件。`google_connections` 表已在 schema 里 |
+| `outfit_plans` 统一计划表 | ❌ 代码待开发（表已就绪） | Phase 6.0。日/周/出差三种来源共用，替掉现在 `/home` 的 localStorage 缓存 |
+| 日历事件语义化（occasion + formality） | ❌ 待开发（表已就绪） | Phase 6.0。按周批量调一次 Haiku 并缓存进 `calendar_events`，不按事件逐个调 |
 | 冷启动 Onboarding（问卷 + 风格滑卡） | ❌ 待开发 | Phase 7。`preference_swipes` 表 + `profiles.preference_dna` 字段都已就绪；ROADMAP 里建议把它排在 Avatar/Shopping 之前，因为它是所有推荐质量的上游且成本最低。唯一非代码工作量是准备 20–40 张风格参考图 |
 | Avatar 生成（fal.ai） | ❌ 待开发 | Phase 8。`profiles` 的 `skin_tone`/`hair_color`/`hair_length`/`body_shape` 就是给这个预留的。**成本量级和文本调用不同，必须缓存 + 限流**；虚拟试穿比静态 avatar 难得多，建议分两步 |
 | Shopping Recommendations | ❌ 待开发 | Phase 9。缺口信号已经在产出（daily 的 `gap`、出差 capsule 缺口、Analytics 类别失衡）只是丢掉了。**最大未决问题是商品数据源**，建议先接一个联盟 feed 而不是做通用爬虫 |
