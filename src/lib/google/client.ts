@@ -184,3 +184,75 @@ export async function hasScope(userId: string, scope: string): Promise<boolean> 
   if (!connection || connection.invalid_at) return false;
   return connection.scopes.includes(scope);
 }
+
+/**
+ * What the settings UI is allowed to know about a connection. Deliberately carries
+ * no tokens: `google_connections` has RLS with no policy precisely so tokens never
+ * reach a browser, and that guarantee would be pointless if this shape leaked them
+ * through a Server Component's props instead.
+ *
+ * `needsReconnect` is the state that matters in the UI — a row exists but was marked
+ * invalid, which under Testing-mode's ~7 day refresh_token expiry (D1) is routine
+ * rather than exceptional. It reads as "connected but broken", not "never connected".
+ */
+export interface GoogleConnectionStatus {
+  connected: boolean;
+  needsReconnect: boolean;
+  scopes: string[];
+  googleEmail: string | null;
+  connectedAt: string | null;
+}
+
+export async function getConnectionStatus(userId: string): Promise<GoogleConnectionStatus> {
+  const connection = await getConnection(userId);
+  if (!connection) {
+    return { connected: false, needsReconnect: false, scopes: [], googleEmail: null, connectedAt: null };
+  }
+  return {
+    connected: !connection.invalid_at,
+    needsReconnect: Boolean(connection.invalid_at),
+    scopes: connection.scopes || [],
+    googleEmail: connection.google_email,
+    connectedAt: connection.created_at,
+  };
+}
+
+const GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke";
+
+/**
+ * Drops the connection. The local row is deleted even when Google's revoke call
+ * fails: the user asked to disconnect, and keeping tokens we've been told to forget
+ * is the worse outcome. The cost of that choice is that a failed revoke leaves the
+ * grant listed in the user's Google account until they remove it there, which the
+ * UI says explicitly rather than pretending the revoke always lands.
+ */
+export async function revokeConnection(userId: string): Promise<{ revokedAtGoogle: boolean }> {
+  const connection = await getConnection(userId);
+  if (!connection) return { revokedAtGoogle: true };
+
+  let revokedAtGoogle = false;
+  // Revoking the refresh token invalidates every token derived from it; fall back to
+  // the access token when there is no refresh token on file.
+  const token = connection.refresh_token || connection.access_token;
+  if (token) {
+    try {
+      const res = await fetch(GOOGLE_REVOKE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ token }),
+      });
+      revokedAtGoogle = res.ok;
+      if (!res.ok) {
+        console.error("Google revoke failed:", res.status, await res.text());
+      }
+    } catch (err) {
+      console.error("Google revoke error:", err);
+    }
+  }
+
+  const supabase = createServiceSupabase();
+  const { error } = await supabase.from("google_connections").delete().eq("user_id", userId);
+  if (error) throw error;
+
+  return { revokedAtGoogle };
+}

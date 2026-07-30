@@ -36,7 +36,7 @@
 
 | 项 | 现状 |
 |---|---|
-| Google Calendar | OAuth、事件抓取/语义化和本地日期分桶均已真实验证；daily 已调用 `eventsOnLocalDay()` 并把事件 ID/标题/occasion/formality/本地时间交给动态 segment prompt。Weekly 尚未接入；没有设置页面 UI（连接/断开按钮） |
+| Google Calendar | OAuth、事件抓取/语义化、本地日期分桶、`/profile` 的连接/断开设置 UI 均已完成；daily 已调用 `eventsOnLocalDay()` 并把事件 ID/标题/occasion/formality/本地时间交给动态 segment prompt。Weekly 尚未接入 |
 | Gmail | 从未进入过计划 |
 | Weekly planning | 无 |
 | 出差模式 | `/travel` 是纯占位页；`travel_plans` 表建好了但零读写 |
@@ -90,7 +90,7 @@
 - `GET /api/google/callback` → 换 token → upsert 进 `google_connections`，**把实际拿到的 scope 记进 `scopes` 数组** ✅ 已实现
 - `src/lib/google/client.ts` → 统一的「取 access_token，过期就用 refresh_token 换」helper，并暴露 `hasScope(userId, scope)` 给上层判断功能可用性 ✅ 已实现（`getAccessToken()` / `hasScope()`）
 
-设置页面是两个独立开关（「连接日历」/「连接邮箱」），不是一个「连接 Google」。每个功能入口都要先查 `hasScope`，没授权就显示引导而不是报错。**⚠️ 这个设置页面 UI 还没做** —— 目前 `/api/google/callback` 成功后只是重定向回 `/profile?google_calendar=connected`，没有任何页面读这个 query 参数或渲染开关，纯粹是为了避免死链接。
+设置页面是两个独立开关（「连接日历」/「连接邮箱」），不是一个「连接 Google」。每个功能入口都要先查 `hasScope`，没授权就显示引导而不是报错。**✅ 设置页面 UI 已实现（2026-07-30）** —— `/profile` 的「Connected accounts」区块：Calendar 一行（连接 / 重新授权 / 断开），Gmail 一行但标为「Not available yet」（故意显示而不是隐藏，让「两次独立授权」这个设计在界面上看得见）。状态在 Server Component 里用新增的 `getConnectionStatus()` 读，返回的结构**不含任何 token** —— `google_connections` 无 RLS policy 就是为了让 token 到不了浏览器，把它塞进 props 传下去等于白设。断开走新增的 `POST /api/google/disconnect`（先向 Google revoke，再删行；revoke 失败也照删，但 UI 会明说「Google 那边可能还挂着，需要自己去账号设置移除」）。三种状态分开处理：未连接 / 已连接 / `needsReconnect`（有行但 `invalid_at` 非空）——最后这种在 Testing 模式下是常态不是异常。
 
 Google Cloud 项目**保持 Testing 模式**（D1），测试用户手动加进 OAuth consent screen 的 test users 列表。Testing 模式下 refresh_token 有效期较短（通常 7 天）会过期，所以 `google/client.ts` 必须能优雅处理「refresh 失败 → 标记连接失效 → 前端提示重新授权」，不能抛 500 —— ✅ `getAccessToken()` 已实现：refresh 失败会把 `google_connections.invalid_at` 打上时间戳并返回 `null`，不抛异常。这一条在正式 verification 之后才会消失。
 

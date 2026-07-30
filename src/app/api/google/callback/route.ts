@@ -8,8 +8,9 @@ const STATE_COOKIE = "google_oauth_state";
 
 /**
  * GET /api/google/callback — Google redirects here after consent (or denial).
- * Lands the user back on /profile with a `google_calendar=connected|error` flag;
- * there's no settings toggle UI yet to read it, this just avoids a dead-end redirect.
+ * Lands the user back on /profile with a `google_calendar=connected|error` flag.
+ * The Connected accounts section reads it, reports the outcome once, then strips it
+ * from the URL — the redirect is the only channel this flow has to report back.
  */
 export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
