@@ -36,6 +36,23 @@ Fill in:
 - `ANTHROPIC_API_KEY` — from console.anthropic.com
 - `OPENWEATHER_API_KEY` — free at openweathermap.org/api (optional for Phase 1)
 - `KEEP_ALIVE_ALERT_WEBHOOK` — optional Slack/Discord incoming webhook; if set, the keep-alive cron pings it when the Supabase check fails (see "Keeping Supabase awake")
+- `SUPABASE_SERVICE_ROLE_KEY` — Settings → API → `service_role` key. Server-only, never expose via `NEXT_PUBLIC_`. Needed for `google_connections` (see "Google Calendar OAuth" below), which has RLS enabled with no client policy — only the service role can read/write it.
+- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — see "Google Calendar OAuth" below.
+
+### Google Calendar OAuth (Phase 6.0-A)
+
+This is separate from the Supabase Google *login* provider in step 2 above — that one is sign-in only and Supabase doesn't persist a long-lived `provider_refresh_token`. Calendar access is its own OAuth flow (`/api/google/auth` → `/api/google/callback`) with its own token storage (`google_connections`).
+
+Manual setup in [Google Cloud Console](https://console.cloud.google.com):
+1. Create (or reuse) a project → **APIs & Services → Library** → enable the **Google Calendar API**.
+2. **APIs & Services → OAuth consent screen** → User type **External** → keep publishing status at **Testing** (ROADMAP D1 — going to Production would require a paid CASA security review for the `gmail.readonly` scope planned in a later task; Testing mode caps you at 100 test users, which is fine pre-launch).
+3. Under the consent screen's **Test users**, add the Google account(s) you'll sign in with during development — Testing-mode apps reject any Google account not on this list.
+4. **APIs & Services → Credentials** → **Create Credentials → OAuth client ID** → type **Web application**.
+   - Authorized redirect URIs: add `http://localhost:3000/api/google/callback` for local dev, and `https://<your-prod-domain>/api/google/callback` for the deployed app. The redirect URI is derived from the request's own origin at runtime (no separate `GOOGLE_REDIRECT_URI` env var needed) — it just has to be registered here so Google will accept it.
+   - Copy the generated **Client ID** → `GOOGLE_CLIENT_ID`, **Client secret** → `GOOGLE_CLIENT_SECRET`.
+5. Under **Scopes** on the consent screen, add `.../auth/calendar.readonly` (marked "sensitive" — that's fine in Testing mode, it only triggers CASA review in Production).
+
+Testing-mode refresh tokens expire after ~7 days — `src/lib/google/client.ts`'s `getAccessToken()` handles a failed refresh by marking `google_connections.invalid_at` instead of throwing, so the app degrades to "please reconnect Calendar" rather than a 500. Re-running the `/api/google/auth?scope=calendar` flow (it always sends `prompt=consent`) re-authorizes and clears that flag.
 
 ### 5. Install & Run
 
