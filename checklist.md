@@ -134,6 +134,7 @@
 | Vercel 部署 | ✅ 完成 | 自动部署 from GitHub |
 | 自定义域名 | ✅ 完成 | `closet.daidingrdesigns.com` → Vercel Domains 添加 |
 | 环境变量 | ✅ 完成 | SUPABASE_URL, SUPABASE_ANON_KEY, FAL_KEY, ANTHROPIC_API_KEY |
+| Supabase 心跳（防免费版暂停） | ✅ 完成 | `vercel.json` 里的 Vercel Cron（`0 0 */3 * *`，每 3 天）打 `GET /api/keep-alive` → 跑 `select id from profiles limit 1` 制造 DB 活动，避开免费版 7 天无活动自动暂停；返回空 200，无 body、无认证（anon 角色下 RLS 返回 0 行也算活动，不报错） |
 
 ---
 

@@ -54,6 +54,10 @@ vercel
 
 Add the same env vars in Vercel Dashboard → Project → Settings → Environment Variables.
 
+### Keeping Supabase awake (free tier)
+
+Supabase pauses a free-tier project after ~7 days with no activity. `vercel.json` registers a Vercel Cron job (`0 0 */3 * *` — every 3 days at 00:00 UTC, comfortably inside the 7-day window) that hits `GET /api/keep-alive`. That route runs a trivial `select id from profiles limit 1` — enough DB activity to reset the inactivity timer — and returns an empty `200` (no body, `no-store`, `noindex`). No auth cookie is present on a cron request, so the query runs as the anon role and returns zero rows under RLS; that still counts as activity and is not an error. Vercel Cron is picked up automatically from `vercel.json` on deploy — no extra dashboard config. If you self-host or move off Vercel, replace this with any external uptime pinger on the same endpoint.
+
 ### Custom Domain
 
 In Vercel Dashboard → Project → Settings → Domains → Add `closet.daidingrdesigns.com`.
@@ -81,7 +85,8 @@ src/
 │   │   ├── convert/             — HEIC/HEIF → JPEG (client calls this before upload)
 │   │   ├── daily/               — Home daily pick (profile.city → weather → Claude selects a look)
 │   │   └── stylist/             — chat with wardrobe context
-│   └── api/weather/             — OpenWeatherMap proxy
+│   ├── api/weather/             — OpenWeatherMap proxy
+│   └── api/keep-alive/          — Vercel Cron target; pings Supabase so the free tier isn't paused
 ├── components/
 │   ├── closet/                  — upload zone (single/multi toggle), item card
 │   ├── layout/                  — sidebar navigation

@@ -21,7 +21,8 @@ Next.js 16 App Router app ("ai-wardrobe") using Server Components + Route Handle
 
 - `src/app/(auth)/` — `login`, `signup` pages, unauthenticated.
 - `src/app/(dashboard)/` — the main app: `closet`, `closet/[id]`, `outfits`, `stylist`, `analytics`, `profile`, `travel`. Protected by `src/proxy.ts`.
-- `src/app/api/ai/` — server-side AI pipeline endpoints: `classify`, `convert`, `stylist`; `src/app/api/weather/` proxies OpenWeatherMap.
+- `src/app/api/ai/` — server-side AI pipeline endpoints: `classify`, `convert`, `stylist`, `daily`; `src/app/api/weather/` proxies OpenWeatherMap.
+- `src/app/api/keep-alive/` — a Vercel Cron target (schedule in `vercel.json`, every 3 days) that runs a trivial `select id from profiles limit 1` and returns an empty `200`, purely to keep the free-tier Supabase project from being paused after ~7 days of inactivity. Not part of any user flow; no auth (runs as anon under RLS, which is fine — the query still counts as DB activity). See README's "Keeping Supabase awake" for details.
 
 ### Auth & routing
 
