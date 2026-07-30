@@ -1461,3 +1461,7 @@ create policy "Users read own stylist bookings"
 -- There is deliberately no client insert/update/delete policy. The authenticated
 -- booking route validates offered slots, checks the global calendar through the
 -- service role, and writes on the caller's behalf. Direct browser writes are denied.
+
+-- Consultation access window (set by n8n via /api/webhooks/consult-ended)
+alter table public.profiles
+  add column if not exists access_expires_at timestamptz;
