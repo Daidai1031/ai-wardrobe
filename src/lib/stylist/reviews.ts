@@ -82,14 +82,16 @@ function toCardItem(
 }
 
 /**
- * Suggestions worth showing the client: everything still unanswered, plus recently
- * accepted ones so the undo stays reachable for a while. Declined and reverted rows
- * are left out — they've been dealt with.
+ * Suggestions worth showing the client: everything still unanswered, plus every
+ * answered one, because the inbox now keeps a "Reviewed" history behind its own button
+ * — a record the client can look back at, and where an accepted suggestion's undo
+ * lives. Answered rows are deliberately not filtered out here: the component splits
+ * them by `status`, and a row dropped at this layer could not appear in the history.
  */
 export async function readStylistReviewsForClient(
   supabase: ServerSupabase,
   userId: string,
-  limit = 12
+  limit = 20
 ): Promise<StylistReviewCard[]> {
   const { data, error } = await supabase
     .from("stylist_reviews")
@@ -97,7 +99,6 @@ export async function readStylistReviewsForClient(
       "id, target_kind, target_outfit_id, target_segment_id, target_item_id, proposed_name, rating, note, has_proposal, status, previous_items, created_at, stylist_review_items(item_id, position, x, y, width)"
     )
     .eq("client_id", userId)
-    .in("status", ["pending", "accepted"])
     .order("created_at", { ascending: false })
     .limit(limit);
 
@@ -108,13 +109,7 @@ export async function readStylistReviewsForClient(
     return [];
   }
 
-  // Accepted rows are kept only because the undo stays reachable for a while, and undo
-  // restores a previous arrangement — a review that never carried one (a rating and a
-  // comment, which is every item review) has nothing to restore, so once it is answered
-  // it is done and would otherwise sit in the inbox forever offering a no-op button.
-  const reviews = ((data ?? []) as RawReview[]).filter(
-    (review) => review.status === "pending" || review.has_proposal
-  );
+  const reviews = (data ?? []) as RawReview[];
   if (reviews.length === 0) return [];
 
   const outfitIds = reviews.map((r) => r.target_outfit_id).filter((id): id is string => Boolean(id));

@@ -24,7 +24,8 @@
       "PowerShell(git push origin main 2>&1)",
       "Bash(node check.js)",
       "Bash(git checkout *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(git push *)"
     ]
   }
 }
