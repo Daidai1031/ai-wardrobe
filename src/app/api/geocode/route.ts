@@ -4,10 +4,10 @@ import { geocodeCity } from "@/lib/weather/geocode";
 /**
  * GET /api/geocode?city=New+York
  *
- * The one place city names get turned into coordinates. Called only at the two moments a
- * user types a city — profile save (`profiles.city` → `lat`/`lng`, see profile-form.tsx) and
- * trip creation (`travel_plans.destination` → `destination_lat`/`destination_lng`, Phase 6.3)
- * — never on every weather fetch. Callers persist the result themselves.
+ * The public convenience entry point for turning a user-entered city into coordinates.
+ * Profile and future trip forms persist the result themselves. Calendar sync and the
+ * authenticated event-location route call geocodeCity() server-side and persist there.
+ * Weather fetches never geocode again.
  */
 export async function GET(request: NextRequest) {
   const city = request.nextUrl.searchParams.get("city");

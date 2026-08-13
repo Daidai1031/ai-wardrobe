@@ -9,16 +9,21 @@
  * each is exactly decidable in code, so each lives here; the model's job stays the
  * soft part — which of the valid options look right together.
  *
- * Four rule families, all checked here and all enforced deterministically after the
+ * Five rule families, all checked here and all enforced deterministically after the
  * model has had one repair attempt:
  *   - Composition: what may appear together in ONE segment (per-category caps and
  *     incompatible pairings).
  *   - Weather: what a given day is too hot for.
  *   - Coverage: what a segment must contain to be an outfit at all.
+ *   - Comfort: what a segment cannot contain given what it is (heels on a flight)
+ *     and what the day did before it (anything already sweated in).
  *   - Rotation: how soon an item may reappear on a LATER day.
  *
- * Enforcement order is composition → weather → coverage → rotation, because
- * removing something can open a hole and filling a hole can create a repeat.
+ * Enforcement order is composition → weather → coverage → comfort → rotation.
+ * Removing something can open a hole and filling a hole can create a repeat, so
+ * coverage sits after the two rules that delete and before the one that swaps;
+ * comfort runs after coverage because coverage fills the feet slot from the pool
+ * and could otherwise put heels back on a flight.
  */
 
 /**
@@ -141,9 +146,19 @@ export const REQUIRED_SLOTS: { slot: string; anyOf: string[] }[] = [
   { slot: "feet", anyOf: ["Shoes"] },
 ];
 
+/**
+ * `eventIds` is optional because most rules only need the item set; the comfort
+ * rule needs it, since "is this segment spent on a plane" is a fact about the
+ * calendar events the segment covers, not about the clothes.
+ */
+export interface RuleSegment {
+  itemIds: string[];
+  eventIds?: string[];
+}
+
 export interface RuleDay {
   planDate: string;
-  segments: { itemIds: string[] }[];
+  segments: RuleSegment[];
 }
 
 /** Candidate item ids per category, best first — the pool deterministic repairs draw from. */
@@ -426,6 +441,171 @@ export function enforceCoverage(
   return result;
 }
 
+// ── Comfort (transit) ───────────────────────────────────────────────────────
+
+/**
+ * Footwear nobody wants to spend a flight, a train journey or an airport transfer
+ * in. Shoes only, and only unambiguous terms: the same conservatism as
+ * `isLongSleeve`, for the same reason — a false positive silently removes
+ * something the user owns from a look that was otherwise fine.
+ *
+ * Deliberately limited to footwear even though a tailored suit is also a poor
+ * choice on an overnight flight. "Is this shoe a heel" is decidable from the data
+ * we store; "is this blazer too stiff to sit in for seven hours" is judgement, and
+ * judgement stays with the model — the prompt asks for it, this only guarantees
+ * the part that can be guaranteed.
+ */
+const HARD_TO_TRAVEL_IN_KEYWORDS = [
+  "heel",
+  "stiletto",
+  "pump",
+  "slingback",
+  "sling-back",
+  "court shoe",
+  "wedge",
+];
+
+export function isHardToTravelIn(item: {
+  category: string;
+  subcategory?: string | null;
+  display_name?: string | null;
+}): boolean {
+  if (item.category !== "Shoes") return false;
+  const text = `${item.subcategory ?? ""} ${item.display_name ?? ""}`.toLowerCase();
+  return HARD_TO_TRAVEL_IN_KEYWORDS.some((keyword) => text.includes(keyword));
+}
+
+/**
+ * Bags and accessories are carried, not worn against the skin. The same tote
+ * before and after a tennis match is fine, and forcing a different one would be
+ * the same kind of noise that made bags exempt from the repeat gap.
+ */
+const WORN_AGAINST_SKIN = (category: string) => category !== "Bags" && category !== "Accessories";
+
+/** What a segment is — supplied by the caller, who is the one holding the calendar. */
+export type SegmentKind = "transit" | "athletic" | "general";
+export type SegmentKindLookup = (segment: RuleSegment) => SegmentKind;
+export type HardToTravelInLookup = (itemId: string) => boolean;
+
+/** Why an item can't be in this particular segment. */
+export type ComfortReason = "transit" | "sweat";
+
+export interface ComfortViolation {
+  planDate: string;
+  segmentIndex: number;
+  itemId: string;
+  reason: ComfortReason;
+}
+
+/**
+ * Everything worn (not merely carried) in an ATHLETIC segment earlier in the same
+ * day. You sweat in it, so it doesn't come back later — this is what makes an
+ * athletic occasion more than just a low formality.
+ */
+function sweatyBefore(
+  day: RuleDay,
+  segmentIndex: number,
+  kindFor: SegmentKindLookup,
+  categoryFor: CategoryLookup
+): Set<string> {
+  const worn = new Set<string>();
+  for (let i = 0; i < segmentIndex; i++) {
+    if (kindFor(day.segments[i]) !== "athletic") continue;
+    for (const itemId of day.segments[i].itemIds) {
+      if (WORN_AGAINST_SKIN(categoryFor(itemId))) worn.add(itemId);
+    }
+  }
+  return worn;
+}
+
+/**
+ * Whether this item can be in this segment, given what the segment is and what the
+ * day did before it. Both reasons are checked in one place so a fix for one can't
+ * introduce the other — swapping heels off a flight must not reach for the
+ * trainers that were just run in.
+ */
+function comfortReasonFor(
+  itemId: string,
+  kind: SegmentKind,
+  sweaty: Set<string>,
+  isHardToTravelInFor: HardToTravelInLookup
+): ComfortReason | null {
+  if (sweaty.has(itemId)) return "sweat";
+  if (kind === "transit" && isHardToTravelInFor(itemId)) return "transit";
+  return null;
+}
+
+export function findComfortViolations(
+  days: RuleDay[],
+  kindFor: SegmentKindLookup,
+  isHardToTravelInFor: HardToTravelInLookup,
+  categoryFor: CategoryLookup
+): ComfortViolation[] {
+  const violations: ComfortViolation[] = [];
+
+  for (const day of days) {
+    day.segments.forEach((segment, segmentIndex) => {
+      const kind = kindFor(segment);
+      const sweaty = sweatyBefore(day, segmentIndex, kindFor, categoryFor);
+      for (const itemId of segment.itemIds) {
+        const reason = comfortReasonFor(itemId, kind, sweaty, isHardToTravelInFor);
+        if (reason) violations.push({ planDate: day.planDate, segmentIndex, itemId, reason });
+      }
+    });
+  }
+
+  return violations;
+}
+
+/**
+ * Swap out anything a segment can't wear: heels on a flight, and anything already
+ * sweated in earlier that day.
+ *
+ * Unlike `enforceWeather` this never drops the offending item — the substitution is
+ * 1:1 or nothing. Removing the only pair of shoes from a segment would leave the
+ * wearer barefoot, which is worse than the problem being fixed, so if the closet
+ * has no free alternative the item stays and the caller reports it as a warning,
+ * the same way rotation handles a wardrobe that is simply too small.
+ *
+ * Segments are walked in order so that each one sees the *already corrected*
+ * versions of the segments before it.
+ */
+export function enforceComfort(
+  days: RuleDay[],
+  categoryFor: CategoryLookup,
+  kindFor: SegmentKindLookup,
+  isHardToTravelInFor: HardToTravelInLookup,
+  pool: CandidatePool
+): RuleDay[] {
+  const result = days.map((day) => ({
+    ...day,
+    segments: day.segments.map((segment) => ({ ...segment, itemIds: [...segment.itemIds] })),
+  }));
+
+  for (const day of result) {
+    day.segments.forEach((segment, segmentIndex) => {
+      const kind = kindFor(segment);
+      const sweaty = sweatyBefore(day, segmentIndex, kindFor, categoryFor);
+
+      for (let i = 0; i < segment.itemIds.length; i++) {
+        const itemId = segment.itemIds[i];
+        if (!comfortReasonFor(itemId, kind, sweaty, isHardToTravelInFor)) continue;
+
+        const substitute = (pool.get(categoryFor(itemId)) || []).find(
+          (candidate) =>
+            !comfortReasonFor(candidate, kind, sweaty, isHardToTravelInFor) &&
+            !segment.itemIds.includes(candidate) &&
+            !usedTooCloseTo(result, candidate, day.planDate, categoryFor)
+        );
+
+        if (substitute) segment.itemIds[i] = substitute;
+      }
+    });
+  }
+
+  return result;
+}
+
 function countInSegment(itemIds: string[], category: string, categoryFor: CategoryLookup): number {
   return itemIds.filter((itemId) => categoryFor(itemId) === category).length;
 }
@@ -554,7 +734,8 @@ export function datesNeedingRepair(
   rotation: RotationViolation[],
   composition: CompositionViolation[] = [],
   coverage: CoverageViolation[] = [],
-  weather: WeatherViolation[] = []
+  weather: WeatherViolation[] = [],
+  comfort: ComfortViolation[] = []
 ): string[] {
   return [
     ...new Set([
@@ -562,6 +743,7 @@ export function datesNeedingRepair(
       ...composition.map((violation) => violation.planDate),
       ...coverage.map((violation) => violation.planDate),
       ...weather.map((violation) => violation.planDate),
+      ...comfort.map((violation) => violation.planDate),
     ]),
   ].sort();
 }
@@ -575,11 +757,24 @@ export function describeViolations(
   composition: CompositionViolation[],
   coverage: CoverageViolation[],
   weather: WeatherViolation[],
+  comfort: ComfortViolation[],
   labelFor: LabelLookup
 ): { planDate: string; problems: string[] }[] {
   const byDate = new Map<string, string[]>();
   const add = (date: string, line: string) =>
     byDate.set(date, [...(byDate.get(date) || []), line]);
+
+  // Named first because the fix is rarely just the shoes: a segment spent in
+  // transit usually needs rebuilding, and the model does that better than the
+  // deterministic 1:1 swap that runs afterwards if this call doesn't.
+  for (const violation of comfort) {
+    add(
+      violation.planDate,
+      violation.reason === "sweat"
+        ? `Segment ${violation.segmentIndex + 1} re-wears "${labelFor(violation.itemId)}" from a workout or match earlier that day. Nothing worn for sport is put back on afterwards — that segment needs a complete change of clothes (bags and accessories aside).`
+        : `Segment ${violation.segmentIndex + 1} is spent travelling (a flight, train or transfer) but wears "${labelFor(violation.itemId)}". Rebuild that segment for the journey rather than the destination: flat, easy-on shoes and soft, unrestrictive pieces.`
+    );
+  }
 
   for (const violation of weather) {
     add(

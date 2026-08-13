@@ -1,13 +1,13 @@
 # AI Wardrobe — 产品路线图 & 进度总览
 
-> Last updated: 2026-07-30
+> Last updated: 2026-08-06
 > 本文件负责「往前看」：进度快照 + 优先级 + 未来功能的技术方案。
 > `checklist.md` 负责「往回看」：已完成任务的实现细节 + Debug Log。
 > `CLAUDE.md` 负责「当前架构」：给 Claude Code 的代码导航。
 
 ---
 
-## 一、进度快照（截至 2026-07-30）
+## 一、进度快照（代码进度截至 2026-07-30；未开始项含 2026-08-06 新增的两条需求）
 
 Phase 1–4 已基本覆盖，Phase 6.0 / 6.1 / 6.2 均已落地（6.0/6.1 已真实验证，6.2 待验证）。
 
@@ -33,6 +33,7 @@ Phase 1–4 已基本覆盖，Phase 6.0 / 6.1 / 6.2 均已落地（6.0/6.1 已�
 - `mode="single"` 跳过检测这条路径未在真实账号点过上传
 - AI Stylist 的多轮澄清 → Canvas → 编辑/保存已过 type/build；真实 Anthropic 首次返回暴露的纯文本解析 502 已改为 forced tool call + 文本降级，修复后尚待登录账号重新跑完整链路
 - Human Stylist 预约代码已完成，但生产库尚需手动执行 `schema.sql` section 16 后再真实预约验证
+- 单品多角度参考照（`/closet/[id]`）代码完成、build 通过，但生产库尚需手动执行 `schema.sql` section 17；未执行时上传会以 `PGRST205` 失败（2026-07-30 实际踩到）
 - ~~`/home` 的 Phase 6.1 多段计划~~ ✅ 已真实验证（2026-07-30），见 6.1 小节
 - ~~`outfit_items` 的 `x/y/width` 三列需要在 Supabase SQL Editor 手动跑~~ ✅ 已随 Phase 6.0 section 15 迁移块一起在生产库执行（2026-07-30）
 - **Phase 6.2 Weekly planning（`/plan`）**：代码完成、type/build 通过，但需重跑 section 15（唯一键去掉 `source` + `replace_weekly_plans`），且规则引擎（轮换/结构/完整度/天气）的最后一版尚未真实生成验证
@@ -50,6 +51,9 @@ Phase 1–4 已基本覆盖，Phase 6.0 / 6.1 / 6.2 均已落地（6.0/6.1 已�
 | Preference Engine（滑卡） | `preference_swipes` 表就绪，无前端 |
 | 多件识别的勾选确认 UI | 检测到的 segment 目前全部自动入库，无确认环节 |
 | 产品链接补充 | 无 |
+| **单品详情页的推荐 Look** | ✅ 2026-08-13 已完成。优先展示最多 3 个已包含该单品的 Saved Looks；完全没有时，由用户主动点击一次生成并保存 3 套，不在打开页面时自动烧 token。详见第三节「并行小需求 A」 |
+| **轮换间隔由用户决定** | 2026-08-06 新增需求。`plan-rules.ts` 的 `REPEAT_GAP_BY_CATEGORY` 现在是写死常量，用户无法调「同一件多久能再穿一次」。方案见第三节「并行小需求 B」 |
+| **搭配师评审与建议（`/pro`）** | 2026-08-12 新增需求，**已插队开工**。搭配师看客户衣橱/Looks/泛化场合 → 人工评分 + 文字 + Canvas 改版 → 用户端采纳或拒绝。方案见第四节「Phase 10-A」，决策见 D15/D16/D17 |
 | **新增范围**：双端 / Human Stylist / Shopping / Onboarding / Avatar | 见第三节 |
 
 ---
@@ -74,6 +78,9 @@ Phase 1–4 已基本覆盖，Phase 6.0 / 6.1 / 6.2 均已落地（6.0/6.1 已�
 | D12 | 双端（C 端 / B 端） | **取消 B 端平台。**公司是自有的少数长期搭配师，不做第三方入驻。改为「Folk CRM 管流程 + App 管授权访问」 | 客户列表、阶段、跟进本来就是 CRM 的活，不用自己开发；搭配师看到的就是客户那套界面，不用做第二套。顺带省掉 Stripe Connect 分账和入驻/评价体系 |
 | D13 | CRM 与 App 的数据边界 | **Folk 只存指针和业务状态，不存衣橱数据副本。原始日历和邮箱内容既不进 CRM 也不给搭配师。** | 一旦复制进 CRM，「客户撤销授权」就失去意义——副本不受权限规则管。详见第四节「数据边界」 |
 | D14 | 一次性授权的跟进窗口 | **咨询结束后 14 天自动失效。** | 留出交付后答疑的时间，又不让授权无限期挂着 |
+| D15 | 自动化工具用哪家（2026-08-12） | **现在用 Zapier，不上自托管 n8n。** App 侧保持 provider 无关：`/api/webhooks/*` 只是带 `x-webhook-secret` 的普通 HTTP 端点，没有任何 vendor 特有的 payload 形状。 | 眼下自动化只有一条两步流程（Folk 阶段拖到「咨询结束」→ 发一个 webhook），自托管 n8n 的运维成本（一台要升级、要监控、会挂的机器）换不回任何东西。Zapier 按 task 计费、n8n 按 execution 计费，这个差别要等流程变多变长才咬人。**换家的触发条件写在这里，省得以后凭感觉换**：流程开始有分支/循环/自定义代码，或 task 数涨到按步计费开始肉疼。原第四节的两条纪律（不进关键路径、绝不给 service role key）**和用哪家无关**，已改写成「自动化工具的纪律」 |
+| D16 | 搭配师的访问门禁做到哪一层（2026-08-12） | **不建 `wardrobe_grants`。**门禁 = 访问者 `profiles.roles` 含 `'stylist'` **且** 客户 `profiles.access_expires_at > now()`。`wardrobe_access_log` 现在就建。客户端补一个「立即结束搭配师访问」按钮（把自己的 `access_expires_at` 设成 `now()`）。 | 公司只有**一位**搭配师（2026-08-12 确认）。per-stylist 授权表的每一行 `stylist_id` 都是同一个值 —— 它不表达任何信息，只是提前付一笔迁移成本，而 D12 已经决定不做第三方入驻，这个值短期内不会变多。**审计日志是例外，必须现在建**：事后补的日志没有历史，出事时等于没建。那个「立即结束」按钮是用来补上「随时可撤销」这个承诺的 —— 没有授权表也要有撤销动作，一行 update 就够。加第二位搭配师时再迁移到 `wardrobe_grants`（Phase 10 的原设计仍然有效，见第四节） |
+| D17 | 搭配师能看到多少日程信息（2026-08-12） | **三档，默认最保守：L0 不共享（只看衣橱和 Looks）→ L1 泛化场合（客户在 `/profile` 开总开关）→ L2 逐条明细（客户对单个事件单独勾选，才给时间和标题原文）。L1 的文案由 `occasion` + 新增的 `companion` 两个枚举查表拼出，不经过事件标题。`outfit_plan_segments.label`/`reasoning` 在 L0/L1 一律不给搭配师。** | D13 把「原始日历条目」划成硬边界，但那条边界原来只在「不进 CRM」一侧成立；一开搭配师视图就漏了。**泛化不能靠「把标题改写得模糊一点」** —— 让模型去脱敏，它偶尔会把人名留在里面，而且要多花一次调用。改成从枚举拼文案，是**结构上**不可能带出人名地名，不是靠模型自觉。`label`/`reasoning` 是 Haiku 从事件标题生成的，会写出「for your meeting with Sarah」这种句子，泛化做得再干净这里漏一句就白做，所以整条排除。物理保证：**不给 `calendar_events` 加任何搭配师 RLS policy**，投影在服务端用 service client 读原始行、压成枚举文案再下发，原始行永远不出服务端 |
 
 ---
 
@@ -257,6 +264,13 @@ interface WeatherProvider {
 
 **已真实验证（2026-07-30）**：单段 ↺ 后目标段单品全换、**其它段一字不动**、下一段的 `change_from_previous` 正确改写成引用新单品；Canvas 排完版刷新页面版式仍在；存进 Looks 后在 `/outfits` 打开是同一张拼贴；Worn 确认后几何未被抹掉。逐条细节见 `checklist.md` 任务 1b。
 
+**C. 在 `/home` / `/plan` 复用 Saved Looks —— ✅ 代码完成（2026-08-13），⚠️ 待 section 20 + 真实验证**
+
+- 每个未确认 Worn 的 segment 都有显式的 `Use saved` 入口；共享的 `SegmentCanvasEditor` 按当前用户读取 Saved Looks，选中后把单品、层级和 `x/y/width` 一起载入，之后仍能用同一个 Canvas 增删、拖动和缩放。
+- 复用未修改时，segment 继续视为原 Look 的精确副本，不创建重复记录。修改后 `saved_outfit_id` 清空，但新增的 `source_outfit_id` 保留来源；因此刷新后仍知道“原先是哪套”，不是只靠 React state 猜。
+- 修改后的 `Save` 用三选一弹窗：`Update original` 覆盖原 Look 的 item/layout（名称、folder、notes 保留），`Save as new` 创建新 Look，或取消。两条写路径都在 section 20 RPC 里原子执行并验证 plan / outfit / wardrobe item 都属于当前用户。
+- AI 单段重生成会同时清空 `saved_outfit_id` 和 `source_outfit_id`：模型新生成的结果已不再是“基于原 Look 的人工修改”，不能误弹出更新原 Look。
+
 ### 6.2 Weekly planning（新页面 `/plan`）— ✅ 代码完成（2026-07-30），⚠️ 待重跑 section 15 后真实验证
 
 **落地时敲定的两个结构决策（原方案没写）：**
@@ -327,6 +341,65 @@ interface WeatherProvider {
 
 打印页也要能只打包装清单（`?section=packing`）或只打卡片（`?section=cards`），因为这两个的使用场景不同——清单是出发前用，卡片是到了之后用。
 
+### 并行小需求（2026-08-06 新增，**不排在 6.3 之后**）
+
+这两项都不依赖出差模式，也不互相依赖，可以在 6.3 之前或期间穿插做完。B 是 6.2 的直接收尾（改的是已经写好的规则引擎），A 是衣橱侧的独立小功能。
+
+#### A. 单品详情页的「搭配过的 Look」（`/closet/[id]`）
+
+**需求（2026-08-13 更新并已实现）**：打开一件单品（如 `/closet/3805829d-…`）时，显示最多 3 套推荐搭配。已有包含该单品的 Saved Looks 时直接复用；一套都没有时显示「Generate 3 looks」，只有用户点击后才由 Haiku 生成 3 套并保存进 Looks。
+
+**先划清「搭配过」的口径**，因为库里有三个来源、含义完全不同，混在一起显示会让用户看到自己从没认可过的搭配：
+
+| 来源 | 是什么 | v1 是否显示 |
+|---|---|---|
+| `outfits` + `outfit_items` | 用户主动保存的 Look（手工拼的，或从 stylist/计划段「保存到 Looks」的） | ✅ **只显示这一类** |
+| `outfit_plan_segment_items` | daily/weekly 生成的计划段，用户没存过 | ❌ 那是**建议**不是「搭配过」。D5 明确决定生成的计划不落 `outfits`，这里同理，否则一件衣服会显示出几十条它从没被选中过的机器建议 |
+| `outfit_journal` | 真实穿过的记录（含 `item_ids` 快照 + 可空的 `outfit_id`） | ❌ v1 不做，留给 journal/日历 UI 那一块一起做（见下方「后续」） |
+
+**成本边界**：详情页加载本身永远不调用模型。只有当前单品在 `outfits` 中完全没有记录、且用户明确点击按钮时，才调用一次 `/api/ai/item-outfits`；因此普通浏览和复用已有 Look 均为零 token。
+
+**实现**：
+
+- 数据在 `src/app/(dashboard)/closet/[id]/page.tsx` 里服务端取，作为第三个并行查询。两步查而不是一条深层嵌套：先 `outfit_items` 按 `item_id` 拿到 `outfit_id` 列表，再按这批 id 查 `outfits` + 其全部 `outfit_items`/`wardrobe_items` 预览字段——查询形状和 `/outfits/page.tsx` 已有的那条一致，直接照抄比重新拼嵌套 select 稳。RLS 不用动：`outfits` 是 `auth.uid() = user_id`，`outfit_items` 走归属 join。
+- ✅ 新组件 `src/app/(dashboard)/closet/[id]/item-outfits.tsx` 放在详情页下方。每张卡使用现成的只读 `OutfitCollage` + `layoutsFromRows()`，**和 `/outfits`、`/home` 是同一份版式**。
+- ✅ 卡片带 `name` / `times_worn` / notes，`ai_generated` 标来源，按 `created_at` 倒序且最多 3 张。
+- ✅ **点击 → `/outfits?open=<outfit_id>`**，`outfits-view.tsx` 读取后直接打开现有 Canvas 编辑态，再用 `router.replace("/outfits")` 清掉参数；已删除的 id 静默忽略。
+- ✅ 空态提供用户主动的「Generate 3 looks」。新 route 强制每套包含当前单品、仅使用当前用户的 active wardrobe、验证归属/完整覆盖/品类冲突/三套集合不同，再写入 `outfits(ai_generated=true)` + `outfit_items`。任一写入失败会删除本批已建父行，避免只留下半套结果。
+
+**后续（不在这一版）**：等 outfit journal 的日历/历史 UI 开工时，在同一页加第二块「穿过的日子」，数据源是 `outfit_journal.item_ids`。它回答的是「我什么时候穿的」，和「我把它搭进过哪些 Look」是两个问题，不要合并成一个列表。
+
+#### B. 轮换间隔由用户决定（Phase 6.2 收尾）
+
+**需求**：「同一件衣服多久才能再出现一次」应该由用户决定，不是写死在代码里。
+
+现状是 `src/lib/planning/plan-rules.ts` 的 `REPEAT_GAP_BY_CATEGORY` 常量：上装/下装/连衣裙/外套 = 7 天（等于「一周内穿过就不再穿」）、鞋 = 2 天、包和配饰 = 0（豁免）。这套默认值是有理由的（见 6.2 那三轮「prompt 写了模型照样犯」的记录），但它是**我替用户定的口味**，不是不变量——「我衣服少，一周穿两次同一条裤子完全可以」和「我不想任何一件重样」都是合理诉求，而现在两种用户拿到的是同一套数字。
+
+**保持按品类分档，不做一个全局滑块。** 6.2 的第二次真实生成已经证明一刀切是错的：墨镜被判违规纯属噪音，而裤子和鞋的合理间隔本来就不一样。全局滑块会把这个教训又丢掉一次。
+
+**实现**：
+
+- **Schema**（`supabase/schema.sql` 新增可重复执行的第 19 节 —— 第 18 节已被 Phase 10-A 占用，照例手动在 Supabase SQL Editor 跑）：
+
+  ```sql
+  alter table public.profiles
+    add column if not exists repeat_gap_overrides jsonb default '{}'::jsonb;
+  ```
+
+  用 JSONB 而不是每个品类一列：品类词表以后可能增删，加一个品类就要 alter table 一次不划算。键是 `wardrobe_items.category` 的值，值是整数天数。**只存用户真的改过的品类**，没改的品类查不到就回落默认——这样以后调默认值，没自定义过的用户会跟着走，而不是被一份写死的全量快照锁住。
+
+- **`plan-rules.ts` 的常量降级为默认表**：`REPEAT_GAP_BY_CATEGORY` 保留原值，但改名义为 default；新增 `resolveRepeatGaps(overrides)` 合并出最终 map，`gapForCategory()` 从这个 map 读而不是直接读常量。所有吃间隔的函数（`enforceRotation`、冲突检测、`enforceCoverage` 里「避开离得太近的单品」那步）改成从参数拿 map，**不要让任何一个函数继续直接 import 常量**——漏掉一处的表现是「设置改了但某条路径还按老数字判」，这类不一致极难查。
+- **两条路径都要传**：`POST /api/ai/weekly` 和 `POST /api/ai/daily`（单天重算也走轮换检查）都先读 `profiles.repeat_gap_overrides` 再传进规则引擎。
+- **prompt 里的数字也要跟着变**。现在 weekly 的 system prompt 明文写了「间隔 ≥2 天」这类句子；用户改成 4 天而 prompt 还写 2，就是在让模型朝错误目标生成，然后靠 `enforceRotation` 事后暴力换单品——结果能用但搭配质量更差。prompt 文案按解析后的 map 拼。
+- **服务端钳制**：整数、`0 ≤ gap ≤ 14`，非法值丢弃回落默认。0 = 不限制（可以连着穿），要在 UI 上写明白。上界 14 是因为规划窗口才 7 天，再大没有额外效果，只会让用户以为设了个更严的规则却看不出区别。
+- **UI 放 `/profile` 新增的「Planning preferences」区块**（`profiles` 的字段一律在 profile 页编辑，别开第二个设置入口），`/plan` 顶部给一个「调整轮换规则」链接跳过去。形态：
+  - 三个预设先行——「尽量不重样 / 均衡（默认）/ 随便重复」，各自对应一份完整 map。大部分用户不会想逐个品类调 8 个数字，预设要能一键解决。
+  - 展开后才是按品类的数字步进器，`0` 显示为「不限制」。
+  - 每个品类旁边显示**可行性提示**：用户衣橱里该品类有 N 件、当前设置的 7 天窗口需要至少 M 件。设 7 天间隔但只有 6 条下装，是排不满一周的，这个矛盾要在设置页当场说清楚，而不是等生成完在 `/plan` 顶部弹一条警告。
+  - 明说「改动在**下次生成**时生效」。已生成的计划不会被回改——数据库是唯一缓存，和天气快照是同一个行为（6.1 验证时记录过）。
+- **警告文案要点名是用户自己的设置**：排不开时 `enforceRotation` 现在已经会通过 `warnings` 上报并显示在 `/plan` 顶部。文案要从「这件衣服间隔不够」改成「你把 Bottoms 设成了 4 天，但衣橱里只有 3 条，这周有一天只能重复」——同一条警告，用户知道是自己的旋钮造成的，读起来就是衣橱容量的客观限制；不知道，读起来就是产品在敷衍。
+- 成本：零。不新增任何模型调用，只是同一次调用里的数字变了。
+
 ---
 
 ## 四、Phase 7+ — 新增范围（原计划里没有的）
@@ -374,6 +447,51 @@ interface WeatherProvider {
 
 **预约入口已提前完成（2026-07-30，待生产迁移/真实验证）**：`/stylist` 已有 30 分钟线上与 9–5 线下全天两种服务的弹窗式 slot picker。服务工时固定在 `STYLIST_TIME_ZONE`（默认 `America/New_York`），同一批 UTC 时段转换成浏览器 IANA 时区显示，避免每个客户的浏览器各自“生成一套搭配师工时”；`GET/POST /api/stylist/bookings` 用 service role 读取全局占用、服务端重验被选 slot，`stylist_bookings` 的 exclusion constraint 兜底阻止任何两个 confirmed 区间重叠。当前是「一个共享搭配师产能日历」的 MVP；还没有人员分配、付款、改期/取消、日历邀请或 Folk 同步。这一层只负责预约，也**不会因为预约成功自动授予衣橱访问权**——后者仍必须走下方 `wardrobe_grants`。
 
+#### Phase 10-A：搭配师评审与建议（2026-08-12 新增，**这是正在做的部分**）
+
+**需求原话**：搭配师要能看到用户的衣橱和 outfit 库，给出人工评分和搭配建议（文字 + Canvas）。她看不到具体日程，但能看到用户将会面临的场合和目前选定的 outfit。她可以编辑现有的 outfit；编辑确认保存 + 可选文字之后，用户端弹出她的建议，用户可以采纳或者不要。
+
+这是 Phase 10 的前半段提前做。底座大部分已经在了：`profiles.roles`（D3 当初就是为它预留的，此前没有任何代码读）、`profiles.access_expires_at` + `/api/webhooks/consult-ended`（自动化侧已经能给客户开 14 天窗口，D14）、`src/components/outfit/outfit-canvas.tsx`（`/outfits`、`/home`、`/stylist` 三处已共用，搭配师端**不再写第二个编辑器** —— 这正是 D12 说的「搭配师看到的就是客户那套界面」）。
+
+**路由是 `/pro`，不是 `/stylist`。** `/stylist` 是客户端的 AI 搭配师页，已被占用。搭配师用自己的账号登录同一个 App，`/pro` 列出当前有效窗口内的客户，`/pro/[clientId]` 是工作台。
+
+**建议是提案，不是修改。** 「用户可以采纳或者不要」决定了这一点：搭配师点保存**绝不能**碰客户的 `outfits` 行。
+
+| 决定 | 结论 |
+|---|---|
+| 作用对象 | **Looks 库 + 未来几天的计划段**都能评、都能改。两条路径的采纳逻辑不同，分别实现 |
+| 采纳后 | **覆盖原对象**，但在 review 行上快照 `previous_item_ids`，所以「采纳完又后悔」能退回。不另存新 Look —— 那样几轮咨询下来 Looks 库会被「XX 造型 v2/v3」淹掉，正是 D5 当初不让生成计划落 `outfits` 表的理由 |
+| 评分 | 1–5，存在 review 行上，**不写 `outfits.rating`** —— 那一列是用户自己的评分，两个人的评分是两件事 |
+
+**新增数据结构**（schema 第 18 节，照例手动在 Supabase SQL Editor 跑）：
+
+- `stylist_reviews` —— 一条建议。`target_kind`（`'outfit'` / `'plan_segment'`）+ `target_id`；`rating`（1–5，可空）；`note`（文字，可空）；`has_proposal`（她是否真的改了单品，可空评分/纯文字点评也是合法的一条）；`status`（`pending` / `accepted` / `declined`）；`previous_item_ids`（**采纳时**才写的旧集合快照）
+- `stylist_review_items` —— 提案的单品集合，和 `outfit_items` 同构（`position` + `x/y/width`），这样她排的版能原样传到用户那边
+- `wardrobe_access_log` —— 谁在什么时候看了谁的什么（D16：现在建，不能等）
+- `profiles.stylist_share_occasions boolean default false` —— L1 总开关
+- `calendar_events.companion text` —— L1 泛化用的第二个枚举
+- `calendar_events.stylist_share_detail boolean default false` —— L2 逐条开关
+
+**场合共享的三档（D17 的落地形状）**：
+
+| 档 | 开关 | 搭配师看到 |
+|---|---|---|
+| L0（默认） | 无 | 只有衣橱和 Looks 库；场合区显示「客户尚未共享日程」 |
+| L1 | `profiles.stylist_share_occasions` | 按天：日期 + **泛化描述** + formality + 当天已选定的搭配单品 |
+| L2 | `calendar_events.stylist_share_detail`（逐条） | 该事件的时间和标题原文 |
+
+泛化描述**压根不经过标题**：`classifyEvents()` 在现有那一次批量调用里多要一个枚举字段 `companion`（`colleague` / `client` / `friend` / `family` / `partner` / `professional` / `solo` / `unknown`），和 `occasion` 一起查表拼成「和同事的正式会议」「和朋友的晚餐」；`unknown` 就是「和某人有约」。零额外调用成本。
+
+**一个必须做的 backfill**：`classifyEvents` 现在只处理 `occasion IS NULL` 的行，已分类的行不会回头补 `companion`。sync 路由的筛选条件要改成「`occasion IS NULL` **或** `companion IS NULL`」，然后跑一遍 sync 补齐存量。
+
+**RLS 是白名单不是黑名单**：新增 SQL 函数 `public.stylist_can_view(client uuid)`，只给 `wardrobe_items` / `outfits` / `outfit_items` / `wardrobe_item_photos` / `profiles` 各加**一条额外的 permissive policy**。**故意不加在** `calendar_events` / `google_connections` / `outfit_journal` / `outfit_plans` 系列上。好处是以后新建的表默认搭配师看不见 —— 漏加是安全的，误加才危险。计划段和场合投影由服务端 service client 读、压过之后再下发。
+
+**用户端**：`/home` 顶部一张 inbox 卡片（未读数 + 采纳/不要），`/outfits` 对应 Look 上一个标记。v1 不做邮件和推送。
+
+**自动化侧要做的（Zapier，D15）**：Folk 的 pipeline 阶段拖到「咨询结束」→ POST `/api/webhooks/consult-ended`，body `{"client_email": "..."}`，header `x-webhook-secret`。这条今天就已经能用，Phase 10-A 不改它的形状。顺带补一个已知小问题：这个端点没有幂等保护，阶段来回拖会反复把 14 天窗口往后续且不留记录 —— 加一行日志即可。
+
+**明确的非目标**：搭配师端不调任何模型。她是人工，AI 建议是 `/stylist` 的活；在 `/pro` 里再开一次模型调用既没有产品理由也在烧钱。人员分配、付款、改期/取消、日历邀请、Folk 双向同步仍然不在这一版。
+
 **决策（2026-07-27）**：公司是自有的少数长期搭配师，不做第三方入驻平台。因此 **Phase 11「双端」取消**，改为「Folk CRM 承担客户列表与流程管理，App 只做授权访问」。
 
 省掉的部分（原方案里最贵的两块）：
@@ -390,7 +508,7 @@ interface WeatherProvider {
 
 搭配师工作流：早上开 Folk 看今天服务谁 → 点链接跳进 App → 在客户衣橱里出方案 → 方案自动落进客户的 App（而不是变成一份发微信的 PDF —— 这才是做这个功能的真正理由：让搭配师的成果能被客户反复使用）。
 
-**授权机制 `wardrobe_grants`**
+**授权机制 `wardrobe_grants`** —— ⏸ **D16（2026-08-12）决定暂不建**。只有一位搭配师时每行的 `stylist_id` 都是同一个值，这张表不表达任何信息。当前门禁是 `roles` 含 `'stylist'` + 客户 `access_expires_at` 未过期，见上方 Phase 10-A。下面的设计保留原样，**加第二位搭配师时按它迁移**。`wardrobe_access_log` 不在暂缓之列，已随 Phase 10-A 一起建。
 
 ```sql
 create table public.wardrobe_grants (
@@ -457,15 +575,19 @@ create table public.wardrobe_access_log (
 
 ---
 
-### n8n 的定位与两条纪律
+### 自动化工具的定位与两条纪律
 
-Folk 有完整 REST API（workspace 级 Bearer key）、自定义字段、pipeline 分组和 webhook，n8n 用 HTTP 请求节点即可对接（Folk 官方有 n8n 示例；注意按邮箱先查再决定新建/更新，避免重复记录；也注意 API 有速率限制，配额以官方文档为准）。
+**用哪家：Zapier（D15，2026-08-12）。** 现在自动化只有一条两步流程，自托管 n8n 的运维成本换不回东西。App 侧保持 provider 无关 —— `/api/webhooks/*` 是带 `x-webhook-secret` 的普通 HTTP 端点，换家只是换一个发请求的地方。换到 n8n 的触发条件：流程开始有分支/循环/自定义代码，或 task 数涨到按步计费开始肉疼。
 
-**n8n 适合做**：新咨询 → 建/更新 Folk 客户 + 建任务；问卷填完 → 更新 Folk 字段；咨询前后提醒；每周给搭配师发摘要；授权即将到期 → 通知客户续期；Folk 阶段拖到「咨询结束」→ 调 App 接口给 one_off 授权设置 14 天后到期（**搬状态，不搬数据** —— 这是既自动化又不越过数据边界的正确形状）。
+Folk 有完整 REST API（workspace 级 Bearer key）、自定义字段、pipeline 分组和 webhook，Zapier 和 n8n 都能用 HTTP 请求节点对接（注意按邮箱先查再决定新建/更新，避免重复记录；也注意 API 有速率限制，配额以官方文档为准）。
 
-**纪律一：n8n 不能进产品的关键路径。** 日历同步、搭配生成、天气获取必须写在 App 里。可视化自动化工具最典型的故障是**静默失败** —— 节点挂了没人发现，你以为在跑其实早停了。业务通知晚一天没关系，用户点「生成本周搭配」没反应就是产品坏了。
+**适合交给自动化的**：新咨询 → 建/更新 Folk 客户 + 建任务；问卷填完 → 更新 Folk 字段；咨询前后提醒；每周给搭配师发摘要；授权即将到期 → 通知客户续期；Folk 阶段拖到「咨询结束」→ 调 App 接口给访问窗口设 14 天后到期（**搬状态，不搬数据** —— 这是既自动化又不越过数据边界的正确形状）。
 
-**纪律二：绝不把 Supabase 的 service role key 给 n8n。** 那个 key 绕过所有权限规则，等于开一个能读写全部客户数据的后门，安全性取决于 n8n（用云版还取决于第三方）。正确做法：在 App 里开几个窄接口（如「返回某客户的衣橱件数和最后活跃时间」），用独立密钥调用。密钥泄露时泄露的是几个数字，不是整个数据库。
+下面两条纪律和用哪家无关。
+
+**纪律一：自动化工具不能进产品的关键路径。** 日历同步、搭配生成、天气获取必须写在 App 里。可视化自动化工具最典型的故障是**静默失败** —— 节点挂了没人发现，你以为在跑其实早停了。业务通知晚一天没关系，用户点「生成本周搭配」没反应就是产品坏了。
+
+**纪律二：绝不把 Supabase 的 service role key 交给自动化工具。** 那个 key 绕过所有权限规则，等于开一个能读写全部客户数据的后门，安全性取决于那家 SaaS。正确做法：在 App 里开几个窄接口（如「返回某客户的衣橱件数和最后活跃时间」），用独立密钥调用。密钥泄露时泄露的是几个数字，不是整个数据库。
 
 ---
 
@@ -481,6 +603,12 @@ Folk 有完整 REST API（workspace 级 Bearer key）、自定义字段、pipeli
            · 天气 provider 接口 + Open-Meteo（D2）
          Phase 6.1  ✅ Daily 接日历 + 三层数据库缓存 + Dislike 排除 + Worn 可改后确认
          Phase 6.2  Weekly planning /plan 周视图（TS 硬过滤 + Claude 选，D8）
+         ★ Phase 10-A  搭配师评审与建议 /pro（2026-08-12 插队，进行中）
+           · 门禁 roles+access_expires_at（D16）、场合三档共享（D17）
+           · 提案表 stylist_reviews + 采纳可撤销、审计日志
+         ★ 并行小需求（2026-08-06 新增，可插在 6.3 之前/期间，互不依赖）
+           · B. 轮换间隔由用户决定（6.2 收尾：schema 第 19 节 + profile 设置区块）
+           · A. 单品详情页的「搭配过的 Look」（/closet/[id] → /outfits?open=）
          Phase 6.3  出差模式
            · 手填行程为主路径 + Gmail 导入为可选加速器
            · capsule 生成（Sonnet）+ packing list（模板 + 可编辑，D11）

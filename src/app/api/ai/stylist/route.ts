@@ -169,6 +169,8 @@ function normalizeMessages(body: unknown): ClientMessage[] {
 
 function toWardrobeItem(item: {
   id: string;
+  display_name: string | null;
+  user_notes: string | null;
   category: string;
   subcategory: string | null;
   color: string | null;
@@ -205,7 +207,7 @@ export async function POST(request: NextRequest) {
         supabase
           .from("wardrobe_items")
           .select(
-            "id, category, subcategory, color, colors, material, season, occasion, style_tags, brand, clean_url, original_url"
+            "id, display_name, user_notes, category, subcategory, color, colors, material, season, occasion, style_tags, brand, clean_url, original_url"
           )
           .eq("user_id", user.id)
           .eq("archived", false)
@@ -233,6 +235,7 @@ export async function POST(request: NextRequest) {
 
     const wardrobeSummary = wardrobe.map((item) => ({
       id: item.id,
+      name: item.display_name,
       type: `${item.category} — ${item.subcategory || "unknown"}`,
       color: item.color,
       colors: item.colors,
@@ -241,6 +244,7 @@ export async function POST(request: NextRequest) {
       seasons: item.season,
       occasions: item.occasion,
       tags: item.style_tags,
+      userNotes: item.user_notes,
     }));
     const userTurns = messages.filter((message) => message.role === "user").length;
 
@@ -261,6 +265,7 @@ DISCOVERY METHOD:
 - Once there is enough context, return one decisive main look rather than another paragraph of generic advice.
 
 RECOMMENDATION RULES:
+- A non-empty wardrobe "name" is the client's authoritative name for that piece. Use it verbatim when mentioning the item; never replace it with a generic color/type label. Treat "userNotes" as authoritative fit, comfort, provenance, and wearing constraints.
 - Use 2–6 unique item ids exactly as written in ACTIVE WARDROBE. Never invent an id.
 - The summary explains the overall styling idea. The reasoning array explains why the pieces work for the person's goal and occasion, not merely what each item is.
 - stylingNotes contains practical finishing instructions (tuck, sleeve, bag, jewelry, shoe, layering).

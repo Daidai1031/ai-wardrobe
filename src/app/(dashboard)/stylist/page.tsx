@@ -570,7 +570,7 @@ function StylistCanvasEditor({
     const query = search.trim().toLowerCase();
     const matchesSearch =
       !query ||
-      [item.subcategory, item.category, item.color, item.brand]
+      [item.display_name, item.user_notes, item.subcategory, item.category, item.color, item.brand]
         .filter(Boolean)
         .some((value) => value!.toLowerCase().includes(query));
     return inCategory && matchesSearch;

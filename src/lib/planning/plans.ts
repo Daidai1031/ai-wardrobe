@@ -41,6 +41,7 @@ export interface StoredSegment {
   change_from_previous: string | null;
   event_ids: string[] | null;
   saved_outfit_id: string | null;
+  source_outfit_id: string | null;
 }
 
 export interface StoredSegmentItem {
@@ -60,7 +61,7 @@ export interface StoredPlanBundle {
 
 const PLAN_SELECT = "id, plan_date, source, gap, weather, status, generated_at";
 const SEGMENT_SELECT =
-  "id, outfit_plan_id, position, label, reasoning, change_from_previous, event_ids, saved_outfit_id";
+  "id, outfit_plan_id, position, label, reasoning, change_from_previous, event_ids, saved_outfit_id, source_outfit_id";
 const SEGMENT_ITEM_SELECT = "segment_id, item_id, position, x, y, width";
 
 /**
@@ -164,6 +165,7 @@ export function hydrateSegments(
     changeFromPrevious: segment.change_from_previous || undefined,
     eventIds: segment.event_ids || [],
     savedOutfitId: segment.saved_outfit_id,
+    sourceOutfitId: segment.source_outfit_id,
     items: (bySegment.get(segment.id) || [])
       .sort((a, b) => a.position - b.position)
       .map((row) => {

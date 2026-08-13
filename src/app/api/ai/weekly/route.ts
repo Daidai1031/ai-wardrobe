@@ -3,8 +3,15 @@ import Anthropic from "@anthropic-ai/sdk";
 import { createServerSupabase } from "@/lib/supabase/server";
 import { getForecast } from "@/lib/weather/open-meteo";
 import type { DailyForecast } from "@/lib/weather/types";
+import {
+  effectiveEventLocationLabel,
+  effectiveEventWeatherCity,
+  weatherLocationsForEvents,
+  type WeatherLocation,
+} from "@/lib/weather/calendar-location";
 import { eventsOnLocalDay } from "@/lib/calendar/day-bucket";
-import { describeGroups, groupOccasions } from "@/lib/planning/occasion-groups";
+import { describeGroups, groupOccasions, occasionKind } from "@/lib/planning/occasion-groups";
+import { mergeAdjacentEquivalentSegments } from "@/lib/planning/merge-segments";
 import { hydrateSegments, readPlansForDates, type StoredPlanBundle } from "@/lib/planning/plans";
 import { selectCandidates } from "@/lib/planning/candidates";
 import {
@@ -15,29 +22,35 @@ import {
   buildCandidatePool,
   datesNeedingRepair,
   describeViolations,
+  enforceComfort,
   enforceComposition,
   enforceCoverage,
   enforceRotation,
   TOO_WARM_FOR_SLEEVES_C,
   enforceWeather,
+  findComfortViolations,
   findCompositionViolations,
   findCoverageViolations,
   findRotationViolations,
   findWeatherViolations,
+  isHardToTravelIn,
   isLongSleeve,
   type CandidatePool,
   type RuleDay,
+  type RuleSegment,
+  type SegmentKind,
 } from "@/lib/planning/plan-rules";
 import type { CalendarEvent } from "@/types/database";
 import type { DailyOccasion, DailyWardrobeItem } from "@/types/daily";
 import type { WeeklyDay, WeeklyResponse } from "@/types/weekly";
+import { wardrobeItemLabel } from "@/lib/wardrobe/item-label";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
 /** Weeks are 7 days from the chosen start, not Mon–Sun: opening /plan on a Saturday should still plan a useful week, and it lines up with Open-Meteo's forecast window starting today. */
 const WEEK_LENGTH = 7;
 const WARDROBE_SELECT =
-  "id, category, subcategory, color, material, season, occasion, style_tags, brand, clean_url, original_url, favorite, times_worn, last_worn_at, archived";
+  "id, display_name, user_notes, category, subcategory, color, material, season, occasion, style_tags, brand, clean_url, original_url, favorite, times_worn, last_worn_at, archived";
 
 /** A week is only worth persisting if most of it generated; below this it's a failure. */
 const MIN_GENERATED_DAYS = 4;
@@ -54,10 +67,6 @@ interface GeneratedDay {
   }[];
 }
 
-function isUuid(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
-}
-
 function uniqueIds(values: string[]): string[] {
   return [...new Set(values)];
 }
@@ -72,6 +81,8 @@ function addLocalDays(date: string, days: number): string {
 function toClientItem(item: Record<string, unknown>): DailyWardrobeItem {
   return {
     id: String(item.id),
+    display_name: typeof item.display_name === "string" ? item.display_name : null,
+    user_notes: typeof item.user_notes === "string" ? item.user_notes : null,
     category: String(item.category),
     subcategory: typeof item.subcategory === "string" ? item.subcategory : null,
     color: typeof item.color === "string" ? item.color : null,
@@ -114,7 +125,7 @@ async function loadWeeklyContext(request: NextRequest) {
 
   const { data: profile, error: profileError } = await supabase
     .from("profiles")
-    .select("name, city, lat, lng, body_shape, preference_dna, timezone")
+    .select("name, city, lat, lng, body_shape, preference_dna, timezone, stylist_share_occasions")
     .eq("id", user.id)
     .single();
 
@@ -176,7 +187,7 @@ async function readWeekOccasions(
   const { data: rawEvents, error } = await supabase
     .from("calendar_events")
     .select(
-      "id, user_id, google_event_id, title, location, starts_at, ends_at, all_day, attendee_count, occasion, formality, synced_at"
+      "id, user_id, google_event_id, title, location, location_override, weather_city, weather_lat, weather_lng, weather_timezone, weather_city_override, weather_lat_override, weather_lng_override, weather_timezone_override, weather_location_resolved, starts_at, ends_at, all_day, attendee_count, occasion, formality, companion, stylist_share_detail, synced_at"
     )
     .eq("user_id", userId)
     .gte("starts_at", windowStart)
@@ -197,6 +208,11 @@ async function readWeekOccasions(
         occasion: event.occasion || "unclassified",
         formality: event.formality ?? null,
         time: event.all_day ? "all day" : formatLocalTime(event.starts_at, timeZone),
+        allDay: Boolean(event.all_day),
+        location: effectiveEventLocationLabel(event),
+        weatherCity: effectiveEventWeatherCity(event),
+        locationOverridden: Boolean(event.location_override),
+        sharedWithStylist: Boolean(event.stylist_share_detail),
       })),
     });
   }
@@ -208,7 +224,7 @@ function buildWeeklyResponse(
   dates: string[],
   plans: Map<string, StoredPlanBundle>,
   eventsByDate: Map<string, { events: CalendarEvent[]; occasions: DailyOccasion[] }>,
-  forecastByDate: Map<string, DailyForecast>,
+  forecastByDate: Map<string, DailyForecast[]>,
   wardrobe: Record<string, unknown>[],
   extras: Partial<WeeklyResponse> = {}
 ): WeeklyResponse {
@@ -216,12 +232,14 @@ function buildWeeklyResponse(
 
   const days: WeeklyDay[] = dates.map((date) => {
     const bundle = plans.get(date);
+    const forecasts = forecastByDate.get(date) ?? [];
     return {
       date,
       planId: bundle?.plan.id ?? null,
       status: bundle?.plan.status ?? "suggested",
       source: bundle?.plan.source ?? "weekly",
-      forecast: forecastByDate.get(date) ?? null,
+      forecast: forecasts[0] ?? null,
+      forecasts,
       occasions: eventsByDate.get(date)?.occasions ?? [],
       segments: bundle ? hydrateSegments(bundle, byId) : [],
       gap: bundle?.plan.gap || undefined,
@@ -240,24 +258,56 @@ function buildWeeklyResponse(
 }
 
 async function forecastForWindow(
-  profile: { lat?: number | null; lng?: number | null } | null,
-  dates: string[]
-): Promise<Map<string, DailyForecast>> {
-  const byDate = new Map<string, DailyForecast>();
-  if (profile?.lat == null || profile?.lng == null) return byDate;
+  profile: {
+    city?: string | null;
+    lat?: number | null;
+    lng?: number | null;
+    timezone?: string | null;
+  } | null,
+  dates: string[],
+  eventsByDate: Map<string, { events: CalendarEvent[] }>,
+  timeZone: string
+): Promise<Map<string, DailyForecast[]>> {
+  const byDate = new Map<string, DailyForecast[]>();
+
+  const groups = new Map<string, { location: WeatherLocation; dates: string[] }>();
+  for (const date of dates) {
+    const locations = weatherLocationsForEvents(
+      eventsByDate.get(date)?.events ?? [],
+      profile,
+      date,
+      timeZone
+    );
+    for (const location of locations) {
+      const key = `${location.lat.toFixed(4)},${location.lng.toFixed(4)}`;
+      const group = groups.get(key) ?? { location, dates: [] };
+      if (!group.dates.includes(date)) group.dates.push(date);
+      groups.set(key, group);
+    }
+  }
 
   try {
-    // getForecast counts from today; ask for enough days to cover a start date that
-    // may be further out, then keep only the dates in the window.
     const todayUtc = new Date().toISOString().slice(0, 10);
-    const offset = Math.round(
-      (new Date(`${dates[0]}T00:00:00Z`).getTime() - new Date(`${todayUtc}T00:00:00Z`).getTime()) /
-        86_400_000
+    await Promise.all(
+      [...groups.values()].map(async ({ location, dates: locationDates }) => {
+        // getForecast counts from today; ask only for enough days to reach the
+        // last date that actually uses this coordinate.
+        const lastDate = locationDates[locationDates.length - 1];
+        const offset = Math.round(
+          (new Date(`${lastDate}T00:00:00Z`).getTime() -
+            new Date(`${todayUtc}T00:00:00Z`).getTime()) /
+            86_400_000
+        );
+        const wanted = new Set(locationDates);
+        for (const entry of await getForecast(location.lat, location.lng, Math.max(1, offset + 1))) {
+          if (wanted.has(entry.date)) {
+            const current = byDate.get(entry.date) ?? [];
+            current.push({ ...entry, city: location.city });
+            byDate.set(entry.date, current);
+          }
+        }
+      })
     );
-    const days = Math.max(WEEK_LENGTH, offset + WEEK_LENGTH);
-    for (const entry of await getForecast(profile.lat, profile.lng, days)) {
-      byDate.set(entry.date, entry);
-    }
   } catch (error) {
     // Weather is an input, not a requirement — a week without it is still a week.
     console.error("Weekly forecast error:", error);
@@ -343,6 +393,8 @@ async function repairPlan(
   categoryFor: (itemId: string) => string,
   isLongSleeveFor: (itemId: string) => boolean,
   tempFor: (planDate: string) => number | null,
+  segmentKindFor: (segment: RuleSegment) => SegmentKind,
+  isHardToTravelInFor: (itemId: string) => boolean,
   validItemIds: Set<string>,
   validEventIdsByDate: Map<string, Set<string>>
 ): Promise<GeneratedDay[]> {
@@ -350,17 +402,31 @@ async function repairPlan(
   const composition = findCompositionViolations(days as RuleDay[], categoryFor);
   const coverage = findCoverageViolations(days as RuleDay[], categoryFor);
   const weather = findWeatherViolations(days as RuleDay[], isLongSleeveFor, tempFor);
+  const comfort = findComfortViolations(
+    days as RuleDay[],
+    segmentKindFor,
+    isHardToTravelInFor,
+    categoryFor
+  );
   if (
     rotation.length === 0 &&
     composition.length === 0 &&
     coverage.length === 0 &&
-    weather.length === 0
+    weather.length === 0 &&
+    comfort.length === 0
   ) {
     return days;
   }
 
-  const targets = datesNeedingRepair(rotation, composition, coverage, weather);
-  const problemsByDate = describeViolations(rotation, composition, coverage, weather, labelFor);
+  const targets = datesNeedingRepair(rotation, composition, coverage, weather, comfort);
+  const problemsByDate = describeViolations(
+    rotation,
+    composition,
+    coverage,
+    weather,
+    comfort,
+    labelFor
+  );
 
   const currentWeek = days.map((day) => ({
     planDate: day.planDate,
@@ -390,6 +456,10 @@ A dress already covers torso and legs, so it is never combined with a top or wit
 RULE 4 — EVERY SEGMENT MUST BE A COMPLETE OUTFIT. Each of these slots needs at least one item (a dress covers both torso and legs):
 ${JSON.stringify(REQUIRED_SLOTS, null, 2)}
 
+RULE 5 — A SEGMENT SPENT TRAVELLING IS DRESSED FOR THE JOURNEY, NOT THE DESTINATION. A flight, train, long drive or airport transfer means flat shoes that come off easily (never heels), soft or stretch fabrics that survive hours of sitting, and a layer that can be added or removed for the cabin. A business trip's flight is still a flight: the tailoring belongs on the meeting, not on the plane.
+
+RULE 6 — SPORT IS DRESSED AS SPORT, AND CHANGED OUT OF AFTERWARDS. A workout, a match or a round of golf gets real activewear and the right shoes for that activity — a client match at a club is still sport, not smart-casual. Because it is sweated in, nothing worn in that segment may appear in ANY later segment of the same day; the next segment is a complete change of clothes. Bags and accessories are exempt.
+
 THE WEEK AS PLANNED (each item shows its [category]):
 ${JSON.stringify(currentWeek, null, 2)}
 
@@ -398,6 +468,8 @@ ${JSON.stringify(problemsByDate, null, 2)}
 
 CANDIDATE WARDROBE (the only items you may use):
 ${JSON.stringify(candidateSummary, null, 2)}
+
+A non-empty wardrobe "name" is the user's authoritative name for that piece. Use it verbatim in reasoning and never reduce it to a generic color/type label. Treat "userNotes" as authoritative fit, comfort, provenance, and wearing constraints.
 
 Rebuild ONLY the days marked "REBUILD THIS DAY". For each, fix the listed problems — replace a too-soon repeat with a different candidate, and drop or swap the surplus item where too many of one category are worn at once — keeping the look appropriate for that day's occasions and updating the reasoning to match. Leave every other item on those days alone if it causes no conflict. Do not touch any other day. Do not introduce a NEW conflict: check your replacements against both rules and against the rest of the week.
 
@@ -459,14 +531,20 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const forecastByDate = await forecastForWindow(context.profile, context.dates);
+    const forecastByDate = await forecastForWindow(
+      context.profile,
+      context.dates,
+      context.eventsByDate,
+      context.timeZone
+    );
     return NextResponse.json(
       buildWeeklyResponse(
         context.dates,
         context.plans,
         context.eventsByDate,
         forecastByDate,
-        context.wardrobe
+        context.wardrobe,
+        { stylistShareOccasions: Boolean(context.profile?.stylist_share_occasions) }
       )
     );
   } catch (error) {
@@ -490,23 +568,24 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { supabase, userId, profile, timeZone, dates, wardrobe, availableItems, eventsByDate } =
+    const { supabase, userId, profile, timeZone, dates, wardrobe, eventsByDate } =
       context;
 
     if (wardrobe.length < 4) {
       return NextResponse.json(
         buildWeeklyResponse(dates, context.plans, eventsByDate, new Map(), wardrobe, {
           message: "Add a few more items to your closet before planning a whole week.",
+          stylistShareOccasions: Boolean(profile?.stylist_share_occasions),
         })
       );
     }
 
-    const forecastByDate = await forecastForWindow(profile, dates);
+    const forecastByDate = await forecastForWindow(profile, dates, eventsByDate, timeZone);
 
     // D8: hard-filter in TypeScript before the prompt. Temperature and formality
     // bounds come from the week itself, so a week of 28°C days never offers coats.
     const temps = dates
-      .map((date) => forecastByDate.get(date))
+      .flatMap((date) => forecastByDate.get(date) ?? [])
       .filter((entry): entry is DailyForecast => Boolean(entry));
     const formalityLevels = uniqueIds(
       dates.flatMap((date) =>
@@ -542,6 +621,7 @@ export async function POST(request: NextRequest) {
       const item = candidate.raw;
       return {
         id: item.id,
+        name: item.display_name || null,
         type: `${item.category} — ${item.subcategory || "unknown"}`,
         color: item.color,
         material: item.material,
@@ -549,22 +629,25 @@ export async function POST(request: NextRequest) {
         occasions: item.occasion,
         tags: item.style_tags,
         lastWorn: item.last_worn_at || "never",
+        userNotes: item.user_notes || null,
       };
     });
 
     const weekOutline = dates.map((date) => {
-      const forecast = forecastByDate.get(date);
+      const forecasts = forecastByDate.get(date) ?? [];
       return {
         planDate: date,
         day: weekdayLabel(date, timeZone),
-        weather: forecast
-          ? {
+        weather:
+          forecasts.length > 0
+            ? forecasts.map((forecast) => ({
+              city: forecast.city,
               tempMin: forecast.tempMin,
               tempMax: forecast.tempMax,
               precipitationMm: forecast.precipitation,
               isEstimate: forecast.isEstimate,
-            }
-          : "unknown",
+              }))
+            : "unknown",
         // Segment count per day is decided here rather than by the model: grouping
         // consecutive occasions by formality is arithmetic, and leaving it to
         // judgement gave the same day two segments on one run and one on the next.
@@ -585,13 +668,22 @@ ${profile?.preference_dna ? `Preferences: ${JSON.stringify(profile.preference_dn
 CANDIDATE WARDROBE (${candidateSummary.length} items, already filtered to this week's weather and formality):
 ${JSON.stringify(candidateSummary, null, 2)}
 
+A non-empty wardrobe "name" is the user's authoritative name for that piece. Use it verbatim in reasoning and never reduce it to a generic color/type label. Treat "userNotes" as authoritative fit, comfort, provenance, and wearing constraints.
+
 Each day lists "requiredSegments". Build EXACTLY those, in that order, one segment per entry, and set each segment's "eventIds" to exactly the entry's "eventIds". A day with an empty "requiredSegments" gets exactly ONE segment. Do not merge or split them further — the grouping already accounts for which occasions can share an outfit. Segments within the same day MAY share items; carrying one blazer from a meeting into dinner is normal.
+
+If the exact same complete outfit works for two adjacent required entries, reuse the exact same "itemIds" for both; do not manufacture an accessory change just to make the occasions look different. Keep both entries in the response; equivalent adjacent segments will be consolidated after generation.
+
+Each required segment carries a "kind". A segment whose kind is not "general" is dressed for what it IS, not for how formal the rest of the day is, and moving into or out of one is where a complete change of outfit is expected rather than avoided:
+- "transit" — time spent getting somewhere: a flight, a train, a long drive, an airport transfer. Flat shoes that come off easily (never heels), soft or stretch fabrics that survive hours of sitting, nothing that creases or restricts, and a layer for a cold cabin. A business trip's flight is still a flight — keep the tailoring for the meetings.
+- "athletic" — sport or a workout: real activewear and the right shoes for that activity, never office clothes made casual. Golf and tennis are the ones to get right, because they sit in the middle of a working day and often at a club: dress them as sport with the club's code in mind (a collared polo, proper court or golf shoes, tennis whites where the wardrobe has them), not as smart-casual. Say in the reasoning which pieces are the sport-appropriate ones.
+  Anything worn for sport is sweated in, so NOTHING from an athletic segment reappears in any later segment of that same day — the following segment is a complete change of clothes. Bags and accessories are the exception; the same tote before and after is fine.
 
 Items that cannot be worn together in one segment:
 ${JSON.stringify(INCOMPATIBLE_WITH, null, 2)}
 A dress already covers torso and legs, so it is never combined with a top or with trousers. Layer with outerwear instead.
 
-On any day whose forecast high exceeds ${TOO_WARM_FOR_SLEEVES_C}°C, use NO outerwear and NO long-sleeve tops or dresses — check each day's "weather" above.
+Each day's "weather" is a list because departure and return days can span two cities. When multiple locations are listed, the outfit must work across ALL of them: prefer removable layers and explicitly reason about the coldest and warmest conditions. Only when EVERY listed location's forecast high exceeds ${TOO_WARM_FOR_SLEEVES_C}°C should you use no outerwear and no long-sleeve tops or dresses.
 
 WITHIN one segment, at most this many items of each category can physically be worn at once:
 ${JSON.stringify(MAX_PER_CATEGORY_IN_SEGMENT, null, 2)}
@@ -647,7 +739,15 @@ Respond with ONLY this JSON, no other text:
     const wardrobeById = new Map(wardrobe.map((item) => [String(item.id), item]));
     const labelFor = (itemId: string) => {
       const item = wardrobeById.get(itemId);
-      return item ? `${item.color || ""} ${item.subcategory || item.category}`.trim() : itemId;
+      return item
+        ? wardrobeItemLabel({
+            display_name: item.display_name as string | null,
+            category: String(item.category),
+            subcategory: item.subcategory as string | null,
+            color: item.color as string | null,
+            brand: item.brand as string | null,
+          })
+        : itemId;
     };
     const categoryFor = (itemId: string) => String(wardrobeById.get(itemId)?.category ?? "");
     const isLongSleeveFor = (itemId: string) => {
@@ -662,7 +762,49 @@ Respond with ONLY this JSON, no other text:
     };
     // The week has a real daily maximum; the daily route only has a single
     // representative temperature, so the two differ slightly in strictness.
-    const tempFor = (planDate: string) => forecastByDate.get(planDate)?.tempMax ?? null;
+    // The "too hot for sleeves" hard rule applies only when every place on a
+    // travel day is hot. If New York is warm but London is cool, the prompt can
+    // choose removable layers instead of the rule engine deleting all sleeves.
+    const tempFor = (planDate: string) => {
+      const forecasts = forecastByDate.get(planDate) ?? [];
+      return forecasts.length > 0 ? Math.min(...forecasts.map((entry) => entry.tempMax)) : null;
+    };
+
+    // What a segment is, is a fact about the calendar — resolved from the events
+    // themselves rather than from the label the model chose to write on it.
+    const kindByEventId = new Map(
+      dates.flatMap((date) =>
+        (eventsByDate.get(date)?.events ?? []).map(
+          (event) =>
+            [
+              event.id,
+              occasionKind({
+                occasion: event.occasion,
+                title: event.title,
+                allDay: event.all_day,
+              }),
+            ] as const
+        )
+      )
+    );
+    // Athletic wins a mixed segment: it is the stricter of the two, since its
+    // clothes also can't come back later in the day.
+    const segmentKindFor = (segment: RuleSegment): SegmentKind => {
+      const kinds = (segment.eventIds ?? []).map((eventId) => kindByEventId.get(eventId));
+      if (kinds.includes("athletic")) return "athletic";
+      if (kinds.includes("transit")) return "transit";
+      return "general";
+    };
+    const isHardToTravelInFor = (itemId: string) => {
+      const item = wardrobeById.get(itemId);
+      return item
+        ? isHardToTravelIn({
+            category: String(item.category),
+            subcategory: item.subcategory as string | null,
+            display_name: item.display_name as string | null,
+          })
+        : false;
+    };
 
     const validItemIds = new Set(candidates.map((candidate) => candidate.id));
     const validEventIdsByDate = new Map(
@@ -683,6 +825,8 @@ Respond with ONLY this JSON, no other text:
       categoryFor,
       isLongSleeveFor,
       tempFor,
+      segmentKindFor,
+      isHardToTravelInFor,
       validItemIds,
       validEventIdsByDate
     );
@@ -698,54 +842,76 @@ Respond with ONLY this JSON, no other text:
       categoryFor
     );
     const finalDays = enforceRotation(
-      enforceCoverage(
-        enforceWeather(
-          enforceComposition(repaired as RuleDay[], categoryFor),
+      enforceComfort(
+        enforceCoverage(
+          enforceWeather(
+            enforceComposition(repaired as RuleDay[], categoryFor),
+            categoryFor,
+            isLongSleeveFor,
+            tempFor,
+            pool
+          ),
           categoryFor,
-          isLongSleeveFor,
-          tempFor,
-          pool
+          pool,
+          (itemId, planDate) => {
+            const temp = tempFor(planDate);
+            return temp != null && temp > TOO_WARM_FOR_SLEEVES_C && isLongSleeveFor(itemId);
+          }
         ),
         categoryFor,
-        pool,
-        (itemId, planDate) => {
-          const temp = tempFor(planDate);
-          return temp != null && temp > TOO_WARM_FOR_SLEEVES_C && isLongSleeveFor(itemId);
-        }
+        segmentKindFor,
+        isHardToTravelInFor,
+        pool
       ),
       categoryFor,
       pool
     ) as GeneratedDay[];
 
+    const consolidatedDays = finalDays.map((day) => ({
+      ...day,
+      segments: mergeAdjacentEquivalentSegments(day.segments),
+    }));
+
     const warnings = [
-      ...findRotationViolations(finalDays as RuleDay[], categoryFor).map(
+      ...findRotationViolations(consolidatedDays as RuleDay[], categoryFor).map(
         (violation) =>
           `"${labelFor(violation.itemId)}" repeats on ${violation.conflictDate}, only ${violation.gapDays} day(s) after ${violation.keptDate} (${violation.category} needs ${violation.requiredGapDays}).`
       ),
-      ...findCoverageViolations(finalDays as RuleDay[], categoryFor).map(
+      ...findCoverageViolations(consolidatedDays as RuleDay[], categoryFor).map(
         (violation) =>
           `${violation.planDate} has no ${violation.missingSlot} covered — your closet has nothing suitable left (${violation.anyOf.join(" or ")}).`
       ),
-      ...findWeatherViolations(finalDays as RuleDay[], isLongSleeveFor, tempFor).map(
+      ...findWeatherViolations(consolidatedDays as RuleDay[], isLongSleeveFor, tempFor).map(
         (violation) =>
           `"${labelFor(violation.itemId)}" covers the arms but ${violation.planDate} reaches ${violation.temp}°C.`
       ),
+      ...findComfortViolations(
+        consolidatedDays as RuleDay[],
+        segmentKindFor,
+        isHardToTravelInFor,
+        categoryFor
+      ).map((violation) =>
+        violation.reason === "sweat"
+          ? `${violation.planDate} puts "${labelFor(violation.itemId)}" back on after a workout — your closet has nothing else free that day to change into.`
+          : `${violation.planDate} is spent travelling in "${labelFor(violation.itemId)}" — your closet has no flatter shoes free that day.`
+      ),
     ];
 
-    if (finalDays.length < Math.min(MIN_GENERATED_DAYS, dates.length)) {
+    if (consolidatedDays.length < Math.min(MIN_GENERATED_DAYS, dates.length)) {
       return NextResponse.json(
         buildWeeklyResponse(dates, context.plans, eventsByDate, forecastByDate, wardrobe, {
           message:
             "Couldn't put together a full week right now. Try again, or plan individual days from Home.",
+          stylistShareOccasions: Boolean(profile?.stylist_share_occasions),
         })
       );
     }
 
     const { data: skipped, error: persistError } = await supabase.rpc("replace_weekly_plans", {
-      p_days: finalDays.map((day) => ({
+      p_days: consolidatedDays.map((day) => ({
         planDate: day.planDate,
         gap: day.gap ?? null,
-        weather: forecastByDate.get(day.planDate) ?? {},
+        weather: { locations: forecastByDate.get(day.planDate) ?? [] },
         segments: day.segments,
       })),
     });
@@ -757,6 +923,7 @@ Respond with ONLY this JSON, no other text:
       buildWeeklyResponse(dates, persisted, eventsByDate, forecastByDate, wardrobe, {
         skippedDates: Array.isArray(skipped) ? (skipped as string[]) : undefined,
         warnings: warnings.length > 0 ? warnings : undefined,
+        stylistShareOccasions: Boolean(profile?.stylist_share_occasions),
       })
     );
   } catch (error) {

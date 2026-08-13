@@ -17,7 +17,10 @@ export interface WeeklyDay {
   planId: string | null;
   status: DailyPlanStatus;
   source: DailyPlanSource;
+  /** First location retained for older clients; new UI renders `forecasts`. */
   forecast: DailyForecast | null;
+  /** Every location that affects this day, including both ends of a travel day. */
+  forecasts: DailyForecast[];
   occasions: DailyOccasion[];
   segments: DailySegmentResponse[];
   gap?: string;
@@ -31,6 +34,13 @@ export interface WeeklyResponse {
   availableItems: DailyWardrobeItem[];
   /** True when every day in the window already had a stored plan. */
   complete: boolean;
+  /**
+   * ROADMAP D17 L1: whether the client is sharing generalized occasions with the human
+   * stylist. /plan uses it to decide whether the per-event "share the details" switch
+   * is meaningful — L2 on top of an L1 that's off would reveal nothing, which is a
+   * worse thing to show than nothing at all.
+   */
+  stylistShareOccasions?: boolean;
   /**
    * Dates the generator left untouched because they were already confirmed worn.
    * Surfaced so a day that looks "not regenerated" reads as deliberate rather than

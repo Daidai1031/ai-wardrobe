@@ -2,18 +2,26 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import Image from "next/image";
 import { createClient } from "@/lib/supabase/client";
-import type { WardrobeItem, ItemCategory } from "@/types/database";
+import type { WardrobeItem, WardrobeItemPhoto, ItemCategory } from "@/types/database";
 import { ITEM_CATEGORIES } from "@/types/database";
-import { ArrowLeft, Save, Trash2, Heart } from "lucide-react";
+import { ArrowLeft, Save, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { ItemPhotos } from "./item-photos";
 
-export function ItemDetail({ item }: { item: WardrobeItem }) {
+export function ItemDetail({
+  item,
+  photos,
+}: {
+  item: WardrobeItem;
+  photos: WardrobeItemPhoto[];
+}) {
   const router = useRouter();
   const supabase = createClient();
 
+  const [displayName, setDisplayName] = useState(item.display_name || "");
+  const [userNotes, setUserNotes] = useState(item.user_notes || "");
   const [category, setCategory] = useState(item.category);
   const [subcategory, setSubcategory] = useState(item.subcategory || "");
   const [color, setColor] = useState(item.color || "");
@@ -35,6 +43,8 @@ export function ItemDetail({ item }: { item: WardrobeItem }) {
     const { error } = await supabase
       .from("wardrobe_items")
       .update({
+        display_name: displayName.trim() || null,
+        user_notes: userNotes.trim() || null,
         category, subcategory, color, brand, material, season, occasion,
         updated_at: new Date().toISOString(),
       })
@@ -75,39 +85,8 @@ export function ItemDetail({ item }: { item: WardrobeItem }) {
       </button>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-        {/* Image side */}
-        <div className="space-y-3">
-          <div className="relative aspect-square bg-white rounded-2xl border border-surface-200 overflow-hidden">
-            <Image
-              src={item.clean_url || item.original_url}
-              alt={`${item.color} ${item.subcategory || item.category}`}
-              fill
-              className="object-contain p-4"
-              unoptimized
-            />
-            <button
-              onClick={toggleFavorite}
-              className="absolute top-3 right-3 p-2 rounded-full bg-white/80 backdrop-blur-sm"
-            >
-              <Heart
-                size={18}
-                className={cn(
-                  item.favorite ? "fill-red-500 text-red-500" : "text-surface-400"
-                )}
-              />
-            </button>
-          </div>
-          {item.original_url !== item.clean_url && item.clean_url && (
-            <p className="text-xs text-surface-400 text-center">
-              Background removed by AI · <button onClick={() => window.open(item.original_url)} className="underline">View original</button>
-            </p>
-          )}
-          {item.ai_confidence && (
-            <p className="text-xs text-surface-400 text-center">
-              AI confidence: {Math.round(item.ai_confidence * 100)}%
-            </p>
-          )}
-        </div>
+        {/* Image side — main styling photo plus any extra reference angles */}
+        <ItemPhotos item={item} photos={photos} onToggleFavorite={toggleFavorite} />
 
         {/* Edit form */}
         <div className="space-y-5">
@@ -115,6 +94,39 @@ export function ItemDetail({ item }: { item: WardrobeItem }) {
           <p className="text-xs text-surface-400 -mt-3">
             Auto-classified by AI — edit anything below
           </p>
+
+          <div>
+            <label className="block text-xs font-medium text-surface-600 mb-1">
+              Detailed name
+            </label>
+            <input
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg border border-surface-200 text-sm"
+              placeholder="e.g. The Grove XXIII Golf Course M Jordan"
+              maxLength={200}
+            />
+            <p className="mt-1 text-[11px] text-surface-400">
+              Used everywhere this item is named. Leave blank to use the AI category.
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-surface-600 mb-1">
+              Personal notes
+            </label>
+            <textarea
+              value={userNotes}
+              onChange={(e) => setUserNotes(e.target.value)}
+              rows={3}
+              className="w-full resize-y px-3 py-2 rounded-lg border border-surface-200 text-sm"
+              placeholder="Fit, size, origin, comfort, or how you prefer to wear it…"
+              maxLength={1000}
+            />
+            <p className="mt-1 text-[11px] text-surface-400">
+              Included as context when AI builds recommendations.
+            </p>
+          </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div>

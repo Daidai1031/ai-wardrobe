@@ -22,7 +22,7 @@ reads this doc). To avoid that drift, `AGENTS.md` is intentionally a thin pointe
 npm run dev      # start dev server (Next.js, http://localhost:3000)
 npm run build    # production build
 npm run start    # run production build
-npm run lint     # next lint
+npm run lint     # ESLint CLI (Next 16 removed `next lint`)
 ```
 
 No test suite is configured. Stack: Next.js 16 App Router, Supabase (auth/DB/storage),

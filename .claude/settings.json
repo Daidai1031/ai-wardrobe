@@ -2,7 +2,20 @@
   "permissions": {
     "allow": [
       "Bash(echo \"exit:$?\")",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(python -)",
+      "Bash(grep -n \"Sixteen tables\\\\|section 17 item-photos\\\\|src/app/api/google/\\\\` — \\\\|src/app/\\(dashboard\\)/\\\\` — the main app\" CLAUDE.md)",
+      "Bash(grep -n \"Defaults to \\\\`\\\\[start of today UTC\" CLAUDE.md)",
+      "PowerShell(Get-Process node -ErrorAction SilentlyContinue | Select-Object Id, StartTime, @{n='RunMin';e={[math]::Round\\(\\(\\(Get-Date\\) - $_.StartTime\\).TotalMinutes\\)}} | Sort-Object StartTime)",
+      "PowerShell(Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Select-Object ProcessId, @{n='Cmd';e={ if \\($_.CommandLine.Length -gt 130\\) { $_.CommandLine.Substring\\(0,130\\) } else { $_.CommandLine } }} | Format-List)",
+      "PowerShell(npx tsc --noEmit -p tsconfig.json)",
+      "PowerShell(npx tsx \"E:\\\\temp\\\\claude\\\\e--Cornell-26summer-ai-wardrobe\\\\982a480e-fef9-40a7-993c-b3837acfd365\\\\scratchpad\\\\check-transit.ts\")",
+      "PowerShell($p = \"E:\\\\temp\\\\claude\\\\e--Cornell-26summer-ai-wardrobe\\\\982a480e-fef9-40a7-993c-b3837acfd365\\\\scratchpad\\\\check-transit.ts\"; \\(Get-Content $p -Raw\\).Replace\\('../../../../Cornell/26summer/ai-wardrobe/src/lib/planning/', 'E:/Cornell/26summer/ai-wardrobe/src/lib/planning/'\\) | Set-Content $p -Encoding utf8; npx tsx $p)",
+      "PowerShell(npm run build 2>&1)",
+      "PowerShell(npm run lint 2>&1)",
+      "PowerShell(npx tsx \"E:\\\\temp\\\\claude\\\\e--Cornell-26summer-ai-wardrobe\\\\982a480e-fef9-40a7-993c-b3837acfd365\\\\scratchpad\\\\check-transit.ts\" 2>&1)",
+      "Bash(python -c ' *)",
+      "PowerShell(git -C \"e:\\\\Cornell\\\\26summer\\\\ai-wardrobe\" diff --stat)"
     ]
   }
 }

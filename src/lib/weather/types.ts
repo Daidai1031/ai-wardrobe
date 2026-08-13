@@ -31,6 +31,8 @@ export interface WeatherData {
  */
 export interface DailyForecast {
   date: string; // YYYY-MM-DD, in the location's local timezone
+  /** Attached by planning after calendar/profile location resolution. */
+  city?: string | null;
   tempMin: number; // °C
   tempMax: number; // °C
   precipitation: number; // mm

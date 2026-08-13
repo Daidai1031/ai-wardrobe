@@ -2,10 +2,17 @@ import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { createServerSupabase } from "@/lib/supabase/server";
 import { getCurrentWeather } from "@/lib/weather/openweather";
-import { getForecastAsCurrent } from "@/lib/weather/open-meteo";
-import type { WeatherData } from "@/lib/weather/types";
+import { describeWeatherCode, getForecastAsCurrent } from "@/lib/weather/open-meteo";
+import type { DailyForecast, WeatherData } from "@/lib/weather/types";
+import {
+  effectiveEventLocationLabel,
+  effectiveEventWeatherCity,
+  weatherLocationsForEvents,
+  type WeatherLocation,
+} from "@/lib/weather/calendar-location";
 import { eventsOnLocalDay } from "@/lib/calendar/day-bucket";
-import { describeGroups, groupOccasions } from "@/lib/planning/occasion-groups";
+import { describeGroups, groupOccasions, occasionKind } from "@/lib/planning/occasion-groups";
+import { mergeAdjacentEquivalentSegments } from "@/lib/planning/merge-segments";
 import {
   hydrateSegments,
   readPlanForDate,
@@ -17,13 +24,19 @@ import {
   REQUIRED_SLOTS,
   TOO_WARM_FOR_SLEEVES_C,
   buildCandidatePool,
+  enforceComfort,
   enforceComposition,
   enforceCoverage,
   enforceWeather,
+  isHardToTravelIn,
   isLongSleeve,
+  type RuleDay,
+  type RuleSegment,
+  type SegmentKind,
 } from "@/lib/planning/plan-rules";
 import type { CalendarEvent } from "@/types/database";
 import type { DailyOccasion, DailyResponse, DailyWardrobeItem } from "@/types/daily";
+import { wardrobeItemLabel } from "@/lib/wardrobe/item-label";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
@@ -41,7 +54,7 @@ interface GeneratedPlan {
 }
 
 const WARDROBE_SELECT =
-  "id, category, subcategory, color, material, season, occasion, style_tags, brand, clean_url, original_url";
+  "id, display_name, user_notes, category, subcategory, color, material, season, occasion, style_tags, brand, clean_url, original_url";
 
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
@@ -166,6 +179,8 @@ function formatLocalTime(iso: string, timeZone: string): string {
 function toClientItem(item: Record<string, unknown>): DailyWardrobeItem {
   return {
     id: String(item.id),
+    display_name: typeof item.display_name === "string" ? item.display_name : null,
+    user_notes: typeof item.user_notes === "string" ? item.user_notes : null,
     category: String(item.category),
     subcategory: typeof item.subcategory === "string" ? item.subcategory : null,
     color: typeof item.color === "string" ? item.color : null,
@@ -175,16 +190,48 @@ function toClientItem(item: Record<string, unknown>): DailyWardrobeItem {
   };
 }
 
-function parseStoredWeather(value: unknown): WeatherData | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+function isWeatherData(value: unknown): value is WeatherData {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const weather = value as Partial<WeatherData>;
   return typeof weather.city === "string" &&
     typeof weather.temp === "number" &&
     typeof weather.feels_like === "number" &&
     typeof weather.description === "string" &&
-    typeof weather.wind_speed === "number"
-    ? (weather as WeatherData)
-    : null;
+    typeof weather.wind_speed === "number";
+}
+
+function forecastSnapshotAsWeather(value: unknown): WeatherData | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const forecast = value as Partial<DailyForecast>;
+  if (
+    typeof forecast.tempMin !== "number" ||
+    typeof forecast.tempMax !== "number"
+  ) {
+    return null;
+  }
+  const midpoint = Math.round((forecast.tempMin + forecast.tempMax) / 2);
+  return {
+    city: typeof forecast.city === "string" ? forecast.city : "your location",
+    temp: midpoint,
+    feels_like: midpoint,
+    humidity: 0,
+    description:
+      typeof forecast.code === "number" ? describeWeatherCode(forecast.code) : "forecast",
+    icon: "",
+    wind_speed: 0,
+  };
+}
+
+function parseStoredWeatherLocations(value: unknown): WeatherData[] {
+  if (isWeatherData(value)) return [value];
+  const legacyForecast = forecastSnapshotAsWeather(value);
+  if (legacyForecast) return [legacyForecast];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  const locations = (value as { locations?: unknown }).locations;
+  if (!Array.isArray(locations)) return [];
+  return locations
+    .map((entry) => (isWeatherData(entry) ? entry : forecastSnapshotAsWeather(entry)))
+    .filter((entry): entry is WeatherData => Boolean(entry));
 }
 
 function buildStoredResponse(
@@ -195,12 +242,14 @@ function buildStoredResponse(
 ): DailyResponse {
   const byId = new Map(wardrobe.map((item) => [String(item.id), toClientItem(item)]));
   const segments = hydrateSegments(stored, byId);
+  const weatherLocations = parseStoredWeatherLocations(stored.plan.weather);
 
   return {
     planId: stored.plan.id,
     date: stored.plan.plan_date,
     source: stored.plan.source,
-    weather: parseStoredWeather(stored.plan.weather),
+    weather: weatherLocations[0] ?? null,
+    weatherLocations,
     occasions,
     segments,
     availableItems: wardrobe.map(toClientItem),
@@ -226,7 +275,7 @@ async function readDailyOccasions(
   const { data: rawEvents, error } = await supabase
     .from("calendar_events")
     .select(
-      "id, user_id, google_event_id, title, location, starts_at, ends_at, all_day, attendee_count, occasion, formality, synced_at"
+      "id, user_id, google_event_id, title, location, location_override, weather_city, weather_lat, weather_lng, weather_timezone, weather_city_override, weather_lat_override, weather_lng_override, weather_timezone_override, weather_location_resolved, starts_at, ends_at, all_day, attendee_count, occasion, formality, companion, stylist_share_detail, synced_at"
     )
     .eq("user_id", userId)
     .gte("starts_at", windowStart)
@@ -246,6 +295,10 @@ async function readDailyOccasions(
       occasion: event.occasion || "unclassified",
       formality: event.formality ?? null,
       time: event.all_day ? "all day" : formatLocalTime(event.starts_at, timeZone),
+      allDay: Boolean(event.all_day),
+      location: effectiveEventLocationLabel(event),
+      weatherCity: effectiveEventWeatherCity(event),
+      locationOverridden: Boolean(event.location_override),
     })),
   };
 }
@@ -254,13 +307,15 @@ function emptyResponse(
   localDate: string,
   availableItems: DailyWardrobeItem[],
   message: string,
-  weather: WeatherData | null = null
+  weather: WeatherData | null = null,
+  weatherLocations: WeatherData[] = weather ? [weather] : []
 ): DailyResponse {
   return {
     planId: null,
     date: localDate,
     source: "daily",
     weather,
+    weatherLocations,
     occasions: [],
     segments: [],
     availableItems,
@@ -342,12 +397,14 @@ function ownedItemIds(value: unknown, wardrobe: Record<string, unknown>[]): stri
 function describeWardrobe(items: Record<string, unknown>[]) {
   return items.map((item) => ({
     id: item.id,
+    name: item.display_name || null,
     type: `${item.category} — ${item.subcategory || "unknown"}`,
     color: item.color,
     material: item.material,
     seasons: item.season,
     occasions: item.occasion,
     tags: item.style_tags,
+    userNotes: item.user_notes || null,
   }));
 }
 
@@ -368,16 +425,26 @@ function formatDateLabel(localDate: string, timeZone: string) {
  * is outside the forecast horizon; the prompt then says the weather is unknown.
  */
 async function weatherForDate(
-  profile: { lat?: number | null; lng?: number | null; city?: string | null } | null,
+  locations: WeatherLocation[],
   localDate: string,
   timeZone: string
-): Promise<WeatherData | null> {
-  if (profile?.lat == null || profile?.lng == null) return null;
-
-  const today = new Intl.DateTimeFormat("en-CA", { timeZone }).format(new Date());
-  return localDate === today
-    ? getCurrentWeather(profile.lat, profile.lng)
-    : getForecastAsCurrent(profile.lat, profile.lng, localDate, profile.city ?? null);
+): Promise<WeatherData[]> {
+  const results = await Promise.all(
+    locations.map(async (location) => {
+      const weatherTimeZone = location.timezone || timeZone;
+      const today = new Intl.DateTimeFormat("en-CA", { timeZone: weatherTimeZone }).format(
+        new Date()
+      );
+      const weather =
+        localDate === today
+          ? await getCurrentWeather(location.lat, location.lng)
+          : await getForecastAsCurrent(location.lat, location.lng, localDate, location.city);
+      return weather
+        ? { ...weather, city: location.city || weather.city || "your location" }
+        : null;
+    })
+  );
+  return results.filter((entry): entry is WeatherData => Boolean(entry));
 }
 
 /**
@@ -392,7 +459,8 @@ async function weatherForDate(
 function buildDailyRules(
   wardrobe: Record<string, unknown>[],
   candidateWardrobe: Record<string, unknown>[],
-  weather: WeatherData | null
+  weatherLocations: WeatherData[],
+  events: CalendarEvent[]
 ) {
   const byId = new Map(wardrobe.map((item) => [String(item.id), item]));
   const categoryFor = (itemId: string) => String(byId.get(itemId)?.category ?? "");
@@ -407,35 +475,89 @@ function buildDailyRules(
       : false;
   };
 
+  // Resolved from the calendar rather than from the label the model wrote, so a
+  // segment covering a flight or a tennis match is treated as such however it was
+  // named. Athletic wins a mixed segment: it is the stricter of the two.
+  const kindByEventId = new Map(
+    events.map(
+      (event) =>
+        [
+          event.id,
+          occasionKind({
+            occasion: event.occasion,
+            title: event.title,
+            allDay: event.all_day,
+          }),
+        ] as const
+    )
+  );
+
   return {
     categoryFor,
     isLongSleeveFor,
-    tempFor: () => weather?.temp ?? null,
+    segmentKindFor: (segment: RuleSegment): SegmentKind => {
+      const kinds = (segment.eventIds ?? []).map((eventId) => kindByEventId.get(eventId));
+      if (kinds.includes("athletic")) return "athletic";
+      if (kinds.includes("transit")) return "transit";
+      return "general";
+    },
+    isHardToTravelInFor: (itemId: string) => {
+      const item = byId.get(itemId);
+      return item
+        ? isHardToTravelIn({
+            category: String(item.category),
+            subcategory: item.subcategory as string | null,
+            display_name: item.display_name as string | null,
+          })
+        : false;
+    },
+    tempFor: () =>
+      weatherLocations.length > 0
+        ? Math.min(...weatherLocations.map((weather) => weather.temp))
+        : null,
     pool: buildCandidatePool(candidateWardrobe.map((item) => String(item.id)), categoryFor),
   };
 }
 
-/** Same order as weekly: removing can open a hole, and filling one can create a repeat. */
+/** Same order as weekly: removing can open a hole, filling one can put heels back on a flight. */
 function applyDailyRules(
-  days: { planDate: string; segments: { itemIds: string[] }[] }[],
+  days: RuleDay[],
   localDate: string,
   rules: ReturnType<typeof buildDailyRules>
 ) {
-  const { categoryFor, isLongSleeveFor, tempFor, pool } = rules;
-  return enforceCoverage(
-    enforceWeather(enforceComposition(days, categoryFor), categoryFor, isLongSleeveFor, tempFor, pool),
+  const { categoryFor, isLongSleeveFor, segmentKindFor, isHardToTravelInFor, tempFor, pool } =
+    rules;
+  return enforceComfort(
+    enforceCoverage(
+      enforceWeather(
+        enforceComposition(days, categoryFor),
+        categoryFor,
+        isLongSleeveFor,
+        tempFor,
+        pool
+      ),
+      categoryFor,
+      pool,
+      (itemId) => {
+        const temp = tempFor();
+        return temp != null && temp > TOO_WARM_FOR_SLEEVES_C && isLongSleeveFor(itemId);
+      }
+    ),
     categoryFor,
-    pool,
-    (itemId) => {
-      const temp = tempFor();
-      return temp != null && temp > TOO_WARM_FOR_SLEEVES_C && isLongSleeveFor(itemId);
-    }
+    segmentKindFor,
+    isHardToTravelInFor,
+    pool
   );
 }
 
-function describeWeather(weather: WeatherData | null) {
-  return weather
-    ? `WEATHER: ${weather.temp}°C (feels like ${weather.feels_like}°C), ${weather.description}, wind ${weather.wind_speed} m/s, in ${weather.city}`
+function describeWeather(weatherLocations: WeatherData[]) {
+  return weatherLocations.length > 0
+    ? `WEATHER BY LOCATION (plan for every place listed, using removable layers when conditions differ):\n${weatherLocations
+        .map(
+          (weather) =>
+            `- ${weather.city}: ${weather.temp}°C (feels like ${weather.feels_like}°C), ${weather.description}, wind ${weather.wind_speed} m/s`
+        )
+        .join("\n")}`
     : "WEATHER: unknown, no city set in profile";
 }
 
@@ -476,7 +598,16 @@ async function handleDaily(request: NextRequest, regenerate: boolean, body: Dail
       );
     }
 
-    const weather = await weatherForDate(profile, localDate, timeZone);
+    const weatherLocations = await weatherForDate(
+      weatherLocationsForEvents(
+        occasionData.events,
+        profile,
+        localDate,
+        timeZone
+      ),
+      localDate,
+      timeZone
+    );
 
     const wardrobeSummary = describeWardrobe(candidateWardrobe);
     const dateLabel = formatDateLabel(localDate, timeZone);
@@ -487,6 +618,8 @@ async function handleDaily(request: NextRequest, regenerate: boolean, body: Dail
       occasion: occasion.occasion,
       formality: occasion.formality,
       time: occasion.time,
+      location: occasion.location,
+      weatherCity: occasion.weatherCity,
     }));
 
     // Segment count is decided here, not by the model: grouping consecutive
@@ -502,7 +635,7 @@ async function handleDaily(request: NextRequest, regenerate: boolean, body: Dail
     const systemPrompt = `You are an expert personal stylist AI. Build TODAY's outfit plan for the user from their ACTUAL wardrobe below — never invent items.
 
 TODAY: ${dateLabel}
-${describeWeather(weather)}
+${describeWeather(weatherLocations)}
 
 TODAY'S CALENDAR OCCASIONS (chronological; empty if none):
 ${promptOccasions.length > 0 ? JSON.stringify(promptOccasions, null, 2) : "(no calendar events today)"}
@@ -514,6 +647,8 @@ ${profile?.preference_dna ? `Preferences: ${JSON.stringify(profile.preference_dn
 USER'S AVAILABLE WARDROBE (${wardrobeSummary.length} items):
 ${JSON.stringify(wardrobeSummary, null, 2)}
 
+A non-empty wardrobe "name" is the user's authoritative name for that piece. Use it verbatim in reasoning and never reduce it to a generic color/type label. Treat "userNotes" as authoritative fit, comfort, provenance, and wearing constraints.
+
 REQUIRED SEGMENTS — build EXACTLY these, in this order, one per entry. Occasions are already grouped by formality, so consecutive occasions that share an outfit are in the same entry and ones needing a change are separate. Do not merge or split them further:
 ${
   occasionGroups.length > 0
@@ -521,6 +656,11 @@ ${
     : "(no calendar events today — build exactly ONE segment for the whole day)"
 }
 Each segment's "eventIds" must be exactly the "eventIds" of its entry above.
+
+Each required segment carries a "kind". A segment whose kind is not "general" is dressed for what it IS, not for how formal the rest of the day is:
+- "transit" — time spent getting somewhere: a flight, a train, a long drive, an airport transfer. Flat shoes that come off easily (never heels), soft or stretch fabrics that survive hours of sitting, nothing that creases or restricts, and a layer for a cold cabin. A business trip's flight is still a flight — keep the tailoring for the meetings.
+- "athletic" — sport or a workout: real activewear and the right shoes for that activity, never office clothes made casual. Golf and tennis are the ones to get right, because they sit in the middle of a working day and often at a club: dress them as sport with the club's code in mind (a collared polo, proper court or golf shoes, tennis whites where the wardrobe has them), not as smart-casual.
+  Anything worn for sport is sweated in, so NOTHING from an athletic segment reappears in any later segment of the day — the following segment is a complete change of clothes. Bags and accessories are the exception; the same tote before and after is fine.
 
 Items that cannot be worn together in one segment:
 ${JSON.stringify(INCOMPATIBLE_WITH, null, 2)}
@@ -535,7 +675,7 @@ These are hard caps on the whole segment, not per-occasion. Two pairs of trouser
 Every segment must also be a COMPLETE outfit — each of these slots needs at least one item (a dress covers both torso and legs):
 ${JSON.stringify(REQUIRED_SLOTS, null, 2)}
 
-For every segment after the first, prefer changing only what's necessary from the previous one rather than recomposing the whole outfit, unless the formality gap is too large. Every segment's "itemIds" must list the COMPLETE set worn during that segment. Put every calendar event covered by a segment in that segment's "eventIds"; use only event IDs shown above.
+For every segment after the first, prefer changing only what's necessary from the previous one rather than recomposing the whole outfit, unless the formality gap is too large or either segment's "kind" is not "general" — moving into or out of transit or sport is where a full change of outfit is expected rather than avoided. If the exact same complete outfit works for two adjacent segment entries, reuse the exact same "itemIds" for both; do not manufacture an accessory change just to make the occasions look different. Equivalent adjacent segments will be consolidated after generation. Every segment's "itemIds" must list the COMPLETE set worn during that segment. Put every calendar event covered by a segment in that segment's "eventIds"; use only event IDs shown above.
 
 Respond with ONLY this JSON, no other text:
 {
@@ -572,7 +712,8 @@ Respond with ONLY this JSON, no other text:
           localDate,
           availableItems,
           "Couldn't put together a recommendation right now. Try the AI Stylist chat instead.",
-          weather
+          weatherLocations[0] ?? null,
+          weatherLocations
         )
       );
     }
@@ -581,11 +722,23 @@ Respond with ONLY this JSON, no other text:
     // but a model that ignores them must not be able to persist the result: weekly
     // once produced a whole day whose outfit was a single pair of sandals, and
     // another with two pairs of trousers in one look.
-    const rules = buildDailyRules(wardrobe, candidateWardrobe, weather);
+    const rules = buildDailyRules(
+      wardrobe,
+      candidateWardrobe,
+      weatherLocations,
+      occasionData.events
+    );
     const [wearableDay] = applyDailyRules(
       [{ planDate: localDate, segments: generated.segments }],
       localDate,
       rules
+    );
+
+    const finalSegments = mergeAdjacentEquivalentSegments(
+      generated.segments.map((segment, index) => ({
+        ...segment,
+        itemIds: wearableDay.segments[index]?.itemIds ?? segment.itemIds,
+      }))
     );
 
     const { data: planId, error: persistError } = await supabase.rpc("replace_outfit_plan", {
@@ -593,11 +746,8 @@ Respond with ONLY this JSON, no other text:
       p_source: "daily",
       p_travel_plan_id: null,
       p_gap: generated.gap || null,
-      p_weather: weather || {},
-      p_segments: generated.segments.map((segment, index) => ({
-        ...segment,
-        itemIds: wearableDay.segments[index]?.itemIds ?? segment.itemIds,
-      })),
+      p_weather: { locations: weatherLocations },
+      p_segments: finalSegments,
     });
 
     if (persistError || !planId) {
@@ -692,22 +842,57 @@ async function handleSegmentRegeneration(request: NextRequest, segmentId: string
       action: segment.id === target.id ? "REGENERATE THIS ONE" : "keep unchanged",
       currentItems: (itemsBySegment.get(segment.id) || []).map((itemId) => {
         const item = byId.get(itemId);
-        return item ? `${item.color || ""} ${item.subcategory || item.category}`.trim() : itemId;
+        return item
+          ? wardrobeItemLabel({
+              display_name: item.display_name as string | null,
+              category: String(item.category),
+              subcategory: item.subcategory as string | null,
+              color: item.color as string | null,
+              brand: item.brand as string | null,
+            })
+          : itemId;
       }),
     }));
 
     const nextSegment = stored.segments.find((segment) => segment.position === target.position + 1);
     const previousSegment = stored.segments.find((segment) => segment.position === target.position - 1);
 
+    const kindOfEvent = (eventId: string) => {
+      const event = occasionData.events.find((entry) => entry.id === eventId);
+      return event
+        ? occasionKind({
+            occasion: event.occasion,
+            title: event.title,
+            allDay: event.all_day,
+          })
+        : "general";
+    };
+    const targetKinds = (target.event_ids ?? []).map(kindOfEvent);
+
+    // Everything worn (not merely carried) in an athletic segment earlier today.
+    // The deterministic rule below catches a reuse anyway, but naming the pieces
+    // gets a styled replacement instead of a code-chosen one.
+    const sweatyEarlierItemIds = stored.segments
+      .filter(
+        (segment) =>
+          segment.position < target.position &&
+          (segment.event_ids ?? []).some((eventId) => kindOfEvent(eventId) === "athletic")
+      )
+      .flatMap((segment) => itemsBySegment.get(segment.id) || [])
+      .filter((itemId) => {
+        const category = String(byId.get(itemId)?.category ?? "");
+        return category !== "Bags" && category !== "Accessories";
+      });
+
     // The parent row's weather is the snapshot for this local day; refetching here
     // would make the segment reason about different weather than the rest of the plan.
-    const weather = parseStoredWeather(stored.plan.weather);
+    const weatherLocations = parseStoredWeatherLocations(stored.plan.weather);
     const wardrobeSummary = describeWardrobe(candidateWardrobe);
 
     const systemPrompt = `You are an expert personal stylist AI. The user likes today's plan except for ONE segment. Rebuild ONLY that segment from their ACTUAL wardrobe below — never invent items.
 
 TODAY: ${formatDateLabel(localDate, timeZone)}
-${describeWeather(weather)}
+${describeWeather(weatherLocations)}
 
 TODAY'S CALENDAR OCCASIONS (chronological; empty if none):
 ${occasionData.occasions.length > 0 ? JSON.stringify(occasionData.occasions, null, 2) : "(no calendar events today)"}
@@ -716,7 +901,17 @@ TODAY'S FULL PLAN — you are replacing exactly one entry, the rest stay as they
 ${JSON.stringify(planOutline, null, 2)}
 
 SEGMENT TO REGENERATE: "${target.label}" at position ${target.position}, covering event IDs ${JSON.stringify(target.event_ids || [])}.
-
+${
+  targetKinds.includes("athletic")
+    ? `This segment is sport or a workout. Dress it as sport: real activewear and the right shoes for the activity, never office clothes made casual. Golf and tennis still count as sport even at a club and even with clients — respect the club's code (a collared polo, proper court or golf shoes, tennis whites where the wardrobe has them) rather than dressing them up. It may look completely different from the segments around it.\n`
+    : targetKinds.includes("transit")
+      ? `This segment is time spent in transit — a flight, a train, a long drive or an airport transfer. Dress it for the journey, not for what the trip is for: flat shoes that come off easily (never heels), soft or stretch fabrics that survive hours of sitting, nothing that creases or restricts, and a layer for a cold cabin. A business trip's flight is still a flight, so it may look completely different from the segments around it.\n`
+      : ""
+}${
+  sweatyEarlierItemIds.length > 0
+    ? `Earlier today the user worked out or played a match. These pieces were sweated in and must NOT come back in this segment (bags and accessories aside):\n${JSON.stringify(sweatyEarlierItemIds)}\n`
+    : ""
+}
 REJECTED ITEM IDS — the user disliked this segment. Do NOT use any of these:
 ${JSON.stringify(rejectedItemIds)}
 
@@ -726,6 +921,8 @@ ${profile?.preference_dna ? `Preferences: ${JSON.stringify(profile.preference_dn
 
 USER'S AVAILABLE WARDROBE (${wardrobeSummary.length} items):
 ${JSON.stringify(wardrobeSummary, null, 2)}
+
+A non-empty wardrobe "name" is the user's authoritative name for that piece. Use it verbatim in reasoning and never reduce it to a generic color/type label. Treat "userNotes" as authoritative fit, comfort, provenance, and wearing constraints.
 
 Keep the new segment appropriate for the same occasions the old one covered. "itemIds" must be the COMPLETE set worn during this segment.
 ${previousSegment ? `There IS a preceding segment ("${previousSegment.label}"), so give "changeFromPrevious" describing what changes coming from it.` : `This is the FIRST segment of the day, so omit "changeFromPrevious".`}
@@ -764,10 +961,34 @@ Respond with ONLY this JSON, no other text:
       );
     }
 
+    // The rules run over the WHOLE day with the new segment slotted in, not over
+    // the segment alone: "nothing worn for sport comes back later today" is a fact
+    // about the segments before this one, and a lone segment can't see them. Only
+    // the target's row is persisted, so any incidental change elsewhere is ignored.
+    const orderedSegments = [...stored.segments].sort((a, b) => a.position - b.position);
+    const targetIndex = orderedSegments.findIndex((segment) => segment.id === target.id);
     const [wearableSegmentDay] = applyDailyRules(
-      [{ planDate: localDate, segments: [{ itemIds: generated.itemIds }] }],
+      [
+        {
+          planDate: localDate,
+          segments: orderedSegments.map((segment) =>
+            segment.id === target.id
+              ? {
+                  itemIds: generated.itemIds,
+                  // Fall back to the stored segment's events: the comfort rule must
+                  // still know this is the flight even if the model returned no ids.
+                  eventIds:
+                    generated.eventIds.length > 0 ? generated.eventIds : target.event_ids ?? [],
+                }
+              : {
+                  itemIds: itemsBySegment.get(segment.id) || [],
+                  eventIds: segment.event_ids ?? [],
+                }
+          ),
+        },
+      ],
       localDate,
-      buildDailyRules(wardrobe, candidateWardrobe, weather)
+      buildDailyRules(wardrobe, candidateWardrobe, weatherLocations, occasionData.events)
     );
 
     const { error: persistError } = await supabase.rpc("regenerate_outfit_plan_segment", {
@@ -776,11 +997,20 @@ Respond with ONLY this JSON, no other text:
       p_reasoning: generated.reasoning,
       p_change_from_previous: previousSegment ? generated.changeFromPrevious ?? null : null,
       p_event_ids: generated.eventIds,
-      p_item_ids: wearableSegmentDay.segments[0].itemIds,
+      p_item_ids: wearableSegmentDay.segments[targetIndex].itemIds,
       p_next_change_from_previous: nextSegment ? generated.nextChangeFromPrevious ?? null : null,
     });
 
     if (persistError) throw persistError;
+
+    // A model-regenerated segment is no longer based on the Saved Look the user
+    // may previously have reused. Keep the origin only for human Canvas edits,
+    // where Save can meaningfully offer "update original" versus "save as new".
+    const { error: clearSourceError } = await supabase
+      .from("outfit_plan_segments")
+      .update({ source_outfit_id: null })
+      .eq("id", target.id);
+    if (clearSourceError) throw clearSourceError;
 
     const persisted = await readPlanForDate(supabase, userId, localDate);
     if (!persisted) {

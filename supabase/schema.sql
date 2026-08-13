@@ -59,6 +59,8 @@ create table public.wardrobe_items (
   -- images
   original_url  text not null,          -- Supabase Storage path
   clean_url     text,                   -- background-removed version
+  display_name  text,                   -- user-authored detailed/product name; authoritative in UI + prompts
+  user_notes    text,                   -- fit, provenance, comfort, styling constraints, etc.
   -- AI-classified metadata (editable by user)
   category      text not null,          -- Tops, Bottoms, Dresses, Outerwear, Shoes, Bags, Accessories
   subcategory   text,                   -- blazer, sneakers, clutch, etc.
@@ -225,6 +227,16 @@ create table public.calendar_events (
   google_event_id text not null,
   title           text,
   location        text,
+  location_override text,
+  weather_city    text,
+  weather_lat     numeric,
+  weather_lng     numeric,
+  weather_timezone text,
+  weather_city_override text,
+  weather_lat_override numeric,
+  weather_lng_override numeric,
+  weather_timezone_override text,
+  weather_location_resolved boolean not null default false,
   starts_at       timestamptz not null,
   ends_at         timestamptz,
   all_day         boolean default false,
@@ -276,6 +288,7 @@ create table public.outfit_plan_segments (
   change_from_previous text,
   event_ids            uuid[] not null default '{}',
   saved_outfit_id      uuid references public.outfits(id) on delete set null,
+  source_outfit_id     uuid references public.outfits(id) on delete set null,
   created_at           timestamptz default now(),
   updated_at           timestamptz default now(),
   unique (outfit_plan_id, position)
@@ -459,6 +472,8 @@ alter table public.travel_plans  add column if not exists destination_timezone t
 alter table public.outfit_items  add column if not exists x numeric;
 alter table public.outfit_items  add column if not exists y numeric;
 alter table public.outfit_items  add column if not exists width numeric;
+alter table public.wardrobe_items add column if not exists display_name text;
+alter table public.wardrobe_items add column if not exists user_notes text;
 
 -- 15a-2. Weather provider lat/lng caching (Phase 6.0-E follow-up): geocoded once via
 --        geocodeCity() when the user saves a city / creates a trip, not per weather call.
@@ -486,6 +501,16 @@ create table if not exists public.calendar_events (
   google_event_id text not null,
   title           text,
   location        text,
+  location_override text,
+  weather_city    text,
+  weather_lat     numeric,
+  weather_lng     numeric,
+  weather_timezone text,
+  weather_city_override text,
+  weather_lat_override numeric,
+  weather_lng_override numeric,
+  weather_timezone_override text,
+  weather_location_resolved boolean not null default false,
   starts_at       timestamptz not null,
   ends_at         timestamptz,
   all_day         boolean default false,
@@ -572,6 +597,7 @@ create table if not exists public.outfit_plan_segments (
   change_from_previous text,
   event_ids            uuid[] not null default '{}',
   saved_outfit_id      uuid references public.outfits(id) on delete set null,
+  source_outfit_id     uuid references public.outfits(id) on delete set null,
   created_at           timestamptz default now(),
   updated_at           timestamptz default now(),
   unique (outfit_plan_id, position)
@@ -1200,6 +1226,7 @@ begin
   update public.outfit_plan_segments
   set
     saved_outfit_id = v_outfit_id,
+    source_outfit_id = v_outfit_id,
     updated_at = v_now
   where id = p_segment_id;
 
@@ -1256,7 +1283,9 @@ begin
   -- longer represents this segment. Drop the link (the Look itself is left
   -- alone in the library) so the user can save the edited version.
   update public.outfit_plan_segments
-  set saved_outfit_id = null, updated_at = now()
+  set source_outfit_id = coalesce(source_outfit_id, saved_outfit_id),
+      saved_outfit_id = null,
+      updated_at = now()
   where id = p_segment_id;
 
   update public.outfit_plans
@@ -1348,6 +1377,7 @@ begin
     -- Same reasoning as update_outfit_plan_segment_items: the saved Look is a
     -- snapshot of an outfit this segment no longer proposes.
     saved_outfit_id = null,
+    source_outfit_id = null,
     updated_at = v_now
   where id = p_segment_id;
 
@@ -1465,3 +1495,908 @@ create policy "Users read own stylist bookings"
 -- Consultation access window (set by n8n via /api/webhooks/consult-ended)
 alter table public.profiles
   add column if not exists access_expires_at timestamptz;
+
+-- ============================================================
+-- 17. WARDROBE ITEM PHOTOS (extra reference angles)
+-- Re-runnable against an existing database.
+--
+-- Deliberately a separate table rather than more columns on wardrobe_items:
+-- these are *reference* photos (back, side, detail, care tag) a user adds from
+-- the item detail page, and every styling path — the Canvas, selectCandidates,
+-- the stylist and plan prompts — reads wardrobe_items.clean_url / original_url
+-- only. Keeping the extra angles off that row means no styling code has to
+-- learn to ignore them; they simply aren't reachable from there.
+--
+-- No AI runs on these: no detection, no background removal, no classification.
+-- The item's own classification stays authoritative.
+-- ============================================================
+create table if not exists public.wardrobe_item_photos (
+  id           uuid primary key default uuid_generate_v4(),
+  item_id      uuid not null references public.wardrobe_items(id) on delete cascade,
+  user_id      uuid not null references public.profiles(id) on delete cascade,
+  url          text not null,   -- public Storage URL, as uploaded (no clean version)
+  storage_path text,            -- kept so deleting a photo can also drop the object
+  angle        text,            -- optional free-text label: back, side, detail, tag
+  position     int not null default 0,
+  created_at   timestamptz default now()
+);
+
+create index if not exists idx_item_photos_item
+  on public.wardrobe_item_photos(item_id, position);
+
+alter table public.wardrobe_item_photos enable row level security;
+
+drop policy if exists "Users read own item photos"   on public.wardrobe_item_photos;
+drop policy if exists "Users insert own item photos" on public.wardrobe_item_photos;
+drop policy if exists "Users update own item photos" on public.wardrobe_item_photos;
+drop policy if exists "Users delete own item photos" on public.wardrobe_item_photos;
+
+create policy "Users read own item photos"
+  on public.wardrobe_item_photos for select using (auth.uid() = user_id);
+create policy "Users insert own item photos"
+  on public.wardrobe_item_photos for insert with check (auth.uid() = user_id);
+create policy "Users update own item photos"
+  on public.wardrobe_item_photos for update using (auth.uid() = user_id);
+create policy "Users delete own item photos"
+  on public.wardrobe_item_photos for delete using (auth.uid() = user_id);
+
+-- ============================================================
+-- 18. STYLIST REVIEW & SUGGESTIONS (Phase 10-A)
+-- Re-runnable against an existing database.
+--
+-- A human stylist reviews a client's wardrobe and Looks, rates them, writes a
+-- note, and optionally re-arranges the outfit on the shared Canvas. What she
+-- saves is a *proposal*: it never touches the client's own rows until the client
+-- accepts. See ROADMAP decisions D15/D16/D17 and section "Phase 10-A".
+-- ============================================================
+
+-- 18a. Access gate (D16). Only one stylist exists, so there is deliberately no
+--      wardrobe_grants table: every row's stylist_id would carry the same value.
+--      The window itself is already maintained by the automation webhook
+--      (/api/webhooks/consult-ended writes profiles.access_expires_at, D14), and
+--      the client can end it early from /profile by setting it to now().
+--
+-- security definer is required, not a style choice: this function is called from
+-- a policy ON public.profiles and itself reads public.profiles. As an invoker
+-- function that policy would recurse. Definer runs as the owner, so the inner
+-- reads are not re-filtered.
+create or replace function public.stylist_can_view(p_client_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select
+    p_client_id is not null
+    and auth.uid() is not null
+    and auth.uid() <> p_client_id
+    and exists (
+      select 1 from public.profiles viewer
+      where viewer.id = auth.uid()
+        and 'stylist' = any(coalesce(viewer.roles, '{}'))
+    )
+    and exists (
+      select 1 from public.profiles client
+      where client.id = p_client_id
+        and client.access_expires_at is not null
+        and client.access_expires_at > now()
+    );
+$$;
+
+-- 18b. Read access for the stylist. This is a WHITELIST, one extra permissive
+--      SELECT policy per table she legitimately needs. Tables NOT listed here --
+--      calendar_events, google_connections, outfit_journal, outfit_plans and its
+--      segment tables -- stay unreachable, and so does any table added later.
+--      Missing a table is safe; adding one by reflex is not (D13/D17).
+--
+--      Occasion projection and plan segments reach her through a server route
+--      that reads with the service role and emits only enum-derived text. Raw
+--      calendar rows never leave the server.
+drop policy if exists "Stylist reads granted client profile" on public.profiles;
+create policy "Stylist reads granted client profile"
+  on public.profiles for select
+  using (public.stylist_can_view(id));
+
+drop policy if exists "Stylist reads granted client items" on public.wardrobe_items;
+create policy "Stylist reads granted client items"
+  on public.wardrobe_items for select
+  using (public.stylist_can_view(user_id));
+
+drop policy if exists "Stylist reads granted client outfits" on public.outfits;
+create policy "Stylist reads granted client outfits"
+  on public.outfits for select
+  using (public.stylist_can_view(user_id));
+
+drop policy if exists "Stylist reads granted client outfit items" on public.outfit_items;
+create policy "Stylist reads granted client outfit items"
+  on public.outfit_items for select
+  using (
+    exists (
+      select 1 from public.outfits
+      where outfits.id = outfit_items.outfit_id
+        and public.stylist_can_view(outfits.user_id)
+    )
+  );
+
+drop policy if exists "Stylist reads granted client item photos" on public.wardrobe_item_photos;
+create policy "Stylist reads granted client item photos"
+  on public.wardrobe_item_photos for select
+  using (public.stylist_can_view(user_id));
+
+-- 18c. Occasion sharing switches (D17). Both default to the most private state.
+--      stylist_share_occasions is the L1 master switch; stylist_share_detail is
+--      the per-event L2 opt-in that additionally reveals time and raw title.
+alter table public.profiles
+  add column if not exists stylist_share_occasions boolean not null default false;
+
+alter table public.calendar_events
+  add column if not exists stylist_share_detail boolean not null default false;
+
+-- companion is the second enum the L1 wording is assembled from, so the phrase
+-- shown to the stylist is never derived from the event title. classifyEvents()
+-- fills it in the same batched call that fills occasion -- no extra model call.
+alter table public.calendar_events
+  add column if not exists companion text;
+
+-- Calendar locations are enriched once during sync and cached here. Planning
+-- can then fetch weather for the event city without re-geocoding on every open
+-- or generation. `resolved` is true even when no reliable city was present, so
+-- online/locationless events are not repeatedly sent through classification.
+alter table public.calendar_events
+  add column if not exists weather_city text,
+  add column if not exists weather_lat numeric,
+  add column if not exists weather_lng numeric,
+  add column if not exists weather_timezone text,
+  add column if not exists weather_location_resolved boolean not null default false;
+
+-- A user can correct the city/region used for weather from the week planner.
+-- Keep that override separate from Google's raw `location`: Calendar access is
+-- read-only, and a later sync must neither claim to edit Google nor erase the
+-- user's local correction. Clearing these fields restores the synced location.
+alter table public.calendar_events
+  add column if not exists location_override text,
+  add column if not exists weather_city_override text,
+  add column if not exists weather_lat_override numeric,
+  add column if not exists weather_lng_override numeric,
+  add column if not exists weather_timezone_override text;
+
+-- 18d. The review itself.
+create table if not exists public.stylist_reviews (
+  id                uuid primary key default uuid_generate_v4(),
+  client_id         uuid not null references public.profiles(id) on delete cascade,
+  stylist_id        uuid not null references public.profiles(id) on delete cascade,
+  target_kind       text not null
+                      constraint stylist_reviews_target_kind_check
+                      check (target_kind in ('outfit','plan_segment','item','new_outfit')),
+  -- Exactly one of these is set; the check constraint below enforces it. All
+  -- three cascade, so a Look the client deletes (or a plan segment a
+  -- regeneration replaces, or a piece they remove from the closet) takes its
+  -- pending suggestions with it instead of leaving the client an accept button
+  -- pointing at nothing.
+  target_outfit_id  uuid references public.outfits(id) on delete cascade,
+  target_segment_id uuid references public.outfit_plan_segments(id) on delete cascade,
+  -- 'item': a rating/comment on one piece of the closet, with no arrangement to
+  -- propose (a single garment has nothing to re-arrange), which is why the
+  -- target check below additionally forces has_proposal = false for this kind.
+  target_item_id    uuid references public.wardrobe_items(id) on delete cascade,
+  -- 'new_outfit' is the one kind with no target at all: a look the stylist built
+  -- from scratch out of the client's own pieces. It doesn't exist yet, so there
+  -- is nothing to point at -- accepting is what creates it.
+  --
+  -- The name she gave it. A look arriving in the client's Looks as "Untitled"
+  -- because the proposal had nowhere to carry a name would be a worse Look than
+  -- one they saved themselves, so the target check requires it for this kind.
+  proposed_name     text,
+  -- What accepting created, so undo can remove exactly that row and nothing else.
+  -- on delete set null, not cascade: if the client later deletes the Look
+  -- themselves, the record that she once proposed it should survive.
+  created_outfit_id uuid references public.outfits(id) on delete set null,
+  rating            int check (rating between 1 and 5),
+  note              text,
+  has_proposal      boolean not null default false,
+  status            text not null default 'pending'
+                      check (status in ('pending','accepted','declined','reverted')),
+  -- Written at accept time, not at create time: [{"itemId":..,"x":..,"y":..,"width":..}].
+  -- Geometry is included on purpose -- restoring only the ids would silently
+  -- discard the collage the client had arranged, which is the thing undo exists
+  -- to protect.
+  previous_items    jsonb,
+  -- Copy shown beside the target is replaced together with a proposed outfit.
+  -- This snapshot also carries the target/next segment transition copy so undo
+  -- restores every piece of text that acceptance invalidated.
+  previous_text     jsonb,
+  resolved_at       timestamptz,
+  created_at        timestamptz default now(),
+  updated_at        timestamptz default now(),
+  constraint stylist_reviews_target_check check (
+    (target_kind = 'outfit'       and target_outfit_id  is not null and target_segment_id is null and target_item_id is null)
+    or
+    (target_kind = 'plan_segment' and target_segment_id is not null and target_outfit_id  is null and target_item_id is null)
+    or
+    (target_kind = 'item'         and target_item_id    is not null and target_outfit_id  is null and target_segment_id is null
+                                  and has_proposal = false)
+    or
+    (target_kind = 'new_outfit'   and target_outfit_id  is null and target_segment_id is null and target_item_id is null
+                                  and has_proposal = true and coalesce(proposed_name, '') <> '')
+  ),
+  -- A review carrying neither a score, nor words, nor a re-arrangement is not a
+  -- review; it would show up in the client's inbox as an empty card.
+  constraint stylist_reviews_not_empty check (
+    rating is not null or coalesce(note, '') <> '' or has_proposal
+  )
+);
+
+-- create table if not exists does not add columns to an existing installation,
+-- and it does not widen constraints either. The block below brings an existing
+-- section-18 install up to the definition above; on a fresh database it is a
+-- no-op that re-states what was just created.
+alter table public.stylist_reviews add column if not exists previous_text jsonb;
+alter table public.stylist_reviews
+  add column if not exists target_item_id uuid references public.wardrobe_items(id) on delete cascade;
+alter table public.stylist_reviews add column if not exists proposed_name text;
+alter table public.stylist_reviews
+  add column if not exists created_outfit_id uuid references public.outfits(id) on delete set null;
+
+alter table public.stylist_reviews drop constraint if exists stylist_reviews_target_kind_check;
+alter table public.stylist_reviews add constraint stylist_reviews_target_kind_check
+  check (target_kind in ('outfit','plan_segment','item','new_outfit'));
+
+alter table public.stylist_reviews drop constraint if exists stylist_reviews_target_check;
+alter table public.stylist_reviews add constraint stylist_reviews_target_check check (
+  (target_kind = 'outfit'       and target_outfit_id  is not null and target_segment_id is null and target_item_id is null)
+  or
+  (target_kind = 'plan_segment' and target_segment_id is not null and target_outfit_id  is null and target_item_id is null)
+  or
+  (target_kind = 'item'         and target_item_id    is not null and target_outfit_id  is null and target_segment_id is null
+                                and has_proposal = false)
+  or
+  (target_kind = 'new_outfit'   and target_outfit_id  is null and target_segment_id is null and target_item_id is null
+                                and has_proposal = true and coalesce(proposed_name, '') <> '')
+);
+
+create index if not exists idx_stylist_reviews_client
+  on public.stylist_reviews(client_id, status, created_at desc);
+create index if not exists idx_stylist_reviews_outfit
+  on public.stylist_reviews(target_outfit_id) where target_outfit_id is not null;
+create index if not exists idx_stylist_reviews_segment
+  on public.stylist_reviews(target_segment_id) where target_segment_id is not null;
+create index if not exists idx_stylist_reviews_item
+  on public.stylist_reviews(target_item_id) where target_item_id is not null;
+
+-- The proposed set, structurally identical to outfit_items / outfit_plan_segment_items
+-- so the arrangement she made transfers verbatim.
+create table if not exists public.stylist_review_items (
+  review_id  uuid not null references public.stylist_reviews(id) on delete cascade,
+  item_id    uuid not null references public.wardrobe_items(id) on delete cascade,
+  position   int not null check (position >= 0),
+  x          numeric,
+  y          numeric,
+  width      numeric,
+  created_at timestamptz default now(),
+  primary key (review_id, item_id),
+  unique (review_id, position)
+);
+
+create index if not exists idx_stylist_review_items_review
+  on public.stylist_review_items(review_id, position);
+
+-- 18e. Audit log (D16: build it now -- a log added later has no history).
+create table if not exists public.wardrobe_access_log (
+  id          uuid primary key default uuid_generate_v4(),
+  stylist_id  uuid not null references public.profiles(id) on delete cascade,
+  client_id   uuid not null references public.profiles(id) on delete cascade,
+  resource    text not null,
+  accessed_at timestamptz default now()
+);
+
+create index if not exists idx_wardrobe_access_log_client
+  on public.wardrobe_access_log(client_id, accessed_at desc);
+
+-- 18f. RLS. Reviews are readable by both sides and writable by neither: the
+--      stylist creates them through a server route (service role) that validates
+--      every proposed item against the *client's* wardrobe, and the client
+--      resolves them through the security-definer RPCs below. Keeping both write
+--      paths server-side means there is exactly one place ownership is checked.
+alter table public.stylist_reviews      enable row level security;
+alter table public.stylist_review_items enable row level security;
+alter table public.wardrobe_access_log  enable row level security;
+
+drop policy if exists "Client reads own reviews"       on public.stylist_reviews;
+drop policy if exists "Stylist reads reviews she made" on public.stylist_reviews;
+drop policy if exists "Client reads own review items"  on public.stylist_review_items;
+drop policy if exists "Stylist reads own review items" on public.stylist_review_items;
+drop policy if exists "Client reads own access log"    on public.wardrobe_access_log;
+
+create policy "Client reads own reviews"
+  on public.stylist_reviews for select using (auth.uid() = client_id);
+create policy "Stylist reads reviews she made"
+  on public.stylist_reviews for select using (auth.uid() = stylist_id);
+
+create policy "Client reads own review items"
+  on public.stylist_review_items for select
+  using (
+    exists (
+      select 1 from public.stylist_reviews
+      where stylist_reviews.id = stylist_review_items.review_id
+        and stylist_reviews.client_id = auth.uid()
+    )
+  );
+create policy "Stylist reads own review items"
+  on public.stylist_review_items for select
+  using (
+    exists (
+      select 1 from public.stylist_reviews
+      where stylist_reviews.id = stylist_review_items.review_id
+        and stylist_reviews.stylist_id = auth.uid()
+    )
+  );
+
+-- The client can see who looked at their closet and when. The stylist cannot
+-- read the log at all -- an audit trail whose subject can inspect it for gaps is
+-- not an audit trail.
+create policy "Client reads own access log"
+  on public.wardrobe_access_log for select using (auth.uid() = client_id);
+
+-- 18g. Resolving a review. security definer because these cross the line between
+--      two users' rows: the review belongs to the pair, the target belongs to the
+--      client. auth.uid() = client_id is checked explicitly at the top of each.
+--
+--      Note these deliberately bypass the plan rule engine (composition, weather,
+--      rotation -- src/lib/planning/plan-rules.ts). Those rules exist to stop a
+--      model from producing an unwearable look; a human stylist outranks them.
+
+-- Snapshot a target's current items *with geometry*, in the shape previous_items
+-- and the RPCs below both speak. 'item' and 'new_outfit' both yield '[]', for
+-- opposite reasons: an item review is a rating and a comment on one piece and
+-- never replaces anything, while a new_outfit has no prior version because the
+-- Look does not exist until the client accepts it. Undo handles the latter by
+-- deleting what accept created (created_outfit_id), not by restoring a snapshot.
+create or replace function public.stylist_target_items(
+  p_target_kind text,
+  p_outfit_id uuid,
+  p_segment_id uuid
+)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select coalesce(
+    (
+      select jsonb_agg(
+               jsonb_build_object('itemId', t.item_id, 'x', t.x, 'y', t.y, 'width', t.width)
+               order by t.position, t.item_id
+             )
+      from (
+        select item_id, position, x, y, width
+        from public.outfit_items
+        where p_target_kind = 'outfit' and outfit_id = p_outfit_id
+        union all
+        select item_id, position, x, y, width
+        from public.outfit_plan_segment_items
+        where p_target_kind = 'plan_segment' and segment_id = p_segment_id
+      ) t
+    ),
+    '[]'::jsonb
+  );
+$$;
+
+-- Overwrite an outfit's items from a jsonb array of {itemId,x,y,width}. Mirrors
+-- apply_plan_segment_items' contract for the outfits side, which had no shared
+-- writer because until now only outfits-view.tsx ever wrote it.
+create or replace function public.stylist_apply_outfit_items(
+  p_outfit_id uuid,
+  p_items jsonb,
+  p_user_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_requested_count int := jsonb_array_length(p_items);
+  v_written_count int;
+begin
+  delete from public.outfit_items where outfit_id = p_outfit_id;
+
+  insert into public.outfit_items (outfit_id, item_id, position, x, y, width)
+  select
+    p_outfit_id,
+    requested.item_id,
+    requested.position,
+    requested.x,
+    requested.y,
+    requested.width
+  from (
+    select
+      (entry.value ->> 'itemId')::uuid   as item_id,
+      (entry.ordinality - 1)::int        as position,
+      (entry.value ->> 'x')::numeric     as x,
+      (entry.value ->> 'y')::numeric     as y,
+      (entry.value ->> 'width')::numeric as width
+    from jsonb_array_elements(p_items) with ordinality as entry(value, ordinality)
+  ) requested
+  join public.wardrobe_items
+    on wardrobe_items.id = requested.item_id
+   and wardrobe_items.user_id = p_user_id;
+
+  get diagnostics v_written_count = row_count;
+  if v_written_count <> v_requested_count then
+    raise exception 'The proposal contains an item that is not in this wardrobe';
+  end if;
+
+  update public.outfits set updated_at = now() where id = p_outfit_id;
+end;
+$$;
+
+create or replace function public.accept_stylist_review(p_review_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_review public.stylist_reviews%rowtype;
+  v_previous jsonb;
+  v_previous_text jsonb;
+  v_proposed jsonb;
+  v_created_outfit_id uuid;
+  v_now timestamptz := now();
+begin
+  if v_user_id is null then
+    raise exception 'Unauthorized';
+  end if;
+
+  select * into v_review
+  from public.stylist_reviews
+  where id = p_review_id and client_id = v_user_id
+  for update;
+
+  if not found then
+    raise exception 'Review not found';
+  end if;
+  if v_review.status <> 'pending' then
+    raise exception 'This suggestion has already been answered';
+  end if;
+
+  v_previous := public.stylist_target_items(
+    v_review.target_kind, v_review.target_outfit_id, v_review.target_segment_id
+  );
+
+  if v_review.has_proposal then
+    if nullif(btrim(coalesce(v_review.note, '')), '') is null then
+      raise exception 'An outfit change needs an updated description';
+    end if;
+
+    select coalesce(
+      jsonb_agg(
+        jsonb_build_object('itemId', item_id, 'x', x, 'y', y, 'width', width)
+        order by position
+      ),
+      '[]'::jsonb
+    )
+    into v_proposed
+    from public.stylist_review_items
+    where review_id = p_review_id;
+
+    if jsonb_array_length(v_proposed) = 0 then
+      raise exception 'This suggestion has no items to apply';
+    end if;
+
+    if v_review.target_kind = 'new_outfit' then
+      -- The one kind that creates rather than overwrites. ai_generated stays false:
+      -- a human built this, and /outfits badges that flag as "AI".
+      insert into public.outfits (user_id, name, notes, ai_generated)
+      values (v_user_id, btrim(v_review.proposed_name), btrim(v_review.note), false)
+      returning id into v_created_outfit_id;
+
+      perform public.stylist_apply_outfit_items(v_created_outfit_id, v_proposed, v_user_id);
+
+    elsif v_review.target_kind = 'outfit' then
+      select jsonb_build_object('description', notes)
+      into v_previous_text
+      from public.outfits
+      where id = v_review.target_outfit_id and user_id = v_user_id;
+
+      perform public.stylist_apply_outfit_items(v_review.target_outfit_id, v_proposed, v_user_id);
+
+      update public.outfits
+      set notes = btrim(v_review.note), updated_at = v_now
+      where id = v_review.target_outfit_id and user_id = v_user_id;
+    else
+      select jsonb_build_object(
+        'description', target_segment.reasoning,
+        'changeFromPrevious', target_segment.change_from_previous,
+        'nextSegmentId', following_segment.id,
+        'nextChangeFromPrevious', following_segment.change_from_previous
+      )
+      into v_previous_text
+      from public.outfit_plan_segments as target_segment
+      left join public.outfit_plan_segments as following_segment
+        on following_segment.outfit_plan_id = target_segment.outfit_plan_id
+       and following_segment.position = target_segment.position + 1
+      where target_segment.id = v_review.target_segment_id;
+
+      -- p_apply_layout = true: the stylist arranged this collage on purpose, so
+      -- her geometry is the point of accepting it.
+      perform public.apply_plan_segment_items(v_review.target_segment_id, v_proposed, v_user_id, true);
+
+      update public.outfit_plan_segments
+      set reasoning = btrim(v_review.note),
+          change_from_previous = null,
+          updated_at = v_now
+      where id = v_review.target_segment_id;
+
+      -- This transition was written against the old target outfit and is no
+      -- longer trustworthy. Clear it instead of displaying incorrect advice.
+      update public.outfit_plan_segments as following_segment
+      set change_from_previous = null, updated_at = v_now
+      from public.outfit_plan_segments as target_segment
+      where target_segment.id = v_review.target_segment_id
+        and following_segment.outfit_plan_id = target_segment.outfit_plan_id
+        and following_segment.position = target_segment.position + 1;
+    end if;
+  end if;
+
+  update public.stylist_reviews
+  set status = 'accepted',
+      previous_items = v_previous,
+      previous_text = v_previous_text,
+      created_outfit_id = v_created_outfit_id,
+      resolved_at = v_now,
+      updated_at = v_now
+  where id = p_review_id;
+
+  return jsonb_build_object(
+    'status', 'accepted',
+    'previousCount', jsonb_array_length(v_previous),
+    'createdOutfitId', v_created_outfit_id
+  );
+end;
+$$;
+
+create or replace function public.decline_stylist_review(p_review_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_now timestamptz := now();
+begin
+  if v_user_id is null then
+    raise exception 'Unauthorized';
+  end if;
+
+  update public.stylist_reviews
+  set status = 'declined', resolved_at = v_now, updated_at = v_now
+  where id = p_review_id and client_id = v_user_id and status = 'pending';
+
+  if not found then
+    raise exception 'Review not found';
+  end if;
+end;
+$$;
+
+-- Undo an accept. Restores the snapshot taken at accept time, geometry included.
+-- Lands in 'reverted' rather than back in 'pending' so it does not reappear in
+-- the inbox as an unanswered suggestion.
+create or replace function public.revert_stylist_review(p_review_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_review public.stylist_reviews%rowtype;
+  v_now timestamptz := now();
+begin
+  if v_user_id is null then
+    raise exception 'Unauthorized';
+  end if;
+
+  select * into v_review
+  from public.stylist_reviews
+  where id = p_review_id and client_id = v_user_id
+  for update;
+
+  if not found then
+    raise exception 'Review not found';
+  end if;
+  if v_review.status <> 'accepted' then
+    raise exception 'Only an accepted suggestion can be undone';
+  end if;
+
+  if v_review.target_kind = 'new_outfit' then
+    -- Nothing to restore: undoing a look that did not exist before means removing
+    -- the one accept created. outfit_items cascades, and the FK's on delete set
+    -- null clears created_outfit_id for us. A row already deleted by the client
+    -- is not an error -- the undo they asked for has effectively happened.
+    if v_review.created_outfit_id is not null then
+      delete from public.outfits
+      where id = v_review.created_outfit_id and user_id = v_user_id;
+    end if;
+
+  elsif v_review.has_proposal then
+    if coalesce(jsonb_array_length(v_review.previous_items), 0) = 0 then
+      raise exception 'There is no earlier version to restore';
+    end if;
+
+    if v_review.target_kind = 'outfit' then
+      perform public.stylist_apply_outfit_items(
+        v_review.target_outfit_id, v_review.previous_items, v_user_id
+      );
+
+      if v_review.previous_text is not null then
+        update public.outfits
+        set notes = v_review.previous_text ->> 'description', updated_at = v_now
+        where id = v_review.target_outfit_id and user_id = v_user_id;
+      end if;
+    else
+      perform public.apply_plan_segment_items(
+        v_review.target_segment_id, v_review.previous_items, v_user_id, true
+      );
+
+      if v_review.previous_text is not null then
+        update public.outfit_plan_segments
+        set reasoning = coalesce(v_review.previous_text ->> 'description', ''),
+            change_from_previous = v_review.previous_text ->> 'changeFromPrevious',
+            updated_at = v_now
+        where id = v_review.target_segment_id;
+
+        if nullif(v_review.previous_text ->> 'nextSegmentId', '') is not null then
+          update public.outfit_plan_segments
+          set change_from_previous = v_review.previous_text ->> 'nextChangeFromPrevious',
+              updated_at = v_now
+          where id = (v_review.previous_text ->> 'nextSegmentId')::uuid;
+        end if;
+      end if;
+    end if;
+  end if;
+
+  update public.stylist_reviews
+  set status = 'reverted', resolved_at = v_now, updated_at = v_now
+  where id = p_review_id;
+end;
+$$;
+
+-- ============================================================
+-- 20. REUSE SAVED OUTFITS IN DAILY / WEEKLY PLANS
+-- Section 19 is reserved by ROADMAP for user-defined rotation gaps.
+-- Re-runnable against an existing database.
+--
+-- saved_outfit_id means the plan segment is an exact saved snapshot. The separate
+-- source_outfit_id survives Canvas changes so Save can ask whether to update that
+-- original Look or create a new one.
+-- ============================================================
+alter table public.outfit_plan_segments
+  add column if not exists source_outfit_id uuid references public.outfits(id) on delete set null;
+
+update public.outfit_plan_segments
+set source_outfit_id = saved_outfit_id
+where source_outfit_id is null
+  and saved_outfit_id is not null;
+
+create or replace function public.update_outfit_plan_segment_from_canvas(
+  p_segment_id uuid,
+  p_items jsonb,
+  p_source_outfit_id uuid,
+  p_source_matches boolean
+)
+returns jsonb
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_plan public.outfit_plans%rowtype;
+  v_saved_outfit_id uuid;
+begin
+  if v_user_id is null then
+    raise exception 'Unauthorized';
+  end if;
+
+  select plans.*
+  into v_plan
+  from public.outfit_plans plans
+  join public.outfit_plan_segments segments
+    on segments.outfit_plan_id = plans.id
+  where segments.id = p_segment_id
+    and plans.user_id = v_user_id
+  for update of plans;
+
+  if not found then
+    raise exception 'Plan segment not found';
+  end if;
+  if v_plan.status = 'worn' then
+    raise exception 'This plan is already marked as worn';
+  end if;
+  if coalesce(jsonb_typeof(p_items), 'null') <> 'array'
+    or jsonb_array_length(p_items) = 0 then
+    raise exception 'A segment must contain at least one item';
+  end if;
+
+  if p_source_outfit_id is not null and not exists (
+    select 1 from public.outfits
+    where id = p_source_outfit_id and user_id = v_user_id
+  ) then
+    raise exception 'Saved outfit not found';
+  end if;
+
+  perform public.apply_plan_segment_items(p_segment_id, p_items, v_user_id, true);
+
+  v_saved_outfit_id := case
+    when coalesce(p_source_matches, false)
+      and p_source_outfit_id is not null
+      and (
+        select array_agg(item_id order by item_id)
+        from public.outfit_plan_segment_items
+        where segment_id = p_segment_id
+      ) = (
+        select array_agg(item_id order by item_id)
+        from public.outfit_items
+        where outfit_id = p_source_outfit_id
+      )
+    then p_source_outfit_id
+    else null
+  end;
+
+  update public.outfit_plan_segments
+  set saved_outfit_id = v_saved_outfit_id,
+      source_outfit_id = p_source_outfit_id,
+      updated_at = now()
+  where id = p_segment_id;
+
+  update public.outfit_plans
+  set updated_at = now()
+  where id = v_plan.id;
+
+  return jsonb_build_object(
+    'savedOutfitId', v_saved_outfit_id,
+    'sourceOutfitId', p_source_outfit_id
+  );
+end;
+$$;
+
+create or replace function public.save_outfit_plan_segment_choice(
+  p_segment_id uuid,
+  p_items jsonb,
+  p_name text,
+  p_mode text,
+  p_source_outfit_id uuid
+)
+returns uuid
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_segment public.outfit_plan_segments%rowtype;
+  v_plan_status text;
+  v_outfit_id uuid;
+  v_now timestamptz := now();
+begin
+  if v_user_id is null then
+    raise exception 'Unauthorized';
+  end if;
+  if p_mode is null or p_mode not in ('new', 'update') then
+    raise exception 'Save mode must be new or update';
+  end if;
+  if coalesce(jsonb_typeof(p_items), 'null') <> 'array'
+    or jsonb_array_length(p_items) < 2 then
+    raise exception 'At least two items are required to save an outfit';
+  end if;
+
+  select segments.*
+  into v_segment
+  from public.outfit_plan_segments segments
+  where segments.id = p_segment_id
+    and exists (
+      select 1
+      from public.outfit_plans plans
+      where plans.id = segments.outfit_plan_id
+        and plans.user_id = v_user_id
+    )
+  for update of segments;
+
+  if not found then
+    raise exception 'Plan segment not found';
+  end if;
+
+  select status into v_plan_status
+  from public.outfit_plans
+  where id = v_segment.outfit_plan_id
+    and user_id = v_user_id;
+
+  if v_plan_status = 'worn' then
+    raise exception 'This plan is already marked as worn';
+  end if;
+
+  perform public.apply_plan_segment_items(p_segment_id, p_items, v_user_id, true);
+
+  if p_mode = 'update' then
+    v_outfit_id := coalesce(
+      p_source_outfit_id,
+      v_segment.source_outfit_id,
+      v_segment.saved_outfit_id
+    );
+
+    if v_outfit_id is null or not exists (
+      select 1 from public.outfits
+      where id = v_outfit_id and user_id = v_user_id
+    ) then
+      raise exception 'Original saved outfit not found';
+    end if;
+
+    -- Updating a Look means older plan segments that pointed at its previous
+    -- exact snapshot are now only based on it, not exact copies of it.
+    update public.outfit_plan_segments
+    set source_outfit_id = coalesce(source_outfit_id, saved_outfit_id),
+        saved_outfit_id = null,
+        updated_at = v_now
+    where saved_outfit_id = v_outfit_id
+      and id <> p_segment_id;
+
+    update public.outfits
+    set updated_at = v_now
+    where id = v_outfit_id and user_id = v_user_id;
+  else
+    insert into public.outfits (
+      user_id,
+      name,
+      folder,
+      ai_generated,
+      ai_reasoning,
+      created_at,
+      updated_at
+    )
+    values (
+      v_user_id,
+      coalesce(nullif(p_name, ''), v_segment.label),
+      'Everyday',
+      true,
+      nullif(v_segment.reasoning, ''),
+      v_now,
+      v_now
+    )
+    returning id into v_outfit_id;
+  end if;
+
+  delete from public.outfit_items
+  where outfit_id = v_outfit_id;
+
+  insert into public.outfit_items (outfit_id, item_id, position, x, y, width)
+  select v_outfit_id, item_id, position, x, y, width
+  from public.outfit_plan_segment_items
+  where segment_id = p_segment_id
+  order by position;
+
+  update public.outfit_plan_segments
+  set saved_outfit_id = v_outfit_id,
+      source_outfit_id = v_outfit_id,
+      updated_at = v_now
+  where id = p_segment_id;
+
+  return v_outfit_id;
+end;
+$$;
+
+revoke execute on function public.update_outfit_plan_segment_from_canvas(uuid, jsonb, uuid, boolean)
+  from public, anon;
+grant execute on function public.update_outfit_plan_segment_from_canvas(uuid, jsonb, uuid, boolean)
+  to authenticated;
+
+revoke execute on function public.save_outfit_plan_segment_choice(uuid, jsonb, text, text, uuid)
+  from public, anon;
+grant execute on function public.save_outfit_plan_segment_choice(uuid, jsonb, text, text, uuid)
+  to authenticated;
+
+notify pgrst, 'reload schema';

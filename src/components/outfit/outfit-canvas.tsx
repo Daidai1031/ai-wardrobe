@@ -16,10 +16,12 @@ import { useRef, useState, type DragEvent } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { Layers3, Maximize2, Plus, Search, Shirt, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { wardrobeItemName } from "@/lib/wardrobe/item-label";
 import { ITEM_CATEGORIES, type ItemCategory } from "@/types/database";
 
 export interface CanvasItem {
   id: string;
+  display_name?: string | null;
   category: string;
   subcategory?: string | null;
   color?: string | null;
@@ -39,7 +41,7 @@ export type DragPayload =
   | { source: "canvas"; itemId: string; index: number };
 
 export function itemName(item: CanvasItem) {
-  return item.subcategory || item.category;
+  return wardrobeItemName(item);
 }
 
 export function imageUrl(item: CanvasItem) {

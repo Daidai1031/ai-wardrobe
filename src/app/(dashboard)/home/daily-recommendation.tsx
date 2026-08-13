@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import {
   Check,
   Cloud,
-  ListPlus,
+  Layers3,
   Loader2,
   Pencil,
   RotateCcw,
@@ -17,11 +17,15 @@ import {
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
+import { wardrobeItemLabel } from "@/lib/wardrobe/item-label";
 import { OutfitCollage, layoutsFromRows } from "@/components/outfit/outfit-canvas";
-import { SegmentCanvasEditor } from "@/components/outfit/segment-canvas-editor";
+import {
+  SegmentCanvasEditor,
+  type SegmentCanvasSaveResult,
+} from "@/components/outfit/segment-canvas-editor";
+import { SegmentSaveButton } from "@/components/outfit/segment-save-button";
 import type {
   DailyResponse,
-  DailySegmentItem,
   DailySegmentResponse,
   DailyWardrobeItem,
 } from "@/types/daily";
@@ -29,9 +33,7 @@ import type {
 type Feedback = "liked" | null;
 
 function itemLabel(item: DailyWardrobeItem): string {
-  return [item.color, item.subcategory || item.category, item.brand]
-    .filter(Boolean)
-    .join(" · ");
+  return wardrobeItemLabel(item);
 }
 
 export function DailyRecommendation({ userId }: { userId: string }) {
@@ -39,9 +41,9 @@ export function DailyRecommendation({ userId }: { userId: string }) {
   const [data, setData] = useState<DailyResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState<Feedback>(null);
-  const [savingSegmentIds, setSavingSegmentIds] = useState<Set<string>>(new Set());
   const [regeneratingSegmentId, setRegeneratingSegmentId] = useState<string | null>(null);
   const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
+  const [reusingSegmentId, setReusingSegmentId] = useState<string | null>(null);
   const [markingWorn, setMarkingWorn] = useState(false);
 
   const loadPlan = useCallback(async () => {
@@ -166,66 +168,24 @@ export function DailyRecommendation({ userId }: { userId: string }) {
     }
   }
 
-  function applyEditedSegment(segmentId: string, items: DailySegmentItem[]) {
+  function applyEditedSegment(segmentId: string, result: SegmentCanvasSaveResult) {
     setData((current) =>
       current
         ? {
             ...current,
             segments: current.segments.map((segment) =>
               segment.id === segmentId
-                ? // The RPC drops saved_outfit_id, because the already-saved Look is a
-                  // snapshot of the pre-edit segment. Mirror that here so the Save
-                  // button re-enables for the edited version.
-                  { ...segment, items, savedOutfitId: null }
+                ? {
+                    ...segment,
+                    items: result.items,
+                    savedOutfitId: result.savedOutfitId,
+                    sourceOutfitId: result.sourceOutfitId,
+                  }
                 : segment
             ),
           }
         : current
     );
-  }
-
-  async function addToOutfits(segment: DailySegmentResponse) {
-    if (segment.items.length < 2) {
-      toast.error("Need at least two items to save this segment");
-      return;
-    }
-
-    setSavingSegmentIds((current) => new Set(current).add(segment.id));
-
-    const fallbackName = `${segment.label} · ${new Intl.DateTimeFormat("en", {
-      month: "short",
-      day: "numeric",
-    }).format(data?.date ? new Date(`${data.date}T12:00:00`) : new Date())}`;
-
-    const { data: outfitId, error } = await supabase.rpc("save_outfit_plan_segment", {
-      p_segment_id: segment.id,
-      p_item_ids: segment.items.map((item) => item.id),
-      p_name: fallbackName,
-    });
-
-    if (error || !outfitId) {
-      toast.error(error?.message || "Failed to save outfit");
-    } else {
-      setData((current) =>
-        current
-          ? {
-              ...current,
-              segments: current.segments.map((currentSegment) =>
-                currentSegment.id === segment.id
-                  ? { ...currentSegment, savedOutfitId: String(outfitId) }
-                  : currentSegment
-              ),
-            }
-          : current
-      );
-      toast.success(`Saved “${segment.label}” to your outfits`);
-    }
-
-    setSavingSegmentIds((current) => {
-      const next = new Set(current);
-      next.delete(segment.id);
-      return next;
-    });
   }
 
   async function markWornToday() {
@@ -288,16 +248,26 @@ export function DailyRecommendation({ userId }: { userId: string }) {
 
   const worn = data.status === "worn";
   const editingSegment = data.segments.find((segment) => segment.id === editingSegmentId);
+  const weatherLocations = data.weatherLocations?.length
+    ? data.weatherLocations
+    : data.weather
+      ? [data.weather]
+      : [];
 
   if (editingSegment) {
     return (
       <SegmentCanvasEditor
         segment={editingSegment}
         availableItems={data.availableItems}
-        onCancel={() => setEditingSegmentId(null)}
-        onSaved={(items) => {
-          applyEditedSegment(editingSegment.id, items);
+        showSavedLooksInitially={reusingSegmentId === editingSegment.id}
+        onCancel={() => {
           setEditingSegmentId(null);
+          setReusingSegmentId(null);
+        }}
+        onSaved={(result) => {
+          applyEditedSegment(editingSegment.id, result);
+          setEditingSegmentId(null);
+          setReusingSegmentId(null);
         }}
       />
     );
@@ -306,12 +276,15 @@ export function DailyRecommendation({ userId }: { userId: string }) {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        {data.weather ? (
-          <div className="flex items-center gap-2 text-sm text-surface-600 bg-white rounded-xl border border-surface-200 px-4 py-3 w-fit">
+        {weatherLocations.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-surface-600 bg-white rounded-xl border border-surface-200 px-4 py-3 w-fit">
             <Cloud size={16} className="text-brand-500" />
-            <span className="font-medium text-surface-900">{data.weather.temp}°C</span>
-            <span className="capitalize">{data.weather.description}</span>
-            <span className="text-surface-400">· {data.weather.city}</span>
+            {weatherLocations.map((weather, index) => (
+              <span key={`${weather.city}-${index}`} className="whitespace-nowrap">
+                <span className="font-medium text-surface-900">{weather.city}</span>{" "}
+                {weather.temp}°C · <span className="capitalize">{weather.description}</span>
+              </span>
+            ))}
           </div>
         ) : (
           <div />
@@ -364,7 +337,6 @@ export function DailyRecommendation({ userId }: { userId: string }) {
 
         <div className="space-y-5">
           {data.segments.map((segment, segmentIndex) => {
-            const saving = savingSegmentIds.has(segment.id);
             const regenerating = regeneratingSegmentId === segment.id;
 
             return (
@@ -379,7 +351,7 @@ export function DailyRecommendation({ userId }: { userId: string }) {
                     </p>
                     <h3 className="text-sm font-semibold text-surface-900">{segment.label}</h3>
                   </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
+                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
                     <button
                       onClick={() => void dislikeSegment(segment)}
                       disabled={worn || regenerating || Boolean(regeneratingSegmentId)}
@@ -393,7 +365,22 @@ export function DailyRecommendation({ userId }: { userId: string }) {
                       )}
                     </button>
                     <button
-                      onClick={() => setEditingSegmentId(segment.id)}
+                      onClick={() => {
+                        setReusingSegmentId(segment.id);
+                        setEditingSegmentId(segment.id);
+                      }}
+                      disabled={worn || Boolean(regeneratingSegmentId)}
+                      title="Replace this segment with one of your saved outfits"
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-surface-200 text-surface-600 text-xs font-medium hover:bg-surface-50 disabled:opacity-40"
+                    >
+                      <Layers3 size={13} />
+                      Use saved
+                    </button>
+                    <button
+                      onClick={() => {
+                        setReusingSegmentId(null);
+                        setEditingSegmentId(segment.id);
+                      }}
                       disabled={worn || Boolean(regeneratingSegmentId)}
                       title="Adjust this segment on the canvas"
                       className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-surface-200 text-surface-600 text-xs font-medium hover:bg-surface-50 disabled:opacity-40"
@@ -401,14 +388,29 @@ export function DailyRecommendation({ userId }: { userId: string }) {
                       <Pencil size={13} />
                       Adjust
                     </button>
-                    <button
-                      onClick={() => void addToOutfits(segment)}
-                      disabled={saving || Boolean(segment.savedOutfitId) || worn}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-900 text-white text-xs font-medium hover:bg-surface-800 disabled:opacity-50"
-                    >
-                      {segment.savedOutfitId ? <Check size={13} /> : <ListPlus size={13} />}
-                      {segment.savedOutfitId ? "Saved" : saving ? "Saving…" : "Save"}
-                    </button>
+                    <SegmentSaveButton
+                      segment={segment}
+                      date={data.date}
+                      disabled={worn}
+                      onSaved={(outfitId) =>
+                        setData((current) =>
+                          current
+                            ? {
+                                ...current,
+                                segments: current.segments.map((currentSegment) =>
+                                  currentSegment.id === segment.id
+                                    ? {
+                                        ...currentSegment,
+                                        savedOutfitId: outfitId,
+                                        sourceOutfitId: outfitId,
+                                      }
+                                    : currentSegment
+                                ),
+                              }
+                            : current
+                        )
+                      }
+                    />
                   </div>
                 </div>
 

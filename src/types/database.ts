@@ -11,6 +11,12 @@ export interface Profile {
   lng: number | null;
   timezone: string | null;
   roles: string[];
+  // Phase 10-A / D16: the human stylist's read window over this client's closet.
+  // Written by /api/webhooks/consult-ended (14 days after a consultation ends) and
+  // clearable by the client from /profile. Null or past = no stylist access.
+  access_expires_at: string | null;
+  // D17 L1 master switch. False (default) means the stylist sees no occasions at all.
+  stylist_share_occasions: boolean;
   height_cm: number | null;
   weight_kg: number | null;
   body_shape: BodyShape | null;
@@ -49,6 +55,8 @@ export interface WardrobeItem {
   user_id: string;
   original_url: string;
   clean_url: string | null;
+  display_name: string | null;
+  user_notes: string | null;
   category: ItemCategory;
   subcategory: string | null;
   color: string | null;
@@ -66,6 +74,22 @@ export interface WardrobeItem {
   ai_confidence: number | null;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * An extra reference angle for a wardrobe item (back, side, detail, care tag).
+ * Display-only: no background removal, no classification, and never used by any
+ * styling path — those read WardrobeItem.clean_url / original_url.
+ */
+export interface WardrobeItemPhoto {
+  id: string;
+  item_id: string;
+  user_id: string;
+  url: string;
+  storage_path: string | null;
+  angle: string | null;
+  position: number;
+  created_at: string;
 }
 
 export interface Outfit {
@@ -146,13 +170,31 @@ export interface CalendarEvent {
   user_id: string;
   google_event_id: string;
   title: string | null;
+  // Raw Google Calendar location. User edits are stored separately so a sync
+  // cannot silently overwrite the place they chose for weather planning.
   location: string | null;
+  location_override: string | null;
+  weather_city: string | null;
+  weather_lat: number | null;
+  weather_lng: number | null;
+  weather_timezone: string | null;
+  weather_city_override: string | null;
+  weather_lat_override: number | null;
+  weather_lng_override: number | null;
+  weather_timezone_override: string | null;
+  weather_location_resolved: boolean;
   starts_at: string;
   ends_at: string | null;
   all_day: boolean;
   attendee_count: number;
   occasion: string | null;
   formality: number | null;
+  // D17: closed enum (see COMPANION_TYPES) the stylist-facing wording is assembled
+  // from, so that wording never derives from `title`.
+  companion: string | null;
+  // D17 L2: per-event opt-in that additionally reveals this event's time and raw
+  // title to the stylist. Defaults false; L1 alone shows neither.
+  stylist_share_detail: boolean;
   synced_at: string;
 }
 
@@ -182,6 +224,7 @@ export interface OutfitPlanSegment {
   change_from_previous: string | null;
   event_ids: string[];
   saved_outfit_id: string | null;
+  source_outfit_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -213,6 +256,82 @@ export interface HumanStylistBooking {
   notes: string | null;
   created_at: string;
   updated_at: string;
+}
+
+// ── Phase 10-A: human stylist review & suggestions ──
+
+/**
+ * What a suggestion is about.
+ *
+ * `item` is a rating/comment on a single closet piece — it never carries a proposal
+ * (a lone garment has no arrangement to change). `new_outfit` is the opposite: a Look
+ * the stylist built from the client's pieces that doesn't exist yet, so it has no
+ * target row at all and *must* carry a proposal plus a name. Both rules live in the
+ * schema's target check rather than being left to the route.
+ */
+export type StylistReviewTargetKind = "outfit" | "plan_segment" | "item" | "new_outfit";
+export type StylistReviewStatus = "pending" | "accepted" | "declined" | "reverted";
+
+/**
+ * One suggestion from the human stylist. Deliberately a *proposal*: nothing here
+ * touches the client's own outfits/plan rows until they accept, which is what makes
+ * "采纳或者不要" meaningful. Created server-side (service role) and resolved through
+ * the accept/decline/revert RPCs — the tables have read policies only.
+ */
+export interface StylistReview {
+  id: string;
+  client_id: string;
+  stylist_id: string;
+  target_kind: StylistReviewTargetKind;
+  target_outfit_id: string | null;
+  target_segment_id: string | null;
+  target_item_id: string | null;
+  /** `new_outfit` only: the name accepting will give the created Look. */
+  proposed_name: string | null;
+  /** `new_outfit` only: what accepting created, so undo removes exactly that Look. */
+  created_outfit_id: string | null;
+  rating: number | null;
+  note: string | null;
+  has_proposal: boolean;
+  status: StylistReviewStatus;
+  /** Snapshot with geometry, written at accept time so the accept can be undone. */
+  previous_items: StylistReviewItemGeometry[] | null;
+  /** Previous outfit copy and adjacent transition copy, restored by undo. */
+  previous_text: {
+    description: string | null;
+    changeFromPrevious?: string | null;
+    nextSegmentId?: string | null;
+    nextChangeFromPrevious?: string | null;
+  } | null;
+  resolved_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StylistReviewItemGeometry {
+  itemId: string;
+  x: number | null;
+  y: number | null;
+  width: number | null;
+}
+
+export interface StylistReviewItem {
+  review_id: string;
+  item_id: string;
+  position: number;
+  x: number | null;
+  y: number | null;
+  width: number | null;
+  created_at: string;
+}
+
+/** D16: who looked at whose closet, and when. Client-readable, stylist-invisible. */
+export interface WardrobeAccessLogEntry {
+  id: string;
+  stylist_id: string;
+  client_id: string;
+  resource: string;
+  accessed_at: string;
 }
 
 // ── AI Classification result ──

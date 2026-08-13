@@ -15,6 +15,7 @@ import {
   Calendar,
   LogOut,
   Menu,
+  Users,
   X,
 } from "lucide-react";
 import { useState } from "react";
@@ -30,11 +31,37 @@ const NAV_ITEMS = [
   { href: "/profile", label: "Profile", icon: User },
 ];
 
-export function Sidebar() {
+const CLIENTS_NAV = { href: "/pro", label: "Clients", icon: Users };
+
+/**
+ * Roles come from the layout (a Server Component) rather than being read here: they
+ * live on `profiles`, and a client-side lookup would both flash the wrong nav on first
+ * paint and add a query to every page.
+ *
+ * A staff-only account (`roles = {stylist}`) gets the console and nothing else — not
+ * even Profile, which is entirely client-side settings (city, timezone, Google Calendar,
+ * stylist sharing) that a staff account has no use for. It has no closet of its own, so
+ * Home/Plan/Outfits would be seven links to empty pages, and Sign out lives at the
+ * bottom of the sidebar rather than inside Profile, so nothing is stranded by dropping
+ * it. An account carrying both roles keeps the full nav plus Clients — that's the
+ * dev/owner case, and hiding the client app from it would make the product untestable.
+ */
+export function Sidebar({
+  isStylist = false,
+  isClient = true,
+}: {
+  isStylist?: boolean;
+  isClient?: boolean;
+}) {
   const pathname = usePathname();
   const router = useRouter();
   const supabase = createClient();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const navItems = !isClient && isStylist
+    ? [CLIENTS_NAV]
+    : isStylist
+      ? [...NAV_ITEMS, CLIENTS_NAV]
+      : NAV_ITEMS;
 
   async function handleLogout() {
     await supabase.auth.signOut();
@@ -51,7 +78,7 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 p-3 space-y-0.5">
-        {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
+        {navItems.map(({ href, label, icon: Icon }) => {
           const active = pathname.startsWith(href);
           return (
             <Link

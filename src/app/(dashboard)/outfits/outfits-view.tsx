@@ -2,9 +2,8 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useMemo, useRef, useState, type DragEvent } from "react";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import {
   Check,
   ChevronLeft,
@@ -17,11 +16,9 @@ import {
   Shirt,
   Sparkles,
   Trash2,
-  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
-import { cn } from "@/lib/utils";
 import { type ItemCategory, type WardrobeItem } from "@/types/database";
 import {
   ClosetPicker,
@@ -30,13 +27,19 @@ import {
   imageUrl,
   itemName,
   readDragPayload,
-  writeDragPayload,
   type CanvasItemLayout,
 } from "@/components/outfit/outfit-canvas";
 
 type OutfitItemPreview = Pick<
   WardrobeItem,
-  "id" | "clean_url" | "original_url" | "category" | "subcategory" | "color" | "brand"
+  | "id"
+  | "display_name"
+  | "clean_url"
+  | "original_url"
+  | "category"
+  | "subcategory"
+  | "color"
+  | "brand"
 >;
 
 interface SavedOutfitJoin {
@@ -76,6 +79,8 @@ const OUTFIT_FOLDERS = [
 
 export function OutfitsView({ outfits, wardrobeItems, userId }: OutfitsViewProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const openHandledRef = useRef(false);
   const supabase = useMemo(() => createClient(), []);
   const [isCreating, setIsCreating] = useState(false);
   const [editingOutfitId, setEditingOutfitId] = useState<string | null>(null);
@@ -105,7 +110,7 @@ export function OutfitsView({ outfits, wardrobeItems, userId }: OutfitsViewProps
     const query = search.trim().toLowerCase();
     const matchesSearch =
       !query ||
-      [item.subcategory, item.category, item.color, item.brand]
+      [item.display_name, item.user_notes, item.subcategory, item.category, item.color, item.brand]
         .filter(Boolean)
         .some((value) => value!.toLowerCase().includes(query));
     return inCategory && matchesSearch;
@@ -168,7 +173,7 @@ export function OutfitsView({ outfits, wardrobeItems, userId }: OutfitsViewProps
     setIsCreating(true);
   }
 
-  function startEdit(outfit: SavedOutfit) {
+  const startEdit = useCallback((outfit: SavedOutfit) => {
     const joins = [...outfit.outfit_items].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
     const ids: string[] = [];
     const layouts: Record<string, CanvasItemLayout> = {};
@@ -189,7 +194,18 @@ export function OutfitsView({ outfits, wardrobeItems, userId }: OutfitsViewProps
     setSearch("");
     setEditingOutfitId(outfit.id);
     setIsCreating(true);
-  }
+  }, [itemById]);
+
+  useEffect(() => {
+    if (openHandledRef.current) return;
+    const openId = searchParams.get("open");
+    if (!openId) return;
+
+    openHandledRef.current = true;
+    const outfit = outfits.find((candidate) => candidate.id === openId);
+    if (outfit) startEdit(outfit);
+    router.replace("/outfits", { scroll: false });
+  }, [outfits, router, searchParams, startEdit]);
 
   function handleCanvasDrop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();

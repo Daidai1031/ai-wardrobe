@@ -38,7 +38,11 @@ export default async function proxy(request: NextRequest) {
     request.nextUrl.pathname.startsWith("/stylist") ||
     request.nextUrl.pathname.startsWith("/profile") ||
     request.nextUrl.pathname.startsWith("/analytics") ||
-    request.nextUrl.pathname.startsWith("/travel");
+    request.nextUrl.pathname.startsWith("/travel") ||
+    // The stylist console. Signed-in is only the first gate — /pro additionally
+    // requires the 'stylist' role and a live access window, checked server-side
+    // in the pages themselves (D16).
+    request.nextUrl.pathname.startsWith("/pro");
 
   if (!user && isDashboard) {
     const url = request.nextUrl.clone();

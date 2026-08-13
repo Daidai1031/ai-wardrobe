@@ -2,6 +2,7 @@ import { createServerSupabase } from "@/lib/supabase/server";
 import { getConnectionStatus } from "@/lib/google/client";
 import { ProfileForm } from "./profile-form";
 import { GoogleConnections } from "./google-connections";
+import { StylistSharing } from "./stylist-sharing";
 
 export default async function ProfilePage({
   searchParams,
@@ -30,6 +31,11 @@ export default async function ProfilePage({
       <GoogleConnections
         status={connectionStatus}
         calendarResult={typeof calendarResult === "string" ? calendarResult : undefined}
+      />
+      <StylistSharing
+        userId={user.id}
+        accessExpiresAt={profile?.access_expires_at ?? null}
+        shareOccasions={Boolean(profile?.stylist_share_occasions)}
       />
     </div>
   );

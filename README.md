@@ -8,6 +8,8 @@ Go to [supabase.com](https://supabase.com) → New Project.
 
 After creation, go to **SQL Editor** → paste the contents of `supabase/schema.sql` → Run.
 
+For an **existing** database, don't re-run the whole file — run only the re-runnable blocks you're missing: section 15 (planning tables + RPCs), section 16 (Human Stylist bookings), section 17 (`wardrobe_item_photos`, extra item angles). There is no migration tooling here, so a schema change only reaches the database when someone pastes it in. Symptom of a skipped block: the feature fails at runtime with PostgREST `PGRST205` — `Could not find the table 'public.<name>' in the schema cache` — while `npm run build` still passes. If the table exists and you still get `PGRST205`, PostgREST's cache is stale; run `notify pgrst, 'reload schema';`.
+
 Then go to **Settings → API** and copy:
 - `Project URL` → `NEXT_PUBLIC_SUPABASE_URL`
 - `anon public` key → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
@@ -39,6 +41,27 @@ Fill in:
 - `SUPABASE_SERVICE_ROLE_KEY` — Settings → API → `service_role` key. Server-only, never expose via `NEXT_PUBLIC_`. Needed for `google_connections` (see "Google Calendar OAuth" below), which has RLS enabled with no client policy — only the service role can read/write it.
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — see "Google Calendar OAuth" below.
 - `STYLIST_TIME_ZONE` — optional IANA timezone for the Human Stylist's working calendar (defaults to `America/New_York`). Slots are generated in this timezone, then displayed in each client's browser timezone.
+- `CONSULT_WEBHOOK_SECRET` — shared secret for `POST /api/webhooks/consult-ended`, the only thing the automation tool is trusted with. Any long random string; set the same value in Zapier. Unset means the endpoint rejects everything, which also means no stylist ever gets an access window.
+
+### Opening a stylist's access window (Zapier)
+
+`POST /api/webhooks/consult-ended` is the one automation hook in the product. It takes `{"client_email": "..."}` plus an `x-webhook-secret` header, finds that client's profile and sets `access_expires_at` 14 days out — which is exactly what makes them appear in the stylist's `/pro` console (ROADMAP D14/D16).
+
+Deliberately provider-agnostic: it's a plain HTTP endpoint with a shared secret, so Zapier, n8n or curl all work. ROADMAP D15 picks Zapier for now, and the two disciplines that matter are that this never sits on a user-facing critical path and that the automation tool **never** receives the Supabase service role key.
+
+Zap setup:
+
+1. **Trigger** — Folk moving a deal/person into your "Consultation finished" stage. If Folk's Zapier app doesn't expose that stage change, use a Folk webhook into Zapier's *Catch Hook* trigger instead.
+2. **Action** — *Webhooks by Zapier → POST*
+   - URL: `https://<your-domain>/api/webhooks/consult-ended`
+   - Payload type: `json`
+   - Data: `client_email` = the client's email as stored in `profiles.email` (they must match; the endpoint looks the profile up by email and 404s otherwise)
+   - Headers: `x-webhook-secret` = the same value as `CONSULT_WEBHOOK_SECRET`
+3. Test it, then confirm in Supabase that the client's `profiles.access_expires_at` is ~14 days out.
+
+Two things to know: the endpoint is **not idempotent** — dragging a card back and forth re-extends the window each time, silently. And a client can end their window early from `/profile` regardless of what the automation set.
+
+The stylist's own account is set up by hand, once: `update public.profiles set roles = '{client,stylist}' where email = '<stylist email>';`. There is no self-service path and shouldn't be.
 
 ### Google Calendar OAuth (Phase 6.0-A)
 

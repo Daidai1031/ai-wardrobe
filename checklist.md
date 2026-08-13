@@ -1,6 +1,6 @@
 # AI Wardrobe — Implementation Checklist
 
-> Last updated: 2026-07-30（Phase 6.2 Weekly planning + 规划规则引擎；AI Stylist Canvas + Human Stylist 预约）
+> Last updated: 2026-08-13（`/home` 与 `/plan` 已支持复用 Saved Looks、Canvas 修改后选择覆盖原 Look 或另存；待执行 schema section 20 后真实验证）
 >
 > **本文件只负责「已完成的实现细节 + Debug Log」。未来要做什么、按什么顺序做、新功能的技术方案，全部移到 [`ROADMAP.md`](./ROADMAP.md)。**
 >
@@ -30,6 +30,8 @@
 | 7 | `next.config.ts` not supported | Next.js 16 实际安装后支持 .ts，但旧版不支持 | 升级到 Next.js 16 后自动解决 |
 | 8 | `middleware` file convention deprecated | Next.js 16 改名 middleware → proxy | 文件重命名 `middleware.ts` → `proxy.ts`，函数 `middleware()` → `default proxy()`，`config` → `proxyConfig` |
 | 9 | `@import` must precede all rules | CSS @import 在 @tailwind 指令之后 | 把 `@import url(...)` 移到 globals.css 第一行 |
+| 16 | 单品详情页加多角度照片时报 `PGRST205 — Could not find the table 'public.wardrobe_item_photos' in the schema cache` | 本仓库没有 migration 工具，schema.sql 只是「真相来源」，改了不等于生产库执行了。section 17 的建表语句还没在 Supabase SQL Editor 跑过；这类问题 `npm run build` 完全发现不了——TS 类型是手写镜像，对不存在的表照样通过 | 在 SQL Editor 执行 schema.sql 第 17 节（可重复执行）。若表已建好仍报同样的错，是 PostgREST 的 schema 缓存没刷新，补一句 `notify pgrst, 'reload schema';`。踩坑连带：insert 失败时那张图已经进了 Storage，代码会回头删掉它，但如果删除也一并失败，`wardrobe` bucket 里会留下 `<user_id>/<item_id>-angle-*.jpg` 这样没有对应数据库行的孤儿文件，需要手动清 |
+| 19 | Next 16 下 `npm run lint` 把 `lint` 当项目目录并报 `Invalid project directory` | Next.js 16 已移除 `next lint`，同时仓库没有 Flat Config，`eslint-config-next` 还停在 15.x；此外 Next 16 的 `next build` 也不再自动跑 lint | `lint` 改为 `eslint .`，新增 `lint:fix` 与根目录 `eslint.config.mjs`，把 `eslint-config-next` 精确对齐为 16.2.10。保留 Core Web Vitals + TypeScript 规则；对现有客户端 Effect 取数和时间读取显式关闭 `react-hooks/set-state-in-effect` / `react-hooks/purity`，其它真实错误与未使用 import 已清理。`lint`、`tsc --noEmit`、生产构建均通过 |
 
 ### 鞋子配对 (segment.ts `mergeShoePairs`)
 
@@ -56,6 +58,13 @@
 |---|------|------|------|
 | 15 | 正常的澄清问题被显示成 `The stylist couldn't structure that answer`，route 返回 502 | 旧协议只在 prompt 里要求 Haiku 输出 `FINAL:{...}`；模型仍可能直接写自然语言，解析器找不到 JSON 就把有效回答当故障 | 改为 Anthropic forced `tool_choice`，要求模型必须调用 `return_stylist_response` 并按 JSON Schema 返回 question/recommendation；同时保留纯文本降级，供应商异常跳过 tool 时把文字作为正常 question 返回 200，不再让格式问题中断对话 |
 
+### 计划规则 (occasion-groups.ts / plan-rules.ts)
+
+| # | 问题 | 原因 | 修复 |
+|---|------|------|------|
+| 17 | 8/17（周一：10:00 团队会议 → 17:00 出发去 JFK → 20:30 飞伦敦的过夜航班）整天被安排成同一套正装：黑色阔腿裤 + 雪纺衬衫 + **白色高跟鞋**，第二段只把肩包换成托特包。过夜航班穿高跟鞋不是能坐十几个小时的穿搭 | 两层都缺规则：① `classifyEvents()` 把出差日的每个事件（包括航班本身）都按"出差"的正式度打分，于是 `groupOccasions()` 的 formality 算术看到的是一整块连续的 formality 4，只是碰巧因为 `FORMALITY_BREAK` 分成了两段，而两段的着装要求完全一样；② `plan-rules.ts` 只有 composition/weather/coverage/rotation 四族规则，没有任何一条说"在路上的这段不能穿高跟鞋"，模型自己也没想到 | 按 D8 拆成"可判定的进 TypeScript、需要判断的留给模型"：①**分段**——`isTransitOccasion()` 让 transit 无条件切段（不看 formality 差距），transit 组标记 `comfortFirst` 且 formality 上限压到 `TRANSIT_MAX_FORMALITY = 2`；②**单品**——新增第五族规则 Comfort，`isHardToTravelIn()`（只认 `Shoes` + `heel/stiletto/pump/slingback/court shoe/wedge`）+ `enforceComfort()` 在 coverage 之后、rotation 之前把高跟换成平底；③**prompt**——daily/weekly/单段重生成/repair 四处都说明 `comfortFirst` 的含义（易脱平底鞋、耐坐不易皱的软料、机舱可加减的一层），并说明这是唯一鼓励整套换掉的地方。踩坑：判定 transit 时 occasion 标签和事件标题必须用**两套**正则——标签是模型刻意给的一个词，裸 `travel`/`train` 就是在路上；标题是自然语言，"Travel budget review"、"Train the new hire" 都是开会，所以标题只匹配不可能有歧义的说法。另外全天事件永远不算 transit，否则 "Business Trip (London)" 这种覆盖一整天的容器会把当天的会议也按登机穿。**靠标题判定是这个修复能作用于存量数据的原因**——sync 只对 `occasion IS NULL` 的行调用分类，已经分好类的 "Depart for JFK" 不会重跑，但标题永远在。（这里的名字在 #18 里被泛化了：`isTransitOccasion()` → `occasionKind()`，`comfortFirst` → `kind`，`TRANSIT_MAX_FORMALITY` → `MAX_FORMALITY_BY_KIND`） |
+| 18 | 运动场景（尤其 tennis / golf）和正式场景被合并成同一段；而且运动完出汗后，后面的段落还在继续穿运动时那套衣服 | 和 #17 同源，但更严重：golf/tennis 常常发生在工作日中间、在俱乐部、和客户一起，`classifyEvents()` 很容易给出 formality 4，于是和前后的会议/晚餐 formality 完全一样，`groupOccasions()` 直接合并；就算分开了，规则里也没有任何一条说"运动那套穿过就不能再穿" | 把 #17 的 transit 概念泛化成 `OccasionKind = transit \| athletic \| general`：① **分段**——kind 不同就断组，`MAX_FORMALITY_BY_KIND` 把 athletic/transit 的 formality 上限压到 2；② **两个 athletic 之间也不合并**（transit 之间合并是对的——打车到登机不换衣服；打完 golf 再打 tennis 要换），③ **出汗规则**——`enforceComfort()` 的 `sweat` 分支：当天更早的 athletic 段里穿过的东西（Bags/Accessories 除外，包不贴身）在之后所有段落都不可用，找同类替代品换掉；④ **prompt**——说明 golf/tennis 即使在俱乐部、和客户一起也按运动装穿（polo 衫、专业球鞋、网球白），并要求在 reasoning 里点名哪几件是运动装。踩坑：单段重生成路径原来只把那一段丢进规则引擎，`sweatyBefore()` 看不到前面的段，所以改成把**整天**（其他段保持原样、目标段换成新生成的）一起跑规则，只落库目标段那一行 |
+
 ---
 
 ## 功能实现状态
@@ -72,12 +81,14 @@
 | Storage Bucket | ✅ 完成 | `wardrobe` bucket + RLS 策略 |
 | 单件上传 → 去背景 → AI分类 → 存储 | ✅ 完成 | fal.ai BiRefNet + Claude Haiku Vision |
 | 衣橱浏览页 | ✅ 完成 | 分类/颜色/季节筛选 |
-| 单品详情编辑 | ✅ 完成 | 修正 AI 分类结果 |
+| 单品详情编辑 | ✅ 完成 | 可修正 AI 分类结果；新增用户自定义详细名称 `display_name` 与个人备注 `user_notes`，名称优先展示于衣橱、Canvas、计划和搭配师评审，两个字段都作为权威上下文传给 AI |
 | 收藏/删除 | ✅ 完成 | |
 | 多件物品识别 | ✅ 已联调 | Claude Vision 同时返回计数和具体物品 noun → 命中多件才调用 `fal-ai/sam-3-1/image` → 按官方 normalized boxes 裁剪；已用 4 个 purse 的真实图片验证返回 4 个 masks/boxes |
 | 鞋子/耳环/手镯等自动配对/镜像补全 | ✅ 已联调（鞋子）/ ⚠️ 代码完成待验证（手镯/耳环） | `mergeShoePairs` 泛化成 `mergeDuplicateAccessories`：按 `detection.prompt` 分组，同组 ≥2 个才调用 `classifySimilarItems`（Sonnet）判断是否为同一实物；鞋子/耳环（`MIRROR_IF_LONE_PROMPTS`，天生成对穿戴）落单时额外镜像补全，手镯等其它品类落单则原样保留、不调用模型（省 token）；配对成功按原图实际左右位置拼图。已用 `test_shoe_1.jpg`（3 双鞋）和 `test_bag&single_shoe.jpg`（6 只单鞋 + 2 个包）真实联调验证鞋子路径；手镯/耳环泛化后的路径尚未用真实手镯照片验证 |
 | 上传时用户预先选择 single/multi 省 token | ✅ 已联调 | `UploadZone` 新增「Single item / Multiple items」切换（默认 single），上传时把 `mode` 传给 `/api/ai/classify`；`mode === "single"` 时后端完全跳过 `detectItems` 这次 Haiku 调用，直接走单件 pipeline；`mode === "multi"` 时仍需调用 `detectItems` 拿 SAM prompts，但用 `Math.max(2, detection.count)` 相信用户的判断而不是模型的计数；不传 `mode`（旧客户端）保持原来的自动检测行为 |
-| HEIC 格式支持 | ✅ 完成 | heic-convert + Sharp，客户端上传前转换 (convert route) |
+| HEIC 格式支持 | ✅ 完成 | heic-convert + Sharp，客户端上传前转换 (convert route)；判断逻辑抽到 `src/lib/images/convert-heic.ts` 供上传页和单品详情页共用 |
+| 单品补充多角度照片 | ⚠️ 代码完成待联调 | 老板需求：上传后可在 `/closet/[id]` 继续加同一件衣服的其它角度（背面/侧面/细节/水洗标）。新表 `wardrobe_item_photos`（schema 第 17 节，需在 Supabase SQL Editor 手动执行）+ `item-photos.tsx` 缩略图条。刻意不放进 `wardrobe_items` 的列里：搭配相关代码（Canvas、`selectCandidates`、stylist/plan prompt）只读 `clean_url`/`original_url`，额外角度存在另一张表就天然不会被搭配读到，**搭配始终用最初那张去背景图**。这些照片不跑任何 AI（无检测/无去背景/无分类），浏览器直传 Storage + insert 一行，零成本；上限 8 张 |
+| 单品详情页推荐 3 个 Look | ✅ 代码完成 / ⚠️ 待真实 AI 联调 | `/closet/[id]` 优先列出最多 3 个包含该单品的 Saved Looks，卡片复用 `OutfitCollage`，点击经 `/outfits?open=<id>` 直接进入 Canvas 编辑。完全没有 Saved Look 时才显示用户主动的 Generate 3；`/api/ai/item-outfits` 一次 Haiku tool call 生成恰好 3 套、强制包含当前单品并验证归属/完整度/品类规则/互异性，成功后保存为普通 `ai_generated` Looks。页面打开本身不调用 AI；不需要新 schema |
 | 产品链接智能补充 | ❌ 待开发 | Phase 2+ |
 
 ### Phase 2 — Profile + Style Intelligence (Module A, D)
@@ -98,8 +109,9 @@
 | 搭配创建/保存 + 编辑/删除 | ✅ 完成 | `outfits-view.tsx`：衣橱单品拖入/点击加入、自由定位、缩放、层级调整、名称/合集/备注及 Supabase 保存；Canvas 使用去背图透明展示；已保存搭配可从库卡片打开进 Canvas 编辑，也可经确认后删除（只删 Look，衣橱单品保留）；`outfit_items.x/y/width` 持久化自由坐标（见「已完成任务详情」） |
 | 天气 API 集成 | ✅ API 就绪 | 需要 OpenWeather Key；daily/weekly 已接天气，Stylist 目前通过需求澄清询问与当次穿搭相关的天气/室内外约束 |
 | 每日推荐 (Home Page) | ✅ Phase 6.1 完成且已真实验证（2026-07-30） | `/home` 已接天气 + `eventsOnLocalDay()` + 活跃衣橱，Haiku 动态输出 1–N 个 segments；三层数据库结构是唯一缓存，普通同日 GET 不再调 Claude；Dislike 明确排除旧 item IDs；segment 可编辑和单独保存；Worn 原子写 journal，并让当天出现过的每件单品统一 `times_worn +1`。端到端验证详见下方「任务 1」 |
-| Weekly planning (7 天规划) | ✅ Phase 6.2 代码完成 / ⚠️ 待重跑 section 15 后真实验证 | `/plan` 一次规划从今天起的 7 天。Open-Meteo 逐日预报 + 当周日历 + D8 的 TS 硬过滤（压到 ~45 件再进 prompt）+ 跨天约束（statement piece 7 天内不重复、基础款间隔 ≥2 天、贴身衣物不连穿、覆盖当周全部 formality）。**关键结构变更：`outfit_plans` 的唯一键去掉了 `source`**，一个日期只有一条计划，`source` 退化为溯源标记 |
-| Google Calendar 集成 | ✅ OAuth/设置页/事件同步/语义化/daily/weekly 接线 / ❌ stylist 待接 | daily 和 weekly 都用真实缓存事件构建动态 segments（weekly 同一次查询拉整周、按 `eventsOnLocalDay` 逐日分桶）；`stylist` route 的 `context.calendar` 仍未接线 |
+| Weekly planning (7 天规划) | ✅ Phase 6.2 代码完成 / ⚠️ 待数据库迁移后真实验证 | `/plan` 一次规划从今天起的 7 天。日历地点会在同步时提取城市并缓存坐标，逐日按 event 城市获取 Open-Meteo 预报；支持同日多城市。`Vacation: Hamptons` 这类跨日度假在每个重叠日使用目的地；`Business Trip (London)` 这类跨日商务出差首尾日同时使用常住地 + London，中间日只用 London。事件地址可点击修正或恢复 Google 原地址。仍包含 D8 硬过滤与跨天轮换约束。需执行 schema 中 weekly 唯一键/RPC 及 Calendar location override 的 `alter table`。 |
+| Weekly planning 的轮换间隔用户可配置 | ❌ 待开发 | 2026-08-06 新增需求，方案见 ROADMAP 第三节「并行小需求 B」。「同一件多久能再出现一次」现在是 `plan-rules.ts` 里写死的 `REPEAT_GAP_BY_CATEGORY`，要改成用户可调：新增 `profiles.repeat_gap_overrides jsonb`（schema 第 18 节，只存改过的品类、其余回落默认）+ `/profile` 的「Planning preferences」区块（三个预设 + 展开后按品类步进器 + 可行性提示）。**仍按品类分档，不做全局滑块**——6.2 第二次生成已经证明一刀切会把墨镜误判成违规。落地要点：常量降级为默认表、所有吃间隔的函数改成从参数拿 map（不许再直接 import 常量），weekly 和 daily 两条路径都要传，**prompt 里的数字也要跟着改**（否则模型朝错误目标生成、再靠事后强制替换，搭配质量更差）。零新增模型调用 |
+| Google Calendar 集成 | ✅ OAuth/设置页/事件同步/地点天气/daily/weekly 接线 / ❌ stylist 待接 | daily 和 weekly 都用真实缓存事件构建动态 segments；同步会从 event location 或明确的旅行标题（冒号、末尾括号、`trip to ...`）提取目的地并缓存。旧的“只看 location”空结果会在下次 sync 自动回填。`/plan` 支持本地修正事件城市/地区（不改 Google Calendar）；`stylist` route 的 `context.calendar` 仍未接线。 |
 | Gmail 集成（行程/dress code 信号） | ❌ 待开发 | ROADMAP Phase 6.0/6.3。用途是行程确认邮件 → 自动发现出差、活动邀请、邮件里的明文 dress code；只存抽取后的结构化字段，不存正文。注意 Gmail readonly 属于 Google restricted scope，上线前需通过 Google 验证审核 |
 
 ### Phase 4 — Calendar + Analytics (Module 10, 11)
@@ -132,7 +144,7 @@
 | 冷启动 Onboarding（问卷 + 风格滑卡） | ❌ 待开发 | Phase 7。`preference_swipes` 表 + `profiles.preference_dna` 字段都已就绪；ROADMAP 里建议把它排在 Avatar/Shopping 之前，因为它是所有推荐质量的上游且成本最低。唯一非代码工作量是准备 20–40 张风格参考图 |
 | Avatar 生成（fal.ai） | ❌ 待开发 | Phase 8。`profiles` 的 `skin_tone`/`hair_color`/`hair_length`/`body_shape` 就是给这个预留的。**成本量级和文本调用不同，必须缓存 + 限流**；虚拟试穿比静态 avatar 难得多，建议分两步 |
 | Shopping Recommendations | ❌ 待开发 | Phase 9。缺口信号已经在产出（daily 的 `gap`、出差 capsule 缺口、Analytics 类别失衡）只是丢掉了。**最大未决问题是商品数据源**，建议先接一个联盟 feed 而不是做通用爬虫 |
-| 搭配师授权访问 + Folk CRM 集成 | 🟡 预约入口已完成 / 授权与 CRM 待开发 | 已完成单一共享产能日历的线上/线下预约 MVP；人员分配、付款、取消/改期、通知，以及显式限时可撤销的 `wardrobe_grants` 和 Folk CRM 流程仍待开发。预约成功不会隐式放开衣橱数据 |
+| 搭配师授权访问 + Folk CRM 集成 | 🟡 预约入口 + Phase 10-A 评审工作台已完成 / CRM 流程待开发 | 已完成单一共享产能日历的线上/线下预约 MVP，以及 Phase 10-A 的 `/pro` 搭配师工作台（见下方任务 3）。人员分配、付款、取消/改期、通知和 Folk 同步仍待开发。**`wardrobe_grants` 按 D16 暂不建** —— 只有一位搭配师时每行 `stylist_id` 都是同一个值；门禁改用 `roles` + `access_expires_at`，加第二位搭配师时再迁移。预约成功不会隐式放开衣橱数据 |
 | 双端（C 端客户 + B 端公司/造型师） | 🚫 **已取消**（2026-07-30，D12） | 公司为自有少数长期搭配师，不做第三方入驻平台。改为 Folk CRM 管客户列表/阶段/跟进 + App 只做 `wardrobe_grants` 授权访问。省掉 Stripe Connect 分账、入驻审核、评价体系 |
 
 ### 部署
@@ -234,7 +246,17 @@
   - **几何进 Looks**：存成 Look 后在 `/outfits` 点 Edit 打开，是同一张拼贴。
   - **Worn 不抹版式**：Confirm worn 后两段的 `x/y` 全部保留。这条在验 `mark_outfit_plan_worn` 走的是 `p_apply_layout = false`——它会重写 segment items（用户可能改过单品），传错成 `true` 就会把刚排好的几何静默抹成 null。
 - **模型层面的小瑕疵（非管线 bug，未处理）**：重算出的 `change_from_previous` 里写了「remove accessories (bangle, belt)」，但重生成后的那套里并没有 belt，是 Haiku 顺手多写的。不影响数据正确性。
-- **已验证**: `tsc --noEmit` 与 `npm run build` 均通过。`npm run lint` 在 Next 16 下已失效（`next lint` 把 `lint` 当成目录参数），是仓库既有问题，ESLint 实际由 `npm run build` 跑。
+- **已验证**: `npm run lint`、`tsc --noEmit` 与 `npm run build` 均通过。Next 16 不再在 build 中自动运行 ESLint，因此三项需要在 CI 中分别执行。
+
+### 任务 1d: `/home` + `/plan` 复用并回存 Saved Looks — ✅ 代码完成，⚠️ 待 section 20 + 真实验证（2026-08-13）
+
+- `Home` 与周计划的每个可编辑 segment 都新增 `Use saved`；入口打开共享的 `SegmentCanvasEditor`，从当前用户的 `outfits` + `outfit_items` 读取图库，把选中 Look 的单品、顺序、`x/y/width` 原样载入。载入后仍可增删、拖动、缩放，不另写一套编辑器。
+- `Done` 只保存计划 segment。未修改的复用保留 `saved_outfit_id`；修改后清掉精确快照链接，但用 section 20 新增的 `source_outfit_id` 记住来源，刷新后也不会丢。
+- 修改后再次点 `Save` 会打开明确的选择弹窗：`Update original` 只覆盖原 Look 的 items/layout、保留名称/folder/notes；`Save as new` 新建一套；也可取消。共享的 `SegmentSaveButton` 让 `/home` 与 `/plan` 行为一致。
+- section 20 新增 `update_outfit_plan_segment_from_canvas()` 与 `save_outfit_plan_segment_choice()`，两个 RPC 都校验当前用户对 plan、source Look 和 wardrobe items 的归属，并在一个事务中完成计划落库和 Look 新建/覆盖。更新原 Look 时，其它仍指向旧快照的 segment 会降级为“based on”而不是错误显示 Saved。
+- 单段 AI 重生成会清空 `source_outfit_id`，避免把模型全新结果误当作用户对旧 Look 的修改。
+- **已验证**：`npx tsc --noEmit`、`npm run build` 通过。
+- **未验证**：需先在 Supabase SQL Editor 执行 `schema.sql` section 20，再用真实账号分别走 `/home` 与 `/plan` 的“原样复用 / 修改后另存 / 修改后更新原 Look / 刷新后来源仍在”四条路径。
 
 ### 任务 2: AI Stylist 深挖需求 + Canvas 回答/编辑/保存 — ✅ 代码完成，⚠️ 待真实验证
 
@@ -253,6 +275,48 @@
 - `stylist_bookings` 只允许用户读自己的行、没有浏览器写 policy；写入必须经过认证 route。数据库 `tstzrange` exclusion constraint 是并发竞态的最终保护，线下全天与当天线上 slot 也互相排斥。
 - 当前边界: 单一共享搭配师产能；未做人员分配、定价/付款、取消/改期、邮件/日历邀请和 Folk CRM 同步；预约不会自动创建 `wardrobe_grants`。
 - **已验证**: `tsc --noEmit` 与 `npm run build` 通过，构建路由包含 `/api/ai/stylist`、`/api/stylist/bookings` 和 `/stylist`。**未验证**: 生产库还需手动执行 `supabase/schema.sql` section 16；执行前 availability route 会返回 503，而不是展示假 slot。
+
+### 任务 3: Phase 10-A 搭配师评审与建议（`/pro`） — ✅ 代码完成，⚠️ 待 section 18 + 真实验证
+
+需求：搭配师看客户衣橱和 Looks，给人工评分 + 文字 + Canvas 改版；看不到具体日程，只看到泛化的未来场合和目前选定的搭配；她保存后用户端弹出建议，用户可采纳或拒绝。决策记录见 ROADMAP 的 D15/D16/D17 和第四节「Phase 10-A」。
+
+**建议是提案，不是修改。** 搭配师点「Send」只写 `stylist_reviews` + `stylist_review_items`，绝不碰客户的 `outfits`/`outfit_plan_segment_items`。客户点采纳时才由 `accept_stylist_review()` 覆盖目标，并在同一个事务里把**覆盖前的单品集合连同 x/y/width 几何**快照进 `previous_items`，所以「采纳完又后悔」能通过 `revert_stylist_review()` 精确还原，不只是还原有哪几件、连版式一起还原。撤销后落 `reverted` 而不是回到 `pending`，否则它会重新出现在收件箱里装作没被回答过。
+
+**门禁（D16）**：访问者 `profiles.roles` 含 `'stylist'` **且** 客户 `profiles.access_expires_at > now()`。没有 `wardrobe_grants` —— 只有一位搭配师，那张表的每行 `stylist_id` 都一样，不表达任何信息。同一条规则在 SQL 里存在第二份（`public.stylist_can_view()`，section 18a），**那一份才是真正保护数据的**；`src/lib/stylist/access.ts` 里的检查只负责路由和文案，改一处必须改另一处。`wardrobe_access_log` 现在就建了 —— 事后补的审计日志没有历史。客户可在 `/profile` 点「End access now」把窗口设成 `now()` 提前结束。
+
+**RLS 是白名单不是黑名单**：`stylist_can_view()` 只挂在 `wardrobe_items` / `outfits` / `outfit_items` / `wardrobe_item_photos` / `profiles` 五张表的额外 SELECT policy 上。`calendar_events`、`google_connections`、`outfit_journal`、`outfit_plans` 系列**一条都没加**，以后新建的表默认也进不来。`stylist_can_view()` 必须是 `security definer`：它被挂在 `profiles` 的 policy 上又自己读 `profiles`，写成 invoker 会无限递归。
+
+**场合共享三档（D17）**：L0 不共享（默认，只看衣橱和 Looks）→ L1 `profiles.stylist_share_occasions`（按天给泛化描述 + formality + 当天已选定的搭配）→ L2 `calendar_events.stylist_share_detail`（逐条，才给时间和标题原文）。L1 的文案由 `occasion` + 新增的 `calendar_events.companion` 两个枚举查表拼成（「A dinner with friends」「A formal engagement with colleagues」），**压根不经过事件标题**，所以结构上不可能带出人名地名——让模型去脱敏是能用到它某次不管用为止的方案。同理 `outfit_plan_segments.label`/`reasoning` 一律不投影给搭配师（Haiku 是从标题写的它们，会写出「for your meeting with Sarah」），搭配师看到的计划段名字是从它引用的事件的枚举重新拼的。`occasion` 本身是模型自由生成的 snake_case，所以展示时走固定映射表 `OCCASION_LABELS`，认不出来的值退回按 formality 说话，而不是把模型写的字符串原样显示。
+
+**一个必须跑的 backfill**：`classifyEvents` 现在多返回一个 `companion` 枚举（同一次批量调用，零额外成本），sync 路由的筛选条件从 `occasion IS NULL` 改成 `occasion IS NULL OR companion IS NULL`。存量已分类的行需要重跑一次 `/api/google/calendar/sync` 才会补上 `companion`，否则搭配师那边会永远看到「with someone」。
+
+**新增文件**：`src/lib/stylist/access.ts`（门禁 + 审计）、`src/lib/stylist/occasion-projection.ts`（三档投影 + 枚举查表）、`src/lib/stylist/reviews.ts`（客户侧读取，含 before/after 两套单品）、`src/app/(dashboard)/pro/page.tsx`（客户列表）、`src/app/(dashboard)/pro/[clientId]/`（工作台）、`src/components/stylist/review-inbox.tsx`（客户侧收件箱）、`src/app/(dashboard)/profile/stylist-sharing.tsx`、`POST/GET /api/stylist/reviews`、`POST /api/stylist/reviews/[id]/respond`。
+
+**复用而不是重写**：工作台的编辑器就是 `OutfitCanvas` + `ClosetPicker`，和 `/outfits`、`/home`、`/plan` 是同一份（D12「搭配师看到的就是客户那套界面」）。`eventsOnLocalDay()` 顺手改成了泛型（`BucketableEvent`），让只 select 了部分列的投影也能用它，而不是让投影自己再写一遍时区分桶。
+
+**两处刻意的行为**：采纳搭配师的提案**绕过 `plan-rules.ts` 的规则引擎**（结构/天气/轮换）—— 那套规则是防模型生成不能穿的搭配，人工搭配师排在它前面。`stylist_reviews` 的两个 target FK 都是 `on delete cascade`，所以客户删掉的 Look 或被重生成替换掉的计划段会连同它的待处理建议一起消失，而不是留一个指向空气的采纳按钮。
+
+**首轮真机测试（2026-08-13）修掉的三件事**：
+
+1. **计划中的搭配被错误地藏在「场合共享」开关后面。** 原实现里 L1 关着时投影直接返回空，导致搭配师连客户已经排好的当日/本周搭配都看不到——而那恰恰是这个功能存在的理由。已改成：`segments` 永远给，只有 `occasions` 受 L1 控制；L1 关着时**根本不查 `calendar_events`**，段落名退回 `Look N`。字段从 `shared` 改名 `occasionsShared`。
+2. **「采纳后 Today's plan 没变」不是 bug，是对象搞错了。** 评审一个 saved Look，采纳改的是 `outfit_items`，只会在 `/outfits` 里变；`/home` 和 `/plan` 渲染的是 `outfit_plan_segments`，两者按 D5 本来就是不同对象。要改客户某一天穿什么，搭配师必须在工作台的周面板里评审那一天的 **planned look**（`target_kind='plan_segment'`）——而那条路径此前正好被第 1 条的 bug 挡住了，所以第一轮测试根本走不到。
+3. **日历事件「突然抓不到了」的真实原因：`/api/google/calendar/sync` 从来就没有任何东西自动触发。** 不是 cron，`/api/ai/daily` 和 `/api/ai/weekly` 也都不调它，两者只读 `calendar_events` 里已有的行。7/30 手动跑那次的窗口是 7/30→8/13，之后新建的事件永远进不来，而且**不报任何错**，表现成「日历是空的」。已在 `/plan` 顶部加「Sync calendar」按钮作为唯一 UI 入口。定时同步仍未做。
+
+4. **采纳之后 `/home`、`/plan` 不跟着变的第二个原因：客户端状态没被刷新。** `router.refresh()` 只重渲染 Server Component，而渲染计划的 `DailyRecommendation` 和 `WeekView` 都是 Client Component、各自持有 fetch 回来的 state，所以数据库已经改了、屏幕上还是旧的那套，要等用户碰巧刷新才会变。已改成采纳/撤销后 `window.location.reload()`；拒绝仍走 `router.refresh()`，因为卡片之外什么都没动。
+
+顺带按需求把搭配师账号做成了独立形态：`roles = '{stylist}'`（不含 client）时侧边栏**只剩 Clients**（2026-08-13 二轮：Profile 也去掉了——那页全是客户侧设置，城市/时区/Google Calendar/共享开关，员工账号一条都用不上；Sign out 本来就在侧边栏底部，不在 Profile 里，所以去掉它不会把任何东西困住），`/home` 重定向到 `/pro`（登录后 `proxy.ts` 会把人送到 `/home`，而 proxy 不查角色——查一次要给每个请求加一次 DB 往返）。两个角色都带的账号保留完整客户端 + Clients，那是开发/自用场景。
+
+**二轮界面改造（2026-08-13）：工作台改成五个 tab。** 之前 `/pro/[clientId]` 只有两块（周视图 + Saved Looks），且是竖着堆的。现在是：**Overview**（默认第一个）、**The week ahead**（当天/本周已排好的搭配，逐段评审）、**Saved Looks**（存下来的 Look）、**Every piece**（整个衣橱，逐件点进去打分 + 留言）、**Build a look**（搭配师用客户已有单品从零搭一套新的）。做成 tab 而不是继续往下堆：一个完整衣橱压在另外几块下面是「一屏滚不完」，不是工作台。Overview 放第一个，是因为它是唯一回答「我现在在看谁」的一块，其余每个 tab 都默认你已经知道了。
+
+**Overview（`src/lib/stylist/client-overview.ts`）**：档案（姓名/邮箱/城市/时区/身高体重/体型/三围/肤色发色）+ 服务状态（窗口剩余天数、场合共享开关、衣橱和 Look 数量、已发建议数与待回复数）+ 会话记录（`stylist_bookings`）。两处都走 service role，但理由不同：`profiles` 那几列**本来**就在 18b 白名单里她能读，只是页面已经为了窗口读过一次这行，再查一遍纯属多一次往返；`stylist_bookings` 则**不在**白名单、以后也不会进——排期要考虑别的用户已占用的时段，那张表按设计就是「用户只能读自己的」，所以这里只投影出她和**这个**客户的会话，且只给 service type / 起止时间 / 状态四个字段。**「过往沟通」只放产品真的记录了的东西**：已预约的咨询 + 已发出的建议。这个仓库还没有消息表，也还没接 CRM（ROADMAP 里的 Folk 集成未做），凭空加一块永远是空的「聊天记录」读起来像 bug，而不像未完成的功能。
+
+**Build a look 仍然是提案，不是写入（`target_kind = 'new_outfit'`）**。这是唯一没有 target 的一种：Look 在客户点采纳之前根本不存在，**采纳才是创建它的动作**——`accept_stylist_review()` 插一行 `outfits`（`ai_generated = false`，人搭的）加上它的 `outfit_items`，并把新 id 记进 `stylist_reviews.created_outfit_id`，撤销就删掉那一行、不多删。所以撤销这一路是「删除」而不是「还原快照」，`revert_stylist_review()` 必须在「没有更早版本可还原」那道检查**之前**先分支——对这种 kind，`previous_items` 空是正常的。那个 FK 是 `on delete set null` 不是 cascade：客户以后自己删了这个 Look，「她曾经提过这套」的记录应该留着。target check 对这种 kind 额外要求 `has_proposal = true` 且 `proposed_name` 非空——一套搭配进到别人衣橱里叫「Untitled」，比客户自己存的还差。**让 `/pro` 直接往客户 `outfits` 写一行**是显而易见的另一种做法，也正好会打破整个工作台唯一的那条规矩。
+
+第三块需要一个新的 `target_kind`：`'item'`，指向新增的 `stylist_reviews.target_item_id`（同样 `on delete cascade`，客户删件时连带清掉待处理建议）。**单件评审永远没有提案** —— 一件衣服没有「版式」可改，所以 section 18d 的 target check 顺手把 `has_proposal = false` 也写进了 `'item'` 那一支：约束在库里，不是靠路由自觉。`stylist_target_items()` 对 `'item'` 返回 `[]`，`accept_stylist_review()` 因此对它天然是「只标记已读」，没有任何要快照/要撤销的东西。客户侧收件箱复用同一张卡片（`hasProposal=false` 那条路本来就存在，按钮是「Got it / No thanks」），只多渲染一张被评单品的图——不然那段留言读起来像在说空气。
+
+**要跑的 SQL**：section 18d 现在多了 `target_item_id`、`proposed_name`、`created_outfit_id` 三列和两条重建的 check 约束（`create table if not exists` 既不加列也不改约束，所以新增了一段显式 `alter table ... drop constraint if exists / add constraint`，对新库是重述、对存量库才是迁移）；`accept_stylist_review` / `revert_stylist_review` 是 `create or replace`，重跑就会带上 `new_outfit` 那两条分支。存量库需要重跑 section 18。
+
+**已验证**: `tsc --noEmit` 与 `npm run build` 通过（含 2026-08-13 二轮的五 tab 改造、单件评审、Overview 与 Build a look），构建路由含 `/pro`、`/pro/[clientId]`、`/api/stylist/reviews`、`/api/stylist/reviews/[id]/respond`。**未验证**: 五 tab、单件评审、Overview、Build a look 都还没真人点过，需要 section 18 重跑之后走两条链路——「Every piece 里点一件 → 打分 + 留言 → 客户 `/home` 收件箱看到那件图 + 留言 → Got it」，和「Build a look → 选 ≥2 件 + 起名 + 写说明 → 客户收件箱 Save to my Looks → `/outfits` 里确实多了这套且版式一致 → Undo 后它消失」；生产库还需手动执行 `supabase/schema.sql` section 18；执行前 `/pro` 会因为 `profiles.roles` 查得到但新表查不到而在收件箱那侧报 `PGRST205`（已做成打日志 + 返回空列表，不会让 `/home` 整页挂掉）。真实验证还需要：给搭配师账号手动 `update profiles set roles = '{client,stylist}'`、用 webhook 或手动给测试客户设 `access_expires_at`、然后跑一遍「评分 + 文字 + 改版 → 客户采纳 → 撤销」，并确认 L0/L1/L2 三档下搭配师看到的东西确实不同。
 
 ---
 
@@ -364,7 +428,8 @@ ai-wardrobe/
 | AI 分类逻辑 / 模型选择 | `src/lib/ai/classify.ts` |
 | 背景移除 | `src/lib/ai/remove-bg.ts` |
 | 多件物品计数 / SAM 分割 | `src/lib/ai/segment.ts` |
-| HEIC 转换 | `src/app/api/ai/convert/route.ts` |
+| HEIC 转换 | `src/app/api/ai/convert/route.ts`（服务端），`src/lib/images/convert-heic.ts`（客户端共用判断） |
+| 单品多角度参考照 | `src/app/(dashboard)/closet/[id]/item-photos.tsx`, `supabase/schema.sql` section 17 |
 | 上传 pipeline (计数→单件/多件分支→去背景→分类→存储) | `src/app/api/ai/classify/route.ts` |
 | 上传 UI（single/multi 切换、进度提示） | `src/components/closet/upload-zone.tsx` |
 | AI Stylist 多轮澄清 + structured tool response | `src/app/api/ai/stylist/route.ts` |

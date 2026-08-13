@@ -1,4 +1,14 @@
-import type { CalendarEvent } from "@/types/database";
+/**
+ * The three fields bucketing actually reads. Generic over this rather than fixed to
+ * `CalendarEvent` so a caller that selected a narrower column set — the stylist
+ * occasion projection deliberately never selects `label`-adjacent fields — can still
+ * use it and get its own row type back.
+ */
+export interface BucketableEvent {
+  all_day: boolean;
+  starts_at: string;
+  ends_at: string | null;
+}
 
 /**
  * The one place daily AND weekly planning ask "what's on the calendar for this local
@@ -74,7 +84,11 @@ export function localDayRangeUTC(localDate: string, timeZone: string): { startUT
  * they're building a plan for, over an already-fetched batch of events (fetch once for
  * the week, call this per day, rather than re-querying Supabase per day).
  */
-export function eventsOnLocalDay(events: CalendarEvent[], localDate: string, timeZone: string): CalendarEvent[] {
+export function eventsOnLocalDay<T extends BucketableEvent>(
+  events: T[],
+  localDate: string,
+  timeZone: string
+): T[] {
   const { startUTC, endUTC } = localDayRangeUTC(localDate, timeZone);
 
   return events.filter((event) => {

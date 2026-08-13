@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { convertIfNeeded } from "@/lib/images/convert-heic";
 import { Upload, Loader2, Check, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 import Image from "next/image";
@@ -24,25 +25,6 @@ const MODE_HELP: Record<"single" | "multi", string> = {
   single: "One item per photo. JPG, PNG, WebP, HEIC.",
   multi: "Several items in one photo (belts, jewelry, flat-lays) — we auto-detect and split them. JPG, PNG, WebP, HEIC.",
 };
-/** Convert HEIC/HEIF (or any image) to JPEG via server-side Sharp */
-async function convertIfNeeded(file: File): Promise<File> {
-  const name = file.name.toLowerCase();
-  const isHeic = name.endsWith(".heic") || name.endsWith(".heif") || file.type === "image/heic" || file.type === "image/heif";
-
-  if (!isHeic) return file;
-
-  // Send to server endpoint for conversion
-  const formData = new FormData();
-  formData.append("file", file);
-
-  const res = await fetch("/api/ai/convert", { method: "POST", body: formData });
-  if (!res.ok) throw new Error("Failed to convert HEIC image");
-
-  const blob = await res.blob();
-  return new File([blob], file.name.replace(/\.heic$/i, ".jpg").replace(/\.heif$/i, ".jpg"), {
-    type: "image/jpeg",
-  });
-}
 export function UploadZone() {
   const [stage, setStage] = useState<Stage>("idle");
   const [preview, setPreview] = useState<string | null>(null);

@@ -4,6 +4,8 @@ export type StylistServiceType = "online_30" | "in_person_day";
 
 export interface StylistWardrobeItem {
   id: string;
+  display_name: string | null;
+  user_notes: string | null;
   category: ItemCategory;
   subcategory: string | null;
   color: string | null;

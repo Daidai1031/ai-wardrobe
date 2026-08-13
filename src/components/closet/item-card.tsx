@@ -5,6 +5,7 @@ import Link from "next/link";
 import type { WardrobeItem } from "@/types/database";
 import { Heart, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { wardrobeItemName } from "@/lib/wardrobe/item-label";
 
 interface ItemCardProps {
   item: WardrobeItem;
@@ -39,7 +40,7 @@ export function ItemCard({
       <div className="relative aspect-square bg-surface-50">
         <Image
           src={item.clean_url || item.original_url}
-          alt={`${item.color || ""} ${item.subcategory || item.category}`}
+          alt={wardrobeItemName(item)}
           fill
           className="object-contain p-2"
           sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 20vw"
@@ -84,7 +85,7 @@ export function ItemCard({
       {/* Meta */}
       <div className="p-2.5">
         <p className="text-xs font-medium text-surface-800 truncate">
-          {item.subcategory || item.category}
+          {wardrobeItemName(item)}
         </p>
         <div className="flex items-center gap-1.5 mt-1">
           {item.color && (
