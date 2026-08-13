@@ -73,6 +73,7 @@ const OUTFIT_FOLDERS = [
   "Work",
   "Weekend",
   "Date Night",
+  "Sports",
   "Travel",
   "Special Occasion",
 ];

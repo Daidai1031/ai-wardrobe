@@ -15,7 +15,16 @@
       "PowerShell(npm run lint 2>&1)",
       "PowerShell(npx tsx \"E:\\\\temp\\\\claude\\\\e--Cornell-26summer-ai-wardrobe\\\\982a480e-fef9-40a7-993c-b3837acfd365\\\\scratchpad\\\\check-transit.ts\" 2>&1)",
       "Bash(python -c ' *)",
-      "PowerShell(git -C \"e:\\\\Cornell\\\\26summer\\\\ai-wardrobe\" diff --stat)"
+      "PowerShell(git -C \"e:\\\\Cornell\\\\26summer\\\\ai-wardrobe\" diff --stat)",
+      "PowerShell(npm audit --json 2>$null)",
+      "PowerShell(npm audit fix --dry-run --json 2>$null)",
+      "PowerShell(npm audit fix 2>&1)",
+      "PowerShell(npm audit 2>&1)",
+      "PowerShell(npm ls next eslint-config-next 2>&1)",
+      "PowerShell(git push origin main 2>&1)",
+      "Bash(node check.js)",
+      "Bash(git checkout *)",
+      "Bash(git commit *)"
     ]
   }
 }
