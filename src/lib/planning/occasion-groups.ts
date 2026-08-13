@@ -216,8 +216,14 @@ export interface OccasionGroup {
   occasions: GroupableOccasion[];
 }
 
-/** The formality to dress a finished group for, capped for the kinds that have a ceiling. */
-function groupFormality(formality: number | null, kind: OccasionKind): number | null {
+/**
+ * The formality to dress for, capped for the kinds that have a ceiling. Exported
+ * because the rule engine needs the same number the prompt was given: a flight
+ * classified at 4 because it belongs to a business trip is dressed as a 2, and the
+ * "no sport kit at a formal occasion" rule must agree, or it would ban trainers
+ * from the gym class the calendar happened to rate highly.
+ */
+export function formalityForKind(formality: number | null, kind: OccasionKind): number | null {
   if (formality == null) return null;
   const ceiling = MAX_FORMALITY_BY_KIND[kind];
   return ceiling === undefined ? formality : Math.min(formality, ceiling);
@@ -247,7 +253,7 @@ export function groupOccasions(occasions: GroupableOccasion[]): OccasionGroup[] 
 
     if (!current) {
       groups.push({
-        formality: groupFormality(occasion.formality, kind),
+        formality: formalityForKind(occasion.formality, kind),
         kind,
         occasions: [occasion],
       });
@@ -273,7 +279,7 @@ export function groupOccasions(occasions: GroupableOccasion[]): OccasionGroup[] 
 
     if (breaksGroup) {
       groups.push({
-        formality: groupFormality(occasion.formality, kind),
+        formality: formalityForKind(occasion.formality, kind),
         kind,
         occasions: [occasion],
       });
@@ -282,7 +288,7 @@ export function groupOccasions(occasions: GroupableOccasion[]): OccasionGroup[] 
 
     current.occasions.push(occasion);
     if (typeof occasion.formality === "number") {
-      current.formality = groupFormality(
+      current.formality = formalityForKind(
         Math.max(current.formality ?? occasion.formality, occasion.formality),
         current.kind
       );

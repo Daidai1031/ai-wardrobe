@@ -17,6 +17,10 @@ export interface Profile {
   access_expires_at: string | null;
   // D17 L1 master switch. False (default) means the stylist sees no occasions at all.
   stylist_share_occasions: boolean;
+  // Schema section 19: per-category "how many days of any seven may I repeat this",
+  // holding ONLY the categories the user changed. Merged over the defaults by
+  // resolveRotationLimits(); never read raw.
+  rotation_limits: Record<string, number>;
   height_cm: number | null;
   weight_kg: number | null;
   body_shape: BodyShape | null;

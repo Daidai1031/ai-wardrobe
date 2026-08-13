@@ -10,17 +10,33 @@ import {
   type WeatherLocation,
 } from "@/lib/weather/calendar-location";
 import { eventsOnLocalDay } from "@/lib/calendar/day-bucket";
-import { describeGroups, groupOccasions, occasionKind } from "@/lib/planning/occasion-groups";
+import {
+  describeGroups,
+  formalityForKind,
+  groupOccasions,
+  occasionKind,
+} from "@/lib/planning/occasion-groups";
 import { mergeAdjacentEquivalentSegments } from "@/lib/planning/merge-segments";
-import { hydrateSegments, readPlansForDates, type StoredPlanBundle } from "@/lib/planning/plans";
+import {
+  hydrateSegments,
+  localDateRange,
+  mergeWearHistories,
+  readPlansForDates,
+  readRotationLimits,
+  readWearHistory,
+  wearHistoryFromPlans,
+  type StoredPlanBundle,
+} from "@/lib/planning/plans";
 import { selectCandidates } from "@/lib/planning/candidates";
 import {
   INCOMPATIBLE_WITH,
   MAX_PER_CATEGORY_IN_SEGMENT,
-  REPEAT_GAP_BY_CATEGORY,
+  MIN_FORMALITY_BANNING_ACTIVEWEAR,
   REQUIRED_SLOTS,
+  ROTATION_WINDOW_DAYS,
   buildCandidatePool,
   datesNeedingRepair,
+  describeRotationLimits,
   describeViolations,
   enforceComfort,
   enforceComposition,
@@ -33,12 +49,15 @@ import {
   findCoverageViolations,
   findRotationViolations,
   findWeatherViolations,
+  isActivewear,
   isHardToTravelIn,
   isLongSleeve,
+  rotationContext,
   type CandidatePool,
+  type RotationContext,
   type RuleDay,
   type RuleSegment,
-  type SegmentKind,
+  type SegmentContext,
 } from "@/lib/planning/plan-rules";
 import type { CalendarEvent } from "@/types/database";
 import type { DailyOccasion, DailyWardrobeItem } from "@/types/daily";
@@ -69,13 +88,6 @@ interface GeneratedDay {
 
 function uniqueIds(values: string[]): string[] {
   return [...new Set(values)];
-}
-
-/** Add days to a YYYY-MM-DD calendar date without touching time zones — these are plain local dates, not instants. */
-function addLocalDays(date: string, days: number): string {
-  const anchor = new Date(`${date}T00:00:00Z`);
-  anchor.setUTCDate(anchor.getUTCDate() + days);
-  return anchor.toISOString().slice(0, 10);
 }
 
 function toClientItem(item: Record<string, unknown>): DailyWardrobeItem {
@@ -134,7 +146,7 @@ async function loadWeeklyContext(request: NextRequest) {
   const timeZone = request.nextUrl.searchParams.get("timezone") || profile?.timezone || "UTC";
   const today = new Intl.DateTimeFormat("en-CA", { timeZone }).format(new Date());
   const start = request.nextUrl.searchParams.get("start") || today;
-  const dates = Array.from({ length: WEEK_LENGTH }, (_, i) => addLocalDays(start, i));
+  const dates = localDateRange(start, WEEK_LENGTH);
 
   const [{ data: wardrobeRows, error: wardrobeError }, plans, eventsByDate] = await Promise.all([
     supabase
@@ -393,19 +405,22 @@ async function repairPlan(
   categoryFor: (itemId: string) => string,
   isLongSleeveFor: (itemId: string) => boolean,
   tempFor: (planDate: string) => number | null,
-  segmentKindFor: (segment: RuleSegment) => SegmentKind,
+  segmentContextFor: (segment: RuleSegment) => SegmentContext,
   isHardToTravelInFor: (itemId: string) => boolean,
+  isActivewearFor: (itemId: string) => boolean,
+  rotationCtx: RotationContext,
   validItemIds: Set<string>,
   validEventIdsByDate: Map<string, Set<string>>
 ): Promise<GeneratedDay[]> {
-  const rotation = findRotationViolations(days as RuleDay[], categoryFor);
+  const rotation = findRotationViolations(days as RuleDay[], categoryFor, rotationCtx);
   const composition = findCompositionViolations(days as RuleDay[], categoryFor);
   const coverage = findCoverageViolations(days as RuleDay[], categoryFor);
   const weather = findWeatherViolations(days as RuleDay[], isLongSleeveFor, tempFor);
   const comfort = findComfortViolations(
     days as RuleDay[],
-    segmentKindFor,
+    segmentContextFor,
     isHardToTravelInFor,
+    isActivewearFor,
     categoryFor
   );
   if (
@@ -439,9 +454,9 @@ async function repairPlan(
 
   const systemPrompt = `You are fixing rule violations in an otherwise finished week plan.
 
-RULE 1 — REPEAT GAP (per category, in whole days between wearings; 0 means it may repeat freely):
-${JSON.stringify(REPEAT_GAP_BY_CATEGORY, null, 2)}
-A gap of 2 means Monday and Wednesday are fine but Monday and Tuesday are not. Bags and accessories are exempt — carrying the same bag or wearing the same sunglasses daily is normal. Repeats WITHIN one day are always fine: one blazer can carry through several segments of the same day.
+RULE 1 — HOW MANY DAYS OF THE WEEK the same piece may be worn on (the user set these):
+${JSON.stringify(describeRotationLimits(rotationCtx.limits), null, 2)}
+This counts DAYS, not appearances. Repeats WITHIN one day are always fine: one blazer can carry through several segments of the same day and that is still one day.
 
 RULE 2 — HOW MANY OF EACH CATEGORY MAY BE WORN AT ONCE in a single segment:
 ${JSON.stringify(MAX_PER_CATEGORY_IN_SEGMENT, null, 2)}
@@ -459,6 +474,8 @@ ${JSON.stringify(REQUIRED_SLOTS, null, 2)}
 RULE 5 — A SEGMENT SPENT TRAVELLING IS DRESSED FOR THE JOURNEY, NOT THE DESTINATION. A flight, train, long drive or airport transfer means flat shoes that come off easily (never heels), soft or stretch fabrics that survive hours of sitting, and a layer that can be added or removed for the cabin. A business trip's flight is still a flight: the tailoring belongs on the meeting, not on the plane.
 
 RULE 6 — SPORT IS DRESSED AS SPORT, AND CHANGED OUT OF AFTERWARDS. A workout, a match or a round of golf gets real activewear and the right shoes for that activity — a client match at a club is still sport, not smart-casual. Because it is sweated in, nothing worn in that segment may appear in ANY later segment of the same day; the next segment is a complete change of clothes. Bags and accessories are exempt.
+
+RULE 7 — AND THE REVERSE: NO SPORT KIT AT A FORMAL OCCASION. A segment whose formality is ${MIN_FORMALITY_BANNING_ACTIVEWEAR} or higher never wears activewear — no leggings, joggers, track pieces, sweatpants, gym tops or running shoes — however comfortable or expensive they are. This does not apply to segments that ARE sport; those are already capped at a low formality.
 
 THE WEEK AS PLANNED (each item shows its [category]):
 ${JSON.stringify(currentWeek, null, 2)}
@@ -596,6 +613,51 @@ export async function POST(request: NextRequest) {
       )
     ).map(Number);
 
+    const wardrobeById = new Map(wardrobe.map((item) => [String(item.id), item]));
+    const labelFor = (itemId: string) => {
+      const item = wardrobeById.get(itemId);
+      return item
+        ? wardrobeItemLabel({
+            display_name: item.display_name as string | null,
+            category: String(item.category),
+            subcategory: item.subcategory as string | null,
+            color: item.color as string | null,
+            brand: item.brand as string | null,
+          })
+        : itemId;
+    };
+    const categoryFor = (itemId: string) => String(wardrobeById.get(itemId)?.category ?? "");
+
+    // The rotation limits are the user's, not the code's (schema section 19).
+    // Everything downstream — the prompt text, the repair brief, the deterministic
+    // pass and the warnings — reads this one resolved map, so there is no path that
+    // can still be judging by the old defaults.
+    const rotationLimits = await readRotationLimits(supabase, userId);
+
+    // What the days AROUND this window already commit to. Without it a "once a
+    // week" limit silently restarted every Monday, and one of the two complaints
+    // that started this — the same clutch and the same sandals every single week —
+    // was invisible to the rules.
+    const windowStartsAt = new Date(`${dates[0]}T00:00:00Z`).getTime();
+    const historyDates = localDateRange(
+      new Date(windowStartsAt - (ROTATION_WINDOW_DAYS - 1) * 86_400_000).toISOString().slice(0, 10),
+      ROTATION_WINDOW_DAYS - 1
+    );
+    const priorHistory = await readWearHistory(supabase, userId, historyDates);
+    // Days already confirmed worn inside the window are never overwritten, so what
+    // they actually contain — not what this generation imagines for them — is what
+    // the other days have to rotate around.
+    const wornHistory = wearHistoryFromPlans(
+      new Map(
+        [...context.plans.entries()].filter(([, bundle]) => bundle.plan.status === "worn")
+      )
+    );
+    const rotation = rotationContext(
+      rotationLimits,
+      mergeWearHistories(priorHistory, wornHistory)
+    );
+    const recentlyPlannedIds = new Set(rotation.history.keys());
+
     const { items: candidates, relaxedTo } = selectCandidates(
       wardrobe.map((item) => ({
         id: String(item.id),
@@ -611,6 +673,7 @@ export async function POST(request: NextRequest) {
         tempMin: temps.length > 0 ? Math.min(...temps.map((t) => t.tempMin)) : 15,
         tempMax: temps.length > 0 ? Math.max(...temps.map((t) => t.tempMax)) : 25,
         formalityLevels,
+        recentlyPlannedIds,
       }
     );
     if (relaxedTo !== "both") {
@@ -690,12 +753,26 @@ ${JSON.stringify(MAX_PER_CATEGORY_IN_SEGMENT, null, 2)}
 These are hard caps on the whole segment, not per-occasion. Two pairs of trousers in one outfit is never valid; two tops (a shirt under a cardigan) is.
 
 ACROSS days, these constraints are the whole point of planning a week at once. Respect all of them:
-1. Minimum whole days between two wearings of the same item, by category:
-${JSON.stringify(REPEAT_GAP_BY_CATEGORY, null, 2)}
-   A gap of 2 means Monday and Wednesday are fine but Monday and Tuesday are not. 0 means it may repeat freely — bags and accessories are exempt because carrying the same bag or wearing the same sunglasses every day is normal.
-2. Beyond the numeric gap: a statement piece (bold color or print, distinctive silhouette, anything memorable) should ideally appear only ONCE in the whole window, even though the table would technically allow a second wearing.
-3. Cover the full range of formality the week's calendar actually calls for — don't plan seven interchangeable outfits.
-4. Days marked "alreadyWorn": true are already confirmed and will be ignored. Still return them so the week reads as a whole, but treat their items as unavailable for the other days.
+1. How many DAYS of this week each piece may be worn on, by category — these are the user's own settings, not defaults:
+${JSON.stringify(describeRotationLimits(rotationLimits), null, 2)}
+   This counts days, not appearances: a blazer worn in three segments of one day has used one day. "At most 1 day out of any 7" means a piece worn on Tuesday is unavailable for the rest of the week.
+2. Beyond the numeric limit: a statement piece (bold color or print, distinctive silhouette, anything memorable) should ideally appear only ONCE in the whole window, even where the table would technically allow a second day.
+3. Spread the week across the wardrobe. Do not build seven outfits out of the same dozen favourites while other perfectly good pieces sit unused — if two candidates work equally well, take the one you haven't used yet.
+${
+  recentlyPlannedIds.size > 0
+    ? `4. These items are ALREADY worn on the days immediately before this window, and those days count toward the same weekly limits, so most of them are unavailable now:\n${JSON.stringify(
+        [...recentlyPlannedIds].map(
+          (itemId) =>
+            `${labelFor(itemId)} — worn ${(rotation.history.get(itemId) ?? []).join(", ")}`
+        ),
+        null,
+        2
+      )}`
+    : "4. There is nothing already planned in the days before this window."
+}
+5. Cover the full range of formality the week's calendar actually calls for — don't plan seven interchangeable outfits.
+6. NO SPORT KIT AT A FORMAL OCCASION. A segment whose formality is ${MIN_FORMALITY_BANNING_ACTIVEWEAR} or higher never wears activewear — no leggings, joggers, track pieces, sweatpants, gym tops or running shoes — however comfortable they are. Segments that ARE sport are exempt; they are already capped at a low formality.
+7. Days marked "alreadyWorn": true are already confirmed and will be ignored. Still return them so the week reads as a whole, but treat their items as unavailable for the other days.
 
 Respond with ONLY this JSON, no other text:
 {
@@ -736,20 +813,6 @@ Respond with ONLY this JSON, no other text:
       )
     );
 
-    const wardrobeById = new Map(wardrobe.map((item) => [String(item.id), item]));
-    const labelFor = (itemId: string) => {
-      const item = wardrobeById.get(itemId);
-      return item
-        ? wardrobeItemLabel({
-            display_name: item.display_name as string | null,
-            category: String(item.category),
-            subcategory: item.subcategory as string | null,
-            color: item.color as string | null,
-            brand: item.brand as string | null,
-          })
-        : itemId;
-    };
-    const categoryFor = (itemId: string) => String(wardrobeById.get(itemId)?.category ?? "");
     const isLongSleeveFor = (itemId: string) => {
       const item = wardrobeById.get(itemId);
       return item
@@ -772,28 +835,55 @@ Respond with ONLY this JSON, no other text:
 
     // What a segment is, is a fact about the calendar — resolved from the events
     // themselves rather than from the label the model chose to write on it.
-    const kindByEventId = new Map(
+    const eventFactsById = new Map(
       dates.flatMap((date) =>
-        (eventsByDate.get(date)?.events ?? []).map(
-          (event) =>
-            [
-              event.id,
-              occasionKind({
-                occasion: event.occasion,
-                title: event.title,
-                allDay: event.all_day,
-              }),
-            ] as const
-        )
+        (eventsByDate.get(date)?.events ?? []).map((event) => {
+          const kind = occasionKind({
+            occasion: event.occasion,
+            title: event.title,
+            allDay: event.all_day,
+          });
+          return [
+            event.id,
+            { kind, formality: formalityForKind(event.formality ?? null, kind) },
+          ] as const;
+        })
       )
     );
     // Athletic wins a mixed segment: it is the stricter of the two, since its
-    // clothes also can't come back later in the day.
-    const segmentKindFor = (segment: RuleSegment): SegmentKind => {
-      const kinds = (segment.eventIds ?? []).map((eventId) => kindByEventId.get(eventId));
-      if (kinds.includes("athletic")) return "athletic";
-      if (kinds.includes("transit")) return "transit";
-      return "general";
+    // clothes also can't come back later in the day. Formality is the highest of
+    // the segment's events, already capped by kind, so an athletic segment stays
+    // at 2 and keeps its activewear.
+    const segmentContextFor = (segment: RuleSegment): SegmentContext => {
+      const facts = (segment.eventIds ?? [])
+        .map((eventId) => eventFactsById.get(eventId))
+        .filter((entry): entry is { kind: SegmentContext["kind"]; formality: number | null } =>
+          Boolean(entry)
+        );
+      const kinds = facts.map((entry) => entry.kind);
+      const formalities = facts
+        .map((entry) => entry.formality)
+        .filter((value): value is number => typeof value === "number");
+      return {
+        kind: kinds.includes("athletic")
+          ? "athletic"
+          : kinds.includes("transit")
+            ? "transit"
+            : "general",
+        formality: formalities.length > 0 ? Math.max(...formalities) : null,
+      };
+    };
+    const isActivewearFor = (itemId: string) => {
+      const item = wardrobeById.get(itemId);
+      return item
+        ? isActivewear({
+            category: String(item.category),
+            subcategory: item.subcategory as string | null,
+            display_name: item.display_name as string | null,
+            occasion: (item.occasion as string[] | null) ?? null,
+            style_tags: (item.style_tags as string[] | null) ?? null,
+          })
+        : false;
     };
     const isHardToTravelInFor = (itemId: string) => {
       const item = wardrobeById.get(itemId);
@@ -825,8 +915,10 @@ Respond with ONLY this JSON, no other text:
       categoryFor,
       isLongSleeveFor,
       tempFor,
-      segmentKindFor,
+      segmentContextFor,
       isHardToTravelInFor,
+      isActivewearFor,
+      rotation,
       validItemIds,
       validEventIdsByDate
     );
@@ -849,22 +941,27 @@ Respond with ONLY this JSON, no other text:
             categoryFor,
             isLongSleeveFor,
             tempFor,
-            pool
+            pool,
+            rotation
           ),
           categoryFor,
           pool,
+          rotation,
           (itemId, planDate) => {
             const temp = tempFor(planDate);
             return temp != null && temp > TOO_WARM_FOR_SLEEVES_C && isLongSleeveFor(itemId);
           }
         ),
         categoryFor,
-        segmentKindFor,
+        segmentContextFor,
         isHardToTravelInFor,
-        pool
+        isActivewearFor,
+        pool,
+        rotation
       ),
       categoryFor,
-      pool
+      pool,
+      rotation
     ) as GeneratedDay[];
 
     const consolidatedDays = finalDays.map((day) => ({
@@ -872,10 +969,20 @@ Respond with ONLY this JSON, no other text:
       segments: mergeAdjacentEquivalentSegments(day.segments),
     }));
 
+    // Named as the user's own setting rather than as an abstract rule. The same
+    // sentence reads as an honest closet limit when it says "you asked for at most
+    // 2 days and you own 3 pairs", and as the planner being careless when it
+    // doesn't.
+    const ownedByCategory = new Map<string, number>();
+    for (const item of wardrobe) {
+      const category = String(item.category);
+      ownedByCategory.set(category, (ownedByCategory.get(category) ?? 0) + 1);
+    }
+
     const warnings = [
-      ...findRotationViolations(consolidatedDays as RuleDay[], categoryFor).map(
+      ...findRotationViolations(consolidatedDays as RuleDay[], categoryFor, rotation).map(
         (violation) =>
-          `"${labelFor(violation.itemId)}" repeats on ${violation.conflictDate}, only ${violation.gapDays} day(s) after ${violation.keptDate} (${violation.category} needs ${violation.requiredGapDays}).`
+          `"${labelFor(violation.itemId)}" is on ${violation.daysUsed} days of this week (${violation.otherDates.join(", ")} and ${violation.conflictDate}). You've set ${violation.category} to at most ${violation.maxDays} day${violation.maxDays === 1 ? "" : "s"} a week, and your closet has ${ownedByCategory.get(violation.category) ?? 0} of them — there was nothing else free to swap in.`
       ),
       ...findCoverageViolations(consolidatedDays as RuleDay[], categoryFor).map(
         (violation) =>
@@ -887,14 +994,19 @@ Respond with ONLY this JSON, no other text:
       ),
       ...findComfortViolations(
         consolidatedDays as RuleDay[],
-        segmentKindFor,
+        segmentContextFor,
         isHardToTravelInFor,
+        isActivewearFor,
         categoryFor
-      ).map((violation) =>
-        violation.reason === "sweat"
-          ? `${violation.planDate} puts "${labelFor(violation.itemId)}" back on after a workout — your closet has nothing else free that day to change into.`
-          : `${violation.planDate} is spent travelling in "${labelFor(violation.itemId)}" — your closet has no flatter shoes free that day.`
-      ),
+      ).map((violation) => {
+        if (violation.reason === "sweat") {
+          return `${violation.planDate} puts "${labelFor(violation.itemId)}" back on after a workout — your closet has nothing else free that day to change into.`;
+        }
+        if (violation.reason === "transit") {
+          return `${violation.planDate} is spent travelling in "${labelFor(violation.itemId)}" — your closet has no flatter shoes free that day.`;
+        }
+        return `${violation.planDate} has a formal occasion wearing "${labelFor(violation.itemId)}", which is sport kit — your closet has nothing else free for it that day.`;
+      }),
     ];
 
     if (consolidatedDays.length < Math.min(MIN_GENERATED_DAYS, dates.length)) {

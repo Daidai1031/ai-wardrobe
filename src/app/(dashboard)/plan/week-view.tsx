@@ -26,6 +26,7 @@ import {
   type SegmentCanvasSaveResult,
 } from "@/components/outfit/segment-canvas-editor";
 import { SegmentSaveButton } from "@/components/outfit/segment-save-button";
+import { RotationSettings } from "./rotation-settings";
 import type {
   DailyOccasion,
   DailyResponse,
@@ -53,7 +54,13 @@ function rangeLabel(start: string, end: string): string {
   return `${format(start)} – ${format(end)}`;
 }
 
-export function WeekView() {
+export function WeekView({
+  rotationLimits,
+  itemCounts,
+}: {
+  rotationLimits: Record<string, number>;
+  itemCounts: Record<string, number>;
+}) {
   const [data, setData] = useState<WeeklyResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [planning, setPlanning] = useState(false);
@@ -281,7 +288,8 @@ export function WeekView() {
             · {planned} of {data.days.length} days planned
           </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <RotationSettings initialLimits={rotationLimits} itemCounts={itemCounts} />
           <button
             onClick={() => void syncCalendar()}
             disabled={syncing || planning}

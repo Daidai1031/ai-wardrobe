@@ -2400,3 +2400,27 @@ grant execute on function public.save_outfit_plan_segment_choice(uuid, jsonb, te
   to authenticated;
 
 notify pgrst, 'reload schema';
+
+-- ============================================================
+-- 19. USER-DEFINED ROTATION LIMITS
+-- Re-runnable against an existing database.
+--
+-- "How many DAYS of any seven may the same piece be worn on", per category. This
+-- is the user's call, not the code's: "I own six tops, of course I repeat them"
+-- and "I never want to be seen in the same thing twice" are both reasonable, and
+-- until now both got the same hard-coded numbers.
+--
+-- JSONB rather than a column per category, because the category vocabulary can
+-- change and each change would otherwise be another alter table. Keys are
+-- `wardrobe_items.category` values, values are integers 1..7 (7 = no limit inside
+-- a 7-day window). ONLY categories the user actually changed are stored, so a
+-- later change to the defaults moves everyone who never touched them, instead of
+-- freezing each user on a full snapshot of today's numbers.
+--
+-- Read and sanitised by resolveRotationLimits() in src/lib/planning/plan-rules.ts;
+-- the column is never trusted directly.
+-- ============================================================
+alter table public.profiles
+  add column if not exists rotation_limits jsonb default '{}'::jsonb;
+
+notify pgrst, 'reload schema';

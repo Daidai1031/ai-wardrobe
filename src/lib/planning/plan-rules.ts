@@ -15,9 +15,10 @@
  *     incompatible pairings).
  *   - Weather: what a given day is too hot for.
  *   - Coverage: what a segment must contain to be an outfit at all.
- *   - Comfort: what a segment cannot contain given what it is (heels on a flight)
- *     and what the day did before it (anything already sweated in).
- *   - Rotation: how soon an item may reappear on a LATER day.
+ *   - Comfort: what a segment cannot contain given what it is (heels on a flight,
+ *     activewear in a boardroom) and what the day did before it (anything already
+ *     sweated in).
+ *   - Rotation: how many days of a week the same item may appear on.
  *
  * Enforcement order is composition → weather → coverage → comfort → rotation.
  * Removing something can open a hole and filling a hole can create a repeat, so
@@ -27,31 +28,119 @@
  */
 
 /**
- * Minimum whole days between two wearings of the same item, per category. A gap of
- * 2 means Monday and Wednesday are fine but Monday and Tuesday are not; a gap of 7
- * means once per planning window.
- *
- * Accessories and bags are exempt (0): carrying the same work bag or wearing the
- * same sunglasses every day is normal, and flagging it produced pure noise. This
- * table is the single place to tune any of it.
+ * The rotation window. Every limit below is "how many DAYS of any seven the same
+ * piece may be worn on", measured over a rolling seven-day window, so a limit of
+ * `ROTATION_WINDOW_DAYS` is no limit at all.
  */
-export const REPEAT_GAP_BY_CATEGORY: Record<string, number> = {
-  // Garments are once-per-window: a 7-day gap inside a 7-day plan means an item
-  // worn on any day is unavailable for every other day in it. Repeats within a
-  // single day are still fine and never counted.
-  Tops: 7,
-  Bottoms: 7,
-  Dresses: 7,
-  Outerwear: 7,
-  // Shoes keep a shorter gap: a closet holds more pairs than garments, and wearing
-  // the same boots twice in a week reads as normal in a way that re-wearing the
-  // same trousers does not.
+export const ROTATION_WINDOW_DAYS = 7;
+
+/**
+ * Default days-per-week each category may be worn on, before the user's own
+ * settings are merged in by `resolveRotationLimits()`.
+ *
+ * This replaced a "minimum gap in days between wearings" table. The two are close
+ * but not the same, and the difference is what users actually complained about: a
+ * 2-day gap silently permits three wearings a week (Mon/Wed/Fri), which is exactly
+ * how the same sandals kept coming back. Counting days is also the way the rule is
+ * naturally stated ("no more than two days a week in the same shoes"), so the
+ * setting and the guarantee are the same sentence.
+ *
+ * Repeats WITHIN one day are never counted — one blazer carrying through several
+ * segments is the reason segments exist.
+ */
+export const MAX_WEAR_DAYS_BY_CATEGORY: Record<string, number> = {
+  // Garments are once a week: worn on any day of the window, unavailable on the
+  // rest of it.
+  Tops: 1,
+  Bottoms: 1,
+  Dresses: 1,
+  Outerwear: 1,
+  // A closet holds more pairs of shoes than trousers, and the same boots twice in
+  // a week reads as normal in a way the same trousers does not.
   Shoes: 2,
-  Bags: 0,
-  Accessories: 0,
+  // Bags and accessories used to be exempt entirely, on the reasoning that
+  // carrying the same tote daily is normal. Unlimited turned out to be the wrong
+  // reading of that: the generator settled on one clutch and one pair of earrings
+  // and reached for them every single day, which is not "normal", it is the
+  // wardrobe shrinking to four pieces. Three days a week keeps a genuine everyday
+  // bag possible without letting it become the only one.
+  Bags: 3,
+  Accessories: 3,
 };
 
-const DEFAULT_REPEAT_GAP_DAYS = 2;
+/** For a category nobody has a rule for — conservative, not exempt. */
+const DEFAULT_MAX_WEAR_DAYS = 2;
+
+/** Resolved per-category limits: the defaults above with the user's settings merged over them. */
+export type RotationLimits = Record<string, number>;
+
+/**
+ * Dates an item is ALREADY committed to outside the days currently being
+ * generated — the plans on the surrounding days. Without this, rotation only ever
+ * saw the days in one request, so redoing a single day happily put back the same
+ * trousers the rest of the week already uses, and next week's plan reached for the
+ * same favourites as this week's.
+ */
+export type WearHistory = Map<string, string[]>;
+
+export interface RotationContext {
+  limits: RotationLimits;
+  history: WearHistory;
+}
+
+export function rotationContext(
+  limits: RotationLimits,
+  history: WearHistory = new Map()
+): RotationContext {
+  return { limits, history };
+}
+
+/**
+ * Merge a user's stored `profiles.rotation_limits` over the defaults, dropping
+ * anything unusable rather than trusting the column.
+ *
+ * Only categories the user actually changed are stored, so tuning a default later
+ * moves everyone who never touched it — a full snapshot per user would freeze them
+ * on today's numbers forever.
+ */
+export function resolveRotationLimits(overrides: unknown): RotationLimits {
+  const limits: RotationLimits = { ...MAX_WEAR_DAYS_BY_CATEGORY };
+  if (!overrides || typeof overrides !== "object" || Array.isArray(overrides)) return limits;
+
+  for (const [category, value] of Object.entries(overrides as Record<string, unknown>)) {
+    if (!category.trim()) continue;
+    const days = typeof value === "number" ? Math.round(value) : Number.NaN;
+    if (!Number.isFinite(days) || days < 1 || days > ROTATION_WINDOW_DAYS) continue;
+    limits[category] = days;
+  }
+  return limits;
+}
+
+export function maxWearDaysFor(category: string, limits: RotationLimits): number {
+  return limits[category] ?? MAX_WEAR_DAYS_BY_CATEGORY[category] ?? DEFAULT_MAX_WEAR_DAYS;
+}
+
+/**
+ * The limits as the prompts state them. Built from the resolved map rather than
+ * written into the prompt text by hand: a user who sets bottoms to 3 days a week
+ * while the prompt still says "once a week" is being aimed at the wrong target,
+ * and the deterministic pass then has to hack the result back into shape — which
+ * works, but styles worse than asking for the right thing in the first place.
+ */
+export function describeRotationLimits(limits: RotationLimits): Record<string, string> {
+  const categories = [...new Set([...Object.keys(MAX_WEAR_DAYS_BY_CATEGORY), ...Object.keys(limits)])];
+  return Object.fromEntries(
+    categories.map((category) => {
+      const days = maxWearDaysFor(category, limits);
+      return [
+        category,
+        days >= ROTATION_WINDOW_DAYS
+          ? "no limit, may repeat freely"
+          : `at most ${days} day${days === 1 ? "" : "s"} out of any 7`,
+      ];
+    })
+  );
+}
 
 /**
  * Above this the day is too hot for sleeves: no outerwear, no long-sleeve tops or
@@ -179,14 +268,10 @@ export function buildCandidatePool(
 export type CategoryLookup = (itemId: string) => string;
 export type LabelLookup = (itemId: string) => string;
 
-export function gapForCategory(category: string): number {
-  return REPEAT_GAP_BY_CATEGORY[category] ?? DEFAULT_REPEAT_GAP_DAYS;
-}
-
-function daysBetween(a: string, b: string): number {
+/** Whole days from `from` to `to`; negative when `to` is the earlier date. */
+function daysFrom(from: string, to: string): number {
   return Math.round(
-    Math.abs(new Date(`${b}T00:00:00Z`).getTime() - new Date(`${a}T00:00:00Z`).getTime()) /
-      86_400_000
+    (new Date(`${to}T00:00:00Z`).getTime() - new Date(`${from}T00:00:00Z`).getTime()) / 86_400_000
   );
 }
 
@@ -325,7 +410,8 @@ export function enforceWeather(
   categoryFor: CategoryLookup,
   isLongSleeveFor: LongSleeveLookup,
   tempFor: TempLookup,
-  pool: CandidatePool
+  pool: CandidatePool,
+  rotation: RotationContext
 ): RuleDay[] {
   const result = days.map((day) => ({
     ...day,
@@ -345,7 +431,7 @@ export function enforceWeather(
           (candidate) =>
             !isLongSleeveFor(candidate) &&
             !segment.itemIds.includes(candidate) &&
-            !usedTooCloseTo(result, candidate, day.planDate, categoryFor)
+            !wouldExceedRotation(result, candidate, day.planDate, categoryFor, rotation)
         );
 
         if (substitute) segment.itemIds[i] = substitute;
@@ -399,6 +485,7 @@ export function enforceCoverage(
   days: RuleDay[],
   categoryFor: CategoryLookup,
   pool: CandidatePool,
+  rotation: RotationContext,
   /** Optional veto, e.g. "no sleeves on a 32°C day" — filling a hole must not create a new violation. */
   isBanned: (itemId: string, planDate: string) => boolean = () => false
 ): RuleDay[] {
@@ -430,7 +517,7 @@ export function enforceCoverage(
               !isBanned(itemId, day.planDate) &&
               countInSegment(segment.itemIds, categoryFor(itemId), categoryFor) <
                 (MAX_PER_CATEGORY_IN_SEGMENT[categoryFor(itemId)] ?? Number.POSITIVE_INFINITY) &&
-              !usedTooCloseTo(result, itemId, day.planDate, categoryFor)
+              !wouldExceedRotation(result, itemId, day.planDate, categoryFor, rotation)
           );
 
         if (filler) segment.itemIds.push(filler);
@@ -441,7 +528,7 @@ export function enforceCoverage(
   return result;
 }
 
-// ── Comfort (transit) ───────────────────────────────────────────────────────
+// ── Comfort (transit, sweat, activewear where it doesn't belong) ────────────
 
 /**
  * Footwear nobody wants to spend a flight, a train journey or an airport transfer
@@ -478,17 +565,95 @@ export function isHardToTravelIn(item: {
 /**
  * Bags and accessories are carried, not worn against the skin. The same tote
  * before and after a tennis match is fine, and forcing a different one would be
- * the same kind of noise that made bags exempt from the repeat gap.
+ * the same kind of noise that made bags exempt from the rotation limit for so long.
  */
 const WORN_AGAINST_SKIN = (category: string) => category !== "Bags" && category !== "Accessories";
 
+/**
+ * From this formality upward, sport clothes are the wrong answer however
+ * comfortable they are. 3 is where the calendar's own scale turns into work and
+ * business-casual; 1–2 is the casual end where a hoodie and trainers are simply
+ * what someone wears.
+ *
+ * An ATHLETIC segment can never trip this: `MAX_FORMALITY_BY_KIND` caps its
+ * formality at 2 precisely so that a client's tennis match at a formal club is
+ * still dressed as tennis.
+ */
+export const MIN_FORMALITY_BANNING_ACTIVEWEAR = 3;
+
+const ACTIVEWEAR_KEYWORDS = [
+  "activewear",
+  "sportswear",
+  "athletic",
+  "sports bra",
+  "gym",
+  "workout",
+  "running",
+  "track pant",
+  "track short",
+  "tracksuit",
+  "sweatpant",
+  "sweat pant",
+  "jogger",
+  "legging",
+  "yoga",
+  "cleat",
+  "rash guard",
+  "swim",
+];
+
+/** Occasions an item is tagged for that mean it is genuinely dressed-up-able. */
+const DRESSED_UP_OCCASIONS = new Set(["work", "formal", "party", "wedding"]);
+
+/**
+ * Whether this is sport kit rather than clothes that merely look relaxed.
+ *
+ * Two signals, both needed, because each is wrong on its own. The classifier's
+ * `occasion` array is the strong one — an item tagged only `sport` is activewear
+ * by the same vocabulary the rest of planning uses — but plenty of real activewear
+ * is tagged `sport, casual` too, so the keyword list catches those. In the other
+ * direction a keyword alone over-fires (a "running" print, a silk track-style
+ * trouser), so anything the classifier also considers work, formal, party or
+ * wedding wear is left alone. As with `isLongSleeve` and `isHardToTravelIn`, a
+ * false positive silently removes something the user owns, so the bar is
+ * deliberately high.
+ */
+export function isActivewear(item: {
+  category: string;
+  subcategory?: string | null;
+  display_name?: string | null;
+  occasion?: string[] | null;
+  style_tags?: string[] | null;
+}): boolean {
+  const occasions = (item.occasion ?? []).map((tag) => tag.toLowerCase());
+  if (occasions.some((tag) => DRESSED_UP_OCCASIONS.has(tag))) return false;
+
+  if (occasions.length > 0 && occasions.every((tag) => tag === "sport")) return true;
+
+  const text = `${item.subcategory ?? ""} ${item.display_name ?? ""} ${(item.style_tags ?? []).join(" ")}`.toLowerCase();
+  return ACTIVEWEAR_KEYWORDS.some((keyword) => text.includes(keyword));
+}
+
 /** What a segment is — supplied by the caller, who is the one holding the calendar. */
 export type SegmentKind = "transit" | "athletic" | "general";
-export type SegmentKindLookup = (segment: RuleSegment) => SegmentKind;
+
+/**
+ * Everything about a segment that the rules need but the item list can't say:
+ * what it is, and how formal it has to be. Formality is already capped by kind by
+ * the caller (see `occasion-groups.ts`), so a flight belonging to a business trip
+ * arrives here as the 2 it should be dressed for, not the 4 it was classified as.
+ */
+export interface SegmentContext {
+  kind: SegmentKind;
+  formality: number | null;
+}
+
+export type SegmentContextLookup = (segment: RuleSegment) => SegmentContext;
 export type HardToTravelInLookup = (itemId: string) => boolean;
+export type ActivewearLookup = (itemId: string) => boolean;
 
 /** Why an item can't be in this particular segment. */
-export type ComfortReason = "transit" | "sweat";
+export type ComfortReason = "transit" | "sweat" | "too_casual";
 
 export interface ComfortViolation {
   planDate: string;
@@ -505,12 +670,12 @@ export interface ComfortViolation {
 function sweatyBefore(
   day: RuleDay,
   segmentIndex: number,
-  kindFor: SegmentKindLookup,
+  contextFor: SegmentContextLookup,
   categoryFor: CategoryLookup
 ): Set<string> {
   const worn = new Set<string>();
   for (let i = 0; i < segmentIndex; i++) {
-    if (kindFor(day.segments[i]) !== "athletic") continue;
+    if (contextFor(day.segments[i]).kind !== "athletic") continue;
     for (const itemId of day.segments[i].itemIds) {
       if (WORN_AGAINST_SKIN(categoryFor(itemId))) worn.add(itemId);
     }
@@ -520,35 +685,51 @@ function sweatyBefore(
 
 /**
  * Whether this item can be in this segment, given what the segment is and what the
- * day did before it. Both reasons are checked in one place so a fix for one can't
- * introduce the other — swapping heels off a flight must not reach for the
- * trainers that were just run in.
+ * day did before it. All three reasons are checked in one place so a fix for one
+ * can't introduce another — swapping heels off a flight must not reach for the
+ * trainers that were just run in, and neither must reach for gym kit to wear to a
+ * board meeting.
  */
 function comfortReasonFor(
   itemId: string,
-  kind: SegmentKind,
+  context: SegmentContext,
   sweaty: Set<string>,
-  isHardToTravelInFor: HardToTravelInLookup
+  isHardToTravelInFor: HardToTravelInLookup,
+  isActivewearFor: ActivewearLookup
 ): ComfortReason | null {
   if (sweaty.has(itemId)) return "sweat";
-  if (kind === "transit" && isHardToTravelInFor(itemId)) return "transit";
+  if (context.kind === "transit" && isHardToTravelInFor(itemId)) return "transit";
+  if (
+    context.formality !== null &&
+    context.formality >= MIN_FORMALITY_BANNING_ACTIVEWEAR &&
+    isActivewearFor(itemId)
+  ) {
+    return "too_casual";
+  }
   return null;
 }
 
 export function findComfortViolations(
   days: RuleDay[],
-  kindFor: SegmentKindLookup,
+  contextFor: SegmentContextLookup,
   isHardToTravelInFor: HardToTravelInLookup,
+  isActivewearFor: ActivewearLookup,
   categoryFor: CategoryLookup
 ): ComfortViolation[] {
   const violations: ComfortViolation[] = [];
 
   for (const day of days) {
     day.segments.forEach((segment, segmentIndex) => {
-      const kind = kindFor(segment);
-      const sweaty = sweatyBefore(day, segmentIndex, kindFor, categoryFor);
+      const context = contextFor(segment);
+      const sweaty = sweatyBefore(day, segmentIndex, contextFor, categoryFor);
       for (const itemId of segment.itemIds) {
-        const reason = comfortReasonFor(itemId, kind, sweaty, isHardToTravelInFor);
+        const reason = comfortReasonFor(
+          itemId,
+          context,
+          sweaty,
+          isHardToTravelInFor,
+          isActivewearFor
+        );
         if (reason) violations.push({ planDate: day.planDate, segmentIndex, itemId, reason });
       }
     });
@@ -573,9 +754,11 @@ export function findComfortViolations(
 export function enforceComfort(
   days: RuleDay[],
   categoryFor: CategoryLookup,
-  kindFor: SegmentKindLookup,
+  contextFor: SegmentContextLookup,
   isHardToTravelInFor: HardToTravelInLookup,
-  pool: CandidatePool
+  isActivewearFor: ActivewearLookup,
+  pool: CandidatePool,
+  rotation: RotationContext
 ): RuleDay[] {
   const result = days.map((day) => ({
     ...day,
@@ -584,18 +767,20 @@ export function enforceComfort(
 
   for (const day of result) {
     day.segments.forEach((segment, segmentIndex) => {
-      const kind = kindFor(segment);
-      const sweaty = sweatyBefore(day, segmentIndex, kindFor, categoryFor);
+      const context = contextFor(segment);
+      const sweaty = sweatyBefore(day, segmentIndex, contextFor, categoryFor);
 
       for (let i = 0; i < segment.itemIds.length; i++) {
         const itemId = segment.itemIds[i];
-        if (!comfortReasonFor(itemId, kind, sweaty, isHardToTravelInFor)) continue;
+        if (!comfortReasonFor(itemId, context, sweaty, isHardToTravelInFor, isActivewearFor)) {
+          continue;
+        }
 
         const substitute = (pool.get(categoryFor(itemId)) || []).find(
           (candidate) =>
-            !comfortReasonFor(candidate, kind, sweaty, isHardToTravelInFor) &&
+            !comfortReasonFor(candidate, context, sweaty, isHardToTravelInFor, isActivewearFor) &&
             !segment.itemIds.includes(candidate) &&
-            !usedTooCloseTo(result, candidate, day.planDate, categoryFor)
+            !wouldExceedRotation(result, candidate, day.planDate, categoryFor, rotation)
         );
 
         if (substitute) segment.itemIds[i] = substitute;
@@ -610,76 +795,104 @@ function countInSegment(itemIds: string[], category: string, categoryFor: Catego
   return itemIds.filter((itemId) => categoryFor(itemId) === category).length;
 }
 
-/** True when using `itemId` on `date` would break that category's repeat gap. */
-function usedTooCloseTo(
+// ── Rotation ────────────────────────────────────────────────────────────────
+
+/**
+ * Every date this item is worn on, whether that comes from the days being
+ * generated or from plans that already exist around them. An item counts once per
+ * date however many segments of that day it appears in.
+ */
+function wearDatesFor(itemId: string, days: RuleDay[], rotation: RotationContext): string[] {
+  const dates = new Set(rotation.history.get(itemId) ?? []);
+  for (const day of days) {
+    if (day.segments.some((segment) => segment.itemIds.includes(itemId))) {
+      dates.add(day.planDate);
+    }
+  }
+  return [...dates].sort();
+}
+
+/** The dates of `dates` that fall inside the rolling window ending on `endDate`. */
+function datesInWindowEndingAt(dates: string[], endDate: string): string[] {
+  return dates.filter((date) => {
+    const distance = daysFrom(date, endDate);
+    return distance >= 0 && distance < ROTATION_WINDOW_DAYS;
+  });
+}
+
+/**
+ * True when putting `itemId` on `date` would push it over its category's
+ * days-per-week limit — looking both back and forward, since a new wearing can
+ * just as easily break the window of a day that is already planned after it.
+ */
+function wouldExceedRotation(
   days: RuleDay[],
   itemId: string,
   date: string,
-  categoryFor: CategoryLookup
+  categoryFor: CategoryLookup,
+  rotation: RotationContext
 ): boolean {
-  const requiredGapDays = gapForCategory(categoryFor(itemId));
-  if (requiredGapDays <= 1) return false;
+  const maxDays = maxWearDaysFor(categoryFor(itemId), rotation.limits);
+  if (maxDays >= ROTATION_WINDOW_DAYS) return false;
 
-  return days.some(
-    (day) =>
-      day.planDate !== date &&
-      daysBetween(day.planDate, date) < requiredGapDays &&
-      day.segments.some((segment) => segment.itemIds.includes(itemId))
-  );
+  const dates = [...new Set([...wearDatesFor(itemId, days, rotation), date])].sort();
+  return dates.some((endDate) => datesInWindowEndingAt(dates, endDate).length > maxDays);
 }
-
-// ── Rotation ────────────────────────────────────────────────────────────────
 
 export interface RotationViolation {
   itemId: string;
   category: string;
-  /** The earlier date, left alone — only the later one is rebuilt. */
-  keptDate: string;
+  /** The over-the-limit date — the only one rebuilt; the earlier ones are left alone. */
   conflictDate: string;
-  gapDays: number;
-  requiredGapDays: number;
+  /** The other days of the same window it is already worn on. */
+  otherDates: string[];
+  daysUsed: number;
+  maxDays: number;
 }
 
 /**
- * Every pair of wearings closer together than that category's minimum gap.
+ * Every day an item appears on after it has already used up its category's
+ * allowance for that rolling week.
+ *
  * Repeats *within* one day are never violations — carrying a blazer from a meeting
- * into dinner is the reason segments exist — so an item counts once per date.
+ * into dinner is the reason segments exist — so an item counts once per date. Days
+ * that come from `rotation.history` are counted but never reported: a plan that is
+ * already saved for last Tuesday is not something this generation can rebuild.
  */
 export function findRotationViolations(
   days: RuleDay[],
-  categoryFor: CategoryLookup
+  categoryFor: CategoryLookup,
+  rotation: RotationContext
 ): RotationViolation[] {
-  const datesByItem = new Map<string, string[]>();
-
-  for (const day of [...days].sort((a, b) => a.planDate.localeCompare(b.planDate))) {
-    const onThisDay = new Set(day.segments.flatMap((segment) => segment.itemIds));
-    for (const itemId of onThisDay) {
-      datesByItem.set(itemId, [...(datesByItem.get(itemId) || []), day.planDate]);
-    }
-  }
+  const generatedDates = new Set(days.map((day) => day.planDate));
+  const itemIds = new Set(
+    days.flatMap((day) => day.segments.flatMap((segment) => segment.itemIds))
+  );
 
   const violations: RotationViolation[] = [];
-  for (const [itemId, dates] of datesByItem) {
+  for (const itemId of itemIds) {
     const category = categoryFor(itemId);
-    const requiredGapDays = gapForCategory(category);
-    if (requiredGapDays <= 1) continue;
+    const maxDays = maxWearDaysFor(category, rotation.limits);
+    if (maxDays >= ROTATION_WINDOW_DAYS) continue;
 
-    for (let i = 1; i < dates.length; i++) {
-      const gapDays = daysBetween(dates[i - 1], dates[i]);
-      if (gapDays < requiredGapDays) {
+    const dates = wearDatesFor(itemId, days, rotation);
+    for (const date of dates) {
+      if (!generatedDates.has(date)) continue;
+      const window = datesInWindowEndingAt(dates, date);
+      if (window.length > maxDays) {
         violations.push({
           itemId,
           category,
-          keptDate: dates[i - 1],
-          conflictDate: dates[i],
-          gapDays,
-          requiredGapDays,
+          conflictDate: date,
+          otherDates: window.filter((entry) => entry !== date),
+          daysUsed: window.length,
+          maxDays,
         });
       }
     }
   }
 
-  return violations;
+  return violations.sort((a, b) => a.conflictDate.localeCompare(b.conflictDate));
 }
 
 /**
@@ -696,7 +909,8 @@ export function findRotationViolations(
 export function enforceRotation(
   days: RuleDay[],
   categoryFor: CategoryLookup,
-  pool: CandidatePool
+  pool: CandidatePool,
+  rotation: RotationContext
 ): RuleDay[] {
   const result = days.map((day) => ({
     ...day,
@@ -704,11 +918,15 @@ export function enforceRotation(
   }));
 
   // Recompute after every swap: one substitution can resolve or create others.
-  for (let pass = 0; pass < 10; pass++) {
-    const violations = findRotationViolations(result, categoryFor);
-    if (violations.length === 0) break;
+  // The cap is generous because a week of over-used favourites is exactly the case
+  // that needs several swaps, and each pass fixes at most one item.
+  const unfixable = new Set<string>();
+  for (let pass = 0; pass < 40; pass++) {
+    const violation = findRotationViolations(result, categoryFor, rotation).find(
+      (entry) => !unfixable.has(`${entry.itemId}@${entry.conflictDate}`)
+    );
+    if (!violation) break;
 
-    const violation = violations[0];
     const day = result.find((entry) => entry.planDate === violation.conflictDate);
     if (!day) break;
 
@@ -716,9 +934,15 @@ export function enforceRotation(
       (itemId) =>
         itemId !== violation.itemId &&
         !day.segments.some((segment) => segment.itemIds.includes(itemId)) &&
-        !usedTooCloseTo(result, itemId, day.planDate, categoryFor)
+        !wouldExceedRotation(result, itemId, day.planDate, categoryFor, rotation)
     );
-    if (!substitute) break;
+    // One unfillable repeat must not stop the rest from being fixed; it is
+    // reported as a warning instead, which is the "your closet is too small for
+    // this setting" case.
+    if (!substitute) {
+      unfixable.add(`${violation.itemId}@${violation.conflictDate}`);
+      continue;
+    }
 
     for (const segment of day.segments) {
       const index = segment.itemIds.indexOf(violation.itemId);
@@ -768,12 +992,22 @@ export function describeViolations(
   // transit usually needs rebuilding, and the model does that better than the
   // deterministic 1:1 swap that runs afterwards if this call doesn't.
   for (const violation of comfort) {
-    add(
-      violation.planDate,
-      violation.reason === "sweat"
-        ? `Segment ${violation.segmentIndex + 1} re-wears "${labelFor(violation.itemId)}" from a workout or match earlier that day. Nothing worn for sport is put back on afterwards — that segment needs a complete change of clothes (bags and accessories aside).`
-        : `Segment ${violation.segmentIndex + 1} is spent travelling (a flight, train or transfer) but wears "${labelFor(violation.itemId)}". Rebuild that segment for the journey rather than the destination: flat, easy-on shoes and soft, unrestrictive pieces.`
-    );
+    if (violation.reason === "sweat") {
+      add(
+        violation.planDate,
+        `Segment ${violation.segmentIndex + 1} re-wears "${labelFor(violation.itemId)}" from a workout or match earlier that day. Nothing worn for sport is put back on afterwards — that segment needs a complete change of clothes (bags and accessories aside).`
+      );
+    } else if (violation.reason === "transit") {
+      add(
+        violation.planDate,
+        `Segment ${violation.segmentIndex + 1} is spent travelling (a flight, train or transfer) but wears "${labelFor(violation.itemId)}". Rebuild that segment for the journey rather than the destination: flat, easy-on shoes and soft, unrestrictive pieces.`
+      );
+    } else {
+      add(
+        violation.planDate,
+        `Segment ${violation.segmentIndex + 1} is a formal enough occasion that sport kit doesn't belong there, but it wears "${labelFor(violation.itemId)}". Replace it with something that reads as real clothes for that occasion.`
+      );
+    }
   }
 
   for (const violation of weather) {
@@ -793,7 +1027,7 @@ export function describeViolations(
   for (const violation of rotation) {
     add(
       violation.conflictDate,
-      `"${labelFor(violation.itemId)}" (id ${violation.itemId}) is already worn on ${violation.keptDate}, only ${violation.gapDays} day(s) earlier; ${violation.category} needs at least ${violation.requiredGapDays} days between wearings.`
+      `"${labelFor(violation.itemId)}" (id ${violation.itemId}) is already worn on ${violation.otherDates.join(", ")}; ${violation.category} may only be worn on ${violation.maxDays} day(s) of any seven, and this would be day ${violation.daysUsed}. Use a different piece here.`
     );
   }
 

@@ -11,28 +11,43 @@ import {
   type WeatherLocation,
 } from "@/lib/weather/calendar-location";
 import { eventsOnLocalDay } from "@/lib/calendar/day-bucket";
-import { describeGroups, groupOccasions, occasionKind } from "@/lib/planning/occasion-groups";
+import {
+  describeGroups,
+  formalityForKind,
+  groupOccasions,
+  occasionKind,
+} from "@/lib/planning/occasion-groups";
 import { mergeAdjacentEquivalentSegments } from "@/lib/planning/merge-segments";
 import {
   hydrateSegments,
+  localDateRange,
   readPlanForDate,
+  readRotationLimits,
+  readWearHistory,
   type StoredPlanBundle,
 } from "@/lib/planning/plans";
 import {
   INCOMPATIBLE_WITH,
   MAX_PER_CATEGORY_IN_SEGMENT,
+  MIN_FORMALITY_BANNING_ACTIVEWEAR,
   REQUIRED_SLOTS,
+  ROTATION_WINDOW_DAYS,
   TOO_WARM_FOR_SLEEVES_C,
   buildCandidatePool,
+  describeRotationLimits,
   enforceComfort,
   enforceComposition,
   enforceCoverage,
+  enforceRotation,
   enforceWeather,
+  isActivewear,
   isHardToTravelIn,
   isLongSleeve,
+  rotationContext,
+  type RotationContext,
   type RuleDay,
   type RuleSegment,
-  type SegmentKind,
+  type SegmentContext,
 } from "@/lib/planning/plan-rules";
 import type { CalendarEvent } from "@/types/database";
 import type { DailyOccasion, DailyResponse, DailyWardrobeItem } from "@/types/daily";
@@ -55,6 +70,21 @@ interface GeneratedPlan {
 
 const WARDROBE_SELECT =
   "id, display_name, user_notes, category, subcategory, color, material, season, occasion, style_tags, brand, clean_url, original_url";
+
+/**
+ * The rolling window the rotation limits are measured over, centred on the day
+ * being planned. A single day can't see a repeat on its own, which is exactly how
+ * "redo this day" used to hand back the trousers the rest of the week already
+ * uses — so the surrounding plans are read and treated as history.
+ */
+function rotationHistoryDates(localDate: string): string[] {
+  const from = new Date(
+    new Date(`${localDate}T00:00:00Z`).getTime() - (ROTATION_WINDOW_DAYS - 1) * 86_400_000
+  )
+    .toISOString()
+    .slice(0, 10);
+  return localDateRange(from, ROTATION_WINDOW_DAYS * 2 - 1).filter((date) => date !== localDate);
+}
 
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
@@ -408,6 +438,23 @@ function describeWardrobe(items: Record<string, unknown>[]) {
   }));
 }
 
+/** Item id → the name the user would recognise, for prompts and warnings. */
+function labelLookup(wardrobe: Record<string, unknown>[]) {
+  const byId = new Map(wardrobe.map((item) => [String(item.id), item]));
+  return (itemId: string) => {
+    const item = byId.get(itemId);
+    return item
+      ? wardrobeItemLabel({
+          display_name: item.display_name as string | null,
+          category: String(item.category),
+          subcategory: item.subcategory as string | null,
+          color: item.color as string | null,
+          brand: item.brand as string | null,
+        })
+      : itemId;
+  };
+}
+
 function formatDateLabel(localDate: string, timeZone: string) {
   return new Intl.DateTimeFormat("en-US", {
     timeZone,
@@ -460,7 +507,8 @@ function buildDailyRules(
   wardrobe: Record<string, unknown>[],
   candidateWardrobe: Record<string, unknown>[],
   weatherLocations: WeatherData[],
-  events: CalendarEvent[]
+  events: CalendarEvent[],
+  rotation: RotationContext
 ) {
   const byId = new Map(wardrobe.map((item) => [String(item.id), item]));
   const categoryFor = (itemId: string) => String(byId.get(itemId)?.category ?? "");
@@ -478,28 +526,39 @@ function buildDailyRules(
   // Resolved from the calendar rather than from the label the model wrote, so a
   // segment covering a flight or a tennis match is treated as such however it was
   // named. Athletic wins a mixed segment: it is the stricter of the two.
-  const kindByEventId = new Map(
-    events.map(
-      (event) =>
-        [
-          event.id,
-          occasionKind({
-            occasion: event.occasion,
-            title: event.title,
-            allDay: event.all_day,
-          }),
-        ] as const
-    )
+  const factsByEventId = new Map(
+    events.map((event) => {
+      const kind = occasionKind({
+        occasion: event.occasion,
+        title: event.title,
+        allDay: event.all_day,
+      });
+      return [event.id, { kind, formality: formalityForKind(event.formality ?? null, kind) }] as const;
+    })
   );
 
   return {
     categoryFor,
     isLongSleeveFor,
-    segmentKindFor: (segment: RuleSegment): SegmentKind => {
-      const kinds = (segment.eventIds ?? []).map((eventId) => kindByEventId.get(eventId));
-      if (kinds.includes("athletic")) return "athletic";
-      if (kinds.includes("transit")) return "transit";
-      return "general";
+    rotation,
+    segmentContextFor: (segment: RuleSegment): SegmentContext => {
+      const facts = (segment.eventIds ?? [])
+        .map((eventId) => factsByEventId.get(eventId))
+        .filter((entry): entry is { kind: SegmentContext["kind"]; formality: number | null } =>
+          Boolean(entry)
+        );
+      const kinds = facts.map((entry) => entry.kind);
+      const formalities = facts
+        .map((entry) => entry.formality)
+        .filter((value): value is number => typeof value === "number");
+      return {
+        kind: kinds.includes("athletic")
+          ? "athletic"
+          : kinds.includes("transit")
+            ? "transit"
+            : "general",
+        formality: formalities.length > 0 ? Math.max(...formalities) : null,
+      };
     },
     isHardToTravelInFor: (itemId: string) => {
       const item = byId.get(itemId);
@@ -511,6 +570,18 @@ function buildDailyRules(
           })
         : false;
     },
+    isActivewearFor: (itemId: string) => {
+      const item = byId.get(itemId);
+      return item
+        ? isActivewear({
+            category: String(item.category),
+            subcategory: item.subcategory as string | null,
+            display_name: item.display_name as string | null,
+            occasion: (item.occasion as string[] | null) ?? null,
+            style_tags: (item.style_tags as string[] | null) ?? null,
+          })
+        : false;
+    },
     tempFor: () =>
       weatherLocations.length > 0
         ? Math.min(...weatherLocations.map((weather) => weather.temp))
@@ -519,34 +590,55 @@ function buildDailyRules(
   };
 }
 
-/** Same order as weekly: removing can open a hole, filling one can put heels back on a flight. */
-function applyDailyRules(
-  days: RuleDay[],
-  localDate: string,
-  rules: ReturnType<typeof buildDailyRules>
-) {
-  const { categoryFor, isLongSleeveFor, segmentKindFor, isHardToTravelInFor, tempFor, pool } =
-    rules;
-  return enforceComfort(
-    enforceCoverage(
-      enforceWeather(
-        enforceComposition(days, categoryFor),
+/**
+ * Same order as weekly: removing can open a hole, filling one can put heels back
+ * on a flight, and any swap can create a repeat, so rotation runs last.
+ *
+ * Rotation used to be skipped here entirely, on the reasoning that one day can't
+ * repeat against itself. It can't — but it can repeat against the six days around
+ * it, which is what `rules.rotation` carries, and skipping the check is how
+ * "redo this day" became the fastest way to break the week it belongs to.
+ */
+function applyDailyRules(days: RuleDay[], rules: ReturnType<typeof buildDailyRules>) {
+  const {
+    categoryFor,
+    isLongSleeveFor,
+    segmentContextFor,
+    isHardToTravelInFor,
+    isActivewearFor,
+    tempFor,
+    pool,
+    rotation,
+  } = rules;
+  return enforceRotation(
+    enforceComfort(
+      enforceCoverage(
+        enforceWeather(
+          enforceComposition(days, categoryFor),
+          categoryFor,
+          isLongSleeveFor,
+          tempFor,
+          pool,
+          rotation
+        ),
         categoryFor,
-        isLongSleeveFor,
-        tempFor,
-        pool
+        pool,
+        rotation,
+        (itemId) => {
+          const temp = tempFor();
+          return temp != null && temp > TOO_WARM_FOR_SLEEVES_C && isLongSleeveFor(itemId);
+        }
       ),
       categoryFor,
+      segmentContextFor,
+      isHardToTravelInFor,
+      isActivewearFor,
       pool,
-      (itemId) => {
-        const temp = tempFor();
-        return temp != null && temp > TOO_WARM_FOR_SLEEVES_C && isLongSleeveFor(itemId);
-      }
+      rotation
     ),
     categoryFor,
-    segmentKindFor,
-    isHardToTravelInFor,
-    pool
+    pool,
+    rotation
   );
 }
 
@@ -612,6 +704,19 @@ async function handleDaily(request: NextRequest, regenerate: boolean, body: Dail
     const wardrobeSummary = describeWardrobe(candidateWardrobe);
     const dateLabel = formatDateLabel(localDate, timeZone);
 
+    // The rest of the week is what makes a single day's rotation meaningful, and
+    // what stops /home and a redone day from quietly re-using whatever the week
+    // already committed to.
+    const rotationLimits = await readRotationLimits(supabase, userId);
+    const rotation = rotationContext(
+      rotationLimits,
+      await readWearHistory(supabase, userId, rotationHistoryDates(localDate))
+    );
+    const labelFor = labelLookup(wardrobe);
+    const nearbyItems = [...rotation.history.entries()].map(
+      ([itemId, dates]) => `${labelFor(itemId)} — worn ${dates.join(", ")}`
+    );
+
     const promptOccasions = occasionData.occasions.map((occasion) => ({
       id: occasion.id,
       title: occasion.title,
@@ -662,11 +767,21 @@ Each required segment carries a "kind". A segment whose kind is not "general" is
 - "athletic" — sport or a workout: real activewear and the right shoes for that activity, never office clothes made casual. Golf and tennis are the ones to get right, because they sit in the middle of a working day and often at a club: dress them as sport with the club's code in mind (a collared polo, proper court or golf shoes, tennis whites where the wardrobe has them), not as smart-casual.
   Anything worn for sport is sweated in, so NOTHING from an athletic segment reappears in any later segment of the day — the following segment is a complete change of clothes. Bags and accessories are the exception; the same tote before and after is fine.
 
+NO SPORT KIT AT A FORMAL OCCASION. A segment whose formality is ${MIN_FORMALITY_BANNING_ACTIVEWEAR} or higher never wears activewear — no leggings, joggers, track pieces, sweatpants, gym tops or running shoes — however comfortable or expensive they are. Segments that ARE sport are exempt; they are already capped at a low formality.
+
 Items that cannot be worn together in one segment:
 ${JSON.stringify(INCOMPATIBLE_WITH, null, 2)}
 A dress already covers torso and legs, so it is never combined with a top or with trousers. Layer with outerwear instead.
 
 If today is above ${TOO_WARM_FOR_SLEEVES_C}°C, use NO outerwear and NO long-sleeve tops or dresses.
+
+HOW MANY DAYS OF ANY SEVEN each piece may be worn on — the user's own settings, counting days rather than appearances:
+${JSON.stringify(describeRotationLimits(rotationLimits), null, 2)}
+${
+  nearbyItems.length > 0
+    ? `These pieces are already planned on the days around today and count toward those limits, so most of them are unavailable now. Reach for something else unless nothing suitable is left:\n${JSON.stringify(nearbyItems, null, 2)}\nWearing one piece in several segments of TODAY is still one day and is fine.`
+    : "Nothing is planned on the days around today, so the whole wardrobe is available."
+}
 
 Within one segment, at most this many items of each category can physically be worn at once:
 ${JSON.stringify(MAX_PER_CATEGORY_IN_SEGMENT, null, 2)}
@@ -726,11 +841,11 @@ Respond with ONLY this JSON, no other text:
       wardrobe,
       candidateWardrobe,
       weatherLocations,
-      occasionData.events
+      occasionData.events,
+      rotation
     );
     const [wearableDay] = applyDailyRules(
       [{ planDate: localDate, segments: generated.segments }],
-      localDate,
       rules
     );
 
@@ -831,6 +946,7 @@ async function handleSegmentRegeneration(request: NextRequest, segmentId: string
     }
 
     const byId = new Map(wardrobe.map((item) => [String(item.id), item]));
+    const labelFor = labelLookup(wardrobe);
     const itemsBySegment = new Map<string, string[]>();
     for (const row of [...stored.segmentItems].sort((a, b) => a.position - b.position)) {
       itemsBySegment.set(row.segment_id, [...(itemsBySegment.get(row.segment_id) || []), row.item_id]);
@@ -840,19 +956,19 @@ async function handleSegmentRegeneration(request: NextRequest, segmentId: string
       position: segment.position,
       label: segment.label,
       action: segment.id === target.id ? "REGENERATE THIS ONE" : "keep unchanged",
-      currentItems: (itemsBySegment.get(segment.id) || []).map((itemId) => {
-        const item = byId.get(itemId);
-        return item
-          ? wardrobeItemLabel({
-              display_name: item.display_name as string | null,
-              category: String(item.category),
-              subcategory: item.subcategory as string | null,
-              color: item.color as string | null,
-              brand: item.brand as string | null,
-            })
-          : itemId;
-      }),
+      currentItems: (itemsBySegment.get(segment.id) || []).map(labelFor),
     }));
+
+    // Same rolling week as the full-day path: one replacement look must not reach
+    // for a piece the surrounding days have already used up.
+    const rotationLimits = await readRotationLimits(supabase, userId);
+    const rotation = rotationContext(
+      rotationLimits,
+      await readWearHistory(supabase, userId, rotationHistoryDates(localDate))
+    );
+    const nearbyItems = [...rotation.history.entries()].map(
+      ([itemId, dates]) => `${labelFor(itemId)} — worn ${dates.join(", ")}`
+    );
 
     const nextSegment = stored.segments.find((segment) => segment.position === target.position + 1);
     const previousSegment = stored.segments.find((segment) => segment.position === target.position - 1);
@@ -914,6 +1030,15 @@ ${
 }
 REJECTED ITEM IDS — the user disliked this segment. Do NOT use any of these:
 ${JSON.stringify(rejectedItemIds)}
+
+HOW MANY DAYS OF ANY SEVEN each piece may be worn on — the user's own settings, counting days rather than appearances:
+${JSON.stringify(describeRotationLimits(rotationLimits), null, 2)}
+${
+  nearbyItems.length > 0
+    ? `Already planned on the days around today, and counting toward those limits:\n${JSON.stringify(nearbyItems, null, 2)}`
+    : "Nothing is planned on the days around today."
+}
+A segment whose formality is ${MIN_FORMALITY_BANNING_ACTIVEWEAR} or higher never wears activewear — no leggings, joggers, track pieces, sweatpants, gym tops or running shoes — unless the segment itself is sport.
 
 USER PROFILE:
 ${profile ? `Name: ${profile.name || "User"}, Body Shape: ${profile.body_shape || "Unknown"}` : "No profile data"}
@@ -987,8 +1112,7 @@ Respond with ONLY this JSON, no other text:
           ),
         },
       ],
-      localDate,
-      buildDailyRules(wardrobe, candidateWardrobe, weatherLocations, occasionData.events)
+      buildDailyRules(wardrobe, candidateWardrobe, weatherLocations, occasionData.events, rotation)
     );
 
     const { error: persistError } = await supabase.rpc("regenerate_outfit_plan_segment", {

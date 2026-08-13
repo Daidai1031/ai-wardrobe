@@ -12,6 +12,7 @@
  */
 
 import type { createServerSupabase } from "@/lib/supabase/server";
+import { resolveRotationLimits, type RotationLimits } from "@/lib/planning/plan-rules";
 import type {
   DailyPlanSource,
   DailyPlanStatus,
@@ -132,6 +133,90 @@ export async function readPlansForDates(
   }
 
   return result;
+}
+
+/**
+ * The user's own per-category repeat rules (schema section 19), already merged
+ * over the defaults.
+ *
+ * Read on its own rather than as another column on the profile query the planners
+ * already run, because this repo applies schema changes by hand: until section 19
+ * is pasted into the SQL editor, adding the column to that select would 400 the
+ * whole query and take daily and weekly planning down with it. Here the worst case
+ * is that everyone plans with the default limits, which is exactly the behaviour
+ * that existed before the setting did.
+ */
+export async function readRotationLimits(
+  supabase: ServerSupabase,
+  userId: string
+): Promise<RotationLimits> {
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("rotation_limits")
+    .eq("id", userId)
+    .single();
+
+  if (error) {
+    console.warn("Falling back to default rotation limits:", error.message);
+    return resolveRotationLimits(null);
+  }
+  return resolveRotationLimits((data as { rotation_limits?: unknown } | null)?.rotation_limits);
+}
+
+/**
+ * Which dates each item is already committed to, for the rotation rules.
+ *
+ * The rules used to see only the days in the current request, which made the
+ * "same few pieces every time" complaint inevitable: redoing one day had no idea
+ * what the other six already used, and each new week started from a blank slate
+ * over the same favourites. Reading the neighbouring plans costs one query and
+ * turns the limit into a real rolling week.
+ */
+export async function readWearHistory(
+  supabase: ServerSupabase,
+  userId: string,
+  dates: string[]
+): Promise<Map<string, string[]>> {
+  return wearHistoryFromPlans(await readPlansForDates(supabase, userId, dates));
+}
+
+/** Same shape, from plans the caller has already read. */
+export function wearHistoryFromPlans(
+  plans: Map<string, StoredPlanBundle>
+): Map<string, string[]> {
+  const history = new Map<string, string[]>();
+
+  for (const bundle of plans.values()) {
+    const onThisDay = new Set(bundle.segmentItems.map((row) => row.item_id));
+    for (const itemId of onThisDay) {
+      history.set(itemId, [...(history.get(itemId) ?? []), bundle.plan.plan_date]);
+    }
+  }
+
+  return history;
+}
+
+/** Union of several histories, deduplicated per item. */
+export function mergeWearHistories(
+  ...histories: Map<string, string[]>[]
+): Map<string, string[]> {
+  const merged = new Map<string, string[]>();
+  for (const history of histories) {
+    for (const [itemId, dates] of history) {
+      merged.set(itemId, [...new Set([...(merged.get(itemId) ?? []), ...dates])].sort());
+    }
+  }
+  return merged;
+}
+
+/** Calendar dates from `start`, inclusive. Plain local dates, no time zone involved. */
+export function localDateRange(start: string, length: number): string[] {
+  const anchor = new Date(`${start}T00:00:00Z`);
+  return Array.from({ length }, (_, index) => {
+    const date = new Date(anchor);
+    date.setUTCDate(date.getUTCDate() + index);
+    return date.toISOString().slice(0, 10);
+  });
 }
 
 /** Convenience wrapper for the single-date (daily) case. */

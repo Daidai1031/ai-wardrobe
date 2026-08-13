@@ -35,6 +35,20 @@ export interface CandidateFilterOptions {
   limit?: number;
   /** An item worn this recently is deprioritized, never hard-dropped. */
   recentlyWornDays?: number;
+  /**
+   * Items the surrounding days already plan to use. Deprioritized, never dropped:
+   * the rotation rules decide what is actually allowed, this only stops the prompt
+   * being handed the same forty pieces it was handed last week.
+   */
+  recentlyPlannedIds?: Set<string>;
+  /**
+   * How much random spread to add to the ranking, in score points. The scoring
+   * below is otherwise fully deterministic, so the same wardrobe produced the same
+   * top 45 on every single generation and the model — reasonably — kept choosing
+   * the same standouts out of them. Regenerating is supposed to give you something
+   * else; a little noise in what it is offered is what makes that true.
+   */
+  variety?: number;
   now?: Date;
 }
 
@@ -44,6 +58,12 @@ const RELAX_FLOOR = 24;
 /** Every category the user owns keeps at least this many candidates. */
 const MIN_PER_CATEGORY = 3;
 const DEFAULT_RECENTLY_WORN_DAYS = 2;
+/**
+ * Enough to reshuffle items whose scores are close (the usual case — most of a
+ * wardrobe scores 4 or 4.5), not enough to promote something the filter genuinely
+ * ranked badly, which is a 3+ point gap away.
+ */
+const DEFAULT_VARIETY = 1.5;
 
 /**
  * Seasons plausible at a given temperature. Overlapping on purpose: a 16°C day is
@@ -135,10 +155,18 @@ export function selectCandidates<T extends CandidateItem>(
     if (!item.times_worn) value += 0.5;
     const lastWorn = item.last_worn_at ? new Date(item.last_worn_at).getTime() : 0;
     if (lastWorn && lastWorn >= recentCutoff) value -= 3;
+    // `last_worn_at` only moves when a day is confirmed worn, which most days
+    // aren't, so on its own it barely separates anything. What the surrounding
+    // days already plan to use is the signal that actually exists.
+    if (options.recentlyPlannedIds?.has(item.id)) value -= 2;
     return value;
   };
 
-  const ranked = [...pool].sort((a, b) => score(b) - score(a));
+  const variety = options.variety ?? DEFAULT_VARIETY;
+  const jitter = new Map(pool.map((item) => [item.id, Math.random() * variety]));
+  const rankOf = (item: T) => score(item) + (jitter.get(item.id) ?? 0);
+
+  const ranked = [...pool].sort((a, b) => rankOf(b) - rankOf(a));
   if (ranked.length <= limit) return { items: ranked, relaxedTo };
 
   // Take the top `limit`, but never let ranking wipe out a whole category — a week
