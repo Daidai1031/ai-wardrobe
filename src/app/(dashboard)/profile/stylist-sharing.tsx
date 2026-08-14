@@ -68,7 +68,7 @@ export function StylistSharing({
   }
 
   return (
-    <section className="rounded-2xl border border-surface-200 bg-white p-5">
+    <section className="max-w-2xl rounded-2xl border border-surface-200 bg-white p-5">
       <div className="flex items-center gap-2">
         <ShieldCheck size={16} className="text-surface-400" />
         <h2 className="text-sm font-semibold text-surface-900">Your stylist</h2>

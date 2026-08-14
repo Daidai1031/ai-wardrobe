@@ -86,7 +86,15 @@ export function ItemDetail({
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
         {/* Image side — main styling photo plus any extra reference angles */}
-        <ItemPhotos item={item} photos={photos} onToggleFavorite={toggleFavorite} />
+        <ItemPhotos
+          item={item}
+          photos={photos}
+          onToggleFavorite={toggleFavorite}
+          onMetadataExtracted={(metadata) => {
+            if (metadata.brand) setBrand(metadata.brand);
+            if (metadata.material) setMaterial(metadata.material);
+          }}
+        />
 
         {/* Edit form */}
         <div className="space-y-5">

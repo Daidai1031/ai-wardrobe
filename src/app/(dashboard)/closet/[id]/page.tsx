@@ -38,7 +38,7 @@ export default async function ItemPage({ params }: { params: Promise<{ id: strin
     const { data: outfits, error: outfitsError } = await supabase
       .from("outfits")
       .select(
-        "id, name, folder, notes, times_worn, ai_generated, created_at, outfit_items(item_id, position, x, y, width, wardrobe_items(id, display_name, clean_url, original_url, category, subcategory, color))"
+        "id, name, folder, notes, times_worn, ai_generated, created_at, outfit_items(item_id, position, x, y, width, wardrobe_items(*))"
       )
       .eq("user_id", user.id)
       .in("id", outfitIds)

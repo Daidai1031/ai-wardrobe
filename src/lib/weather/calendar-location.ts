@@ -28,7 +28,14 @@ function localDateForInstant(iso: string, timeZone: string): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone }).format(new Date(iso));
 }
 
-function eventLocalDateBounds(
+/**
+ * The first and last local dates an event actually occupies.
+ *
+ * Exported because trip detection needs exactly the same answer: a trip is a run of
+ * local dates, and an all-day Google event's exclusive end date and a red-eye
+ * crossing midnight are both easy to get wrong twice.
+ */
+export function eventLocalDateBounds(
   event: CalendarEvent,
   timeZone: string
 ): { first: string; last: string } {

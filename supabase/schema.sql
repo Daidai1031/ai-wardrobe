@@ -1502,13 +1502,13 @@ alter table public.profiles
 --
 -- Deliberately a separate table rather than more columns on wardrobe_items:
 -- these are *reference* photos (back, side, detail, care tag) a user adds from
--- the item detail page, and every styling path — the Canvas, selectCandidates,
--- the stylist and plan prompts — reads wardrobe_items.clean_url / original_url
--- only. Keeping the extra angles off that row means no styling code has to
--- learn to ignore them; they simply aren't reachable from there.
+-- the item detail page. Outfit styling still reads only the selected display
+-- image on wardrobe_items; photo enhancement may read these to preserve the
+-- exact physical piece, while label photos only supply brand/material metadata.
 --
--- No AI runs on these: no detection, no background removal, no classification.
--- The item's own classification stays authoritative.
+-- Reference role and label text are analyzed once and cached by the
+-- WARDROBE ITEM PHOTO ENHANCEMENT block below.
+-- The item's own category/style classification stays authoritative.
 -- ============================================================
 create table if not exists public.wardrobe_item_photos (
   id           uuid primary key default uuid_generate_v4(),
@@ -2422,5 +2422,192 @@ notify pgrst, 'reload schema';
 -- ============================================================
 alter table public.profiles
   add column if not exists rotation_limits jsonb default '{}'::jsonb;
+
+notify pgrst, 'reload schema';
+
+-- ============================================================
+-- 20. WARDROBE ITEM PHOTO ENHANCEMENT
+-- Re-runnable against an existing database.
+--
+-- The original and background-removed photos remain immutable. Generated
+-- candidates are stored separately until the user accepts the before/after
+-- preview; clearing optimized_url restores the original display immediately.
+-- Reference-photo analysis is cached so label/angle detection is paid once,
+-- not on every enhancement attempt.
+-- ============================================================
+alter table public.wardrobe_items
+  add column if not exists optimized_url text,
+  add column if not exists optimized_storage_path text,
+  add column if not exists enhancement_candidate_url text,
+  add column if not exists enhancement_candidate_path text,
+  add column if not exists enhancement_status text not null default 'idle',
+  add column if not exists enhancement_model text,
+  add column if not exists enhancement_started_at timestamptz,
+  add column if not exists enhanced_at timestamptz;
+
+alter table public.wardrobe_items
+  drop constraint if exists wardrobe_items_enhancement_status_check;
+alter table public.wardrobe_items
+  add constraint wardrobe_items_enhancement_status_check
+  check (enhancement_status in ('idle', 'processing', 'ready', 'complete', 'failed'));
+
+alter table public.wardrobe_item_photos
+  add column if not exists kind text,
+  add column if not exists analysis jsonb not null default '{}'::jsonb,
+  add column if not exists analyzed_at timestamptz;
+
+alter table public.wardrobe_item_photos
+  drop constraint if exists wardrobe_item_photos_kind_check;
+alter table public.wardrobe_item_photos
+  add constraint wardrobe_item_photos_kind_check
+  check (
+    kind is null or kind in (
+      'front', 'back', 'side', 'detail', 'logo_pattern',
+      'material', 'label', 'worn', 'other'
+    )
+  );
+
+notify pgrst, 'reload schema';
+
+-- ============================================================
+-- 21. TRAVEL MODE (Phase 6.3)
+-- Re-runnable against an existing database.
+--
+-- A trip is detected from the calendar rather than typed in, so these columns are
+-- mostly about identity and the two things a trip has that a week does not:
+-- a confirmation step, and a packing list.
+--
+-- `calendar_signature` is what makes re-detection idempotent. It is the trip's
+-- first local date plus its normalized destination, so a trip whose end date moves
+-- (an extra meeting added, a flight pushed) still resolves to the same row instead
+-- of forking into a second one and losing the packing list attached to the first.
+--
+-- Day outfits are deliberately NOT stored here and NOT stored as `source='travel'`
+-- rows: a trip's days are ordinary local dates, and since Phase 6.2 a date has
+-- exactly one plan. Travel reads and writes the same `outfit_plans` rows /plan does,
+-- so a Thursday planned in either place is the same Thursday. `daily_outfits` and
+-- `weather_data` therefore stay unused.
+-- ============================================================
+alter table public.travel_plans add column if not exists trip_type text;
+alter table public.travel_plans add column if not exists origin text not null default 'manual';
+alter table public.travel_plans add column if not exists calendar_signature text;
+alter table public.travel_plans add column if not exists confirmed_dates date[] not null default '{}';
+alter table public.travel_plans add column if not exists share_token text;
+alter table public.travel_plans add column if not exists shared_at timestamptz;
+
+-- Each statement is on ONE line, and constraints are dropped-then-added the same way
+-- every earlier section does. Applying this by hand means copying it into a web SQL
+-- editor, and that copy has been observed to arrive with characters missing; a
+-- one-line ALTER is the form where a mangled paste is obvious on sight instead of
+-- surfacing as a syntax error pointing at a line that looks fine. Prefer copying
+-- from this file rather than from anywhere else, and keep new statements single-line.
+--
+-- travel_plans_calendar_signature_key is a real constraint rather than a partial
+-- unique index, because resolving a trip is an upsert and Postgres cannot infer a
+-- partial index from an ON CONFLICT target that doesn't repeat its predicate --
+-- PostgREST never emits one, so a partial index here would fail every upsert.
+-- Plain UNIQUE (not NULLS NOT DISTINCT, unlike outfit_plans_cache_key) is exactly
+-- what's wanted: manually created trips have no signature, and NULLs being distinct
+-- is what lets any number of them coexist.
+alter table public.travel_plans drop constraint if exists travel_plans_trip_type_check;
+alter table public.travel_plans add constraint travel_plans_trip_type_check check (trip_type is null or trip_type in ('business','leisure'));
+
+alter table public.travel_plans drop constraint if exists travel_plans_origin_check;
+alter table public.travel_plans add constraint travel_plans_origin_check check (origin in ('manual','calendar'));
+
+alter table public.travel_plans drop constraint if exists travel_plans_calendar_signature_key;
+alter table public.travel_plans add constraint travel_plans_calendar_signature_key unique (user_id, calendar_signature);
+
+-- The share token is the only credential the public /trip/[token] page has, so it
+-- must be unique across all users, not just within one.
+create unique index if not exists travel_plans_share_token_key
+  on public.travel_plans (share_token)
+  where share_token is not null;
+
+notify pgrst, 'reload schema';
+
+-- ------------------------------------------------------------
+-- 21b. replace_weekly_plans gains an explicit keep-list.
+--
+-- Travel mode needs "plan the days that aren't planned yet and leave the rest
+-- alone" to be true, not approximate: a trip generally overlaps days the user
+-- already planned (and possibly already confirmed) from /plan, and the whole
+-- premise of opening a trip is that those come straight through.
+--
+-- Until now the only protected days were `status='worn'`. That is still the
+-- unconditional rule -- a day the user recorded as worn is history and no
+-- generation may rewrite it -- and `p_keep_dates` is the caller's own additional
+-- list on top of it.
+--
+-- Kept days are still SENT to the generator (see the route: they are marked
+-- alreadyWorn in the outline and their items are merged into the rotation history),
+-- so the days that DO get written are chosen around them rather than in ignorance
+-- of them. They come back in the returned array alongside the worn ones, because
+-- from the UI's point of view both mean the same thing: this day was left as it was.
+--
+-- The single-argument version is dropped first. Leaving it in place would make
+-- every rpc('replace_weekly_plans', { p_days }) call ambiguous between two
+-- overloads, which PostgREST reports as a 300, not as a helpful error.
+-- ------------------------------------------------------------
+drop function if exists public.replace_weekly_plans(jsonb);
+
+create or replace function public.replace_weekly_plans(
+  p_days jsonb,
+  p_keep_dates date[] default '{}'
+)
+returns date[]
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_day jsonb;
+  v_plan_date date;
+  v_skipped date[] := '{}';
+begin
+  if v_user_id is null then
+    raise exception 'Unauthorized';
+  end if;
+
+  if coalesce(jsonb_typeof(p_days), 'null') <> 'array'
+    or jsonb_array_length(p_days) = 0 then
+    raise exception 'A weekly plan must contain at least one day';
+  end if;
+
+  for v_day in select value from jsonb_array_elements(p_days)
+  loop
+    v_plan_date := (v_day ->> 'planDate')::date;
+
+    if v_plan_date = any(coalesce(p_keep_dates, '{}')) then
+      v_skipped := v_skipped || v_plan_date;
+      continue;
+    end if;
+
+    if exists (
+      select 1
+      from public.outfit_plans
+      where user_id = v_user_id
+        and plan_date = v_plan_date
+        and travel_plan_id is null
+        and status = 'worn'
+    ) then
+      v_skipped := v_skipped || v_plan_date;
+      continue;
+    end if;
+
+    perform public.replace_outfit_plan(
+      v_plan_date,
+      'weekly',
+      null,
+      v_day ->> 'gap',
+      coalesce(v_day -> 'weather', '{}'::jsonb),
+      coalesce(v_day -> 'segments', '[]'::jsonb)
+    );
+  end loop;
+
+  return v_skipped;
+end;
+$$;
 
 notify pgrst, 'reload schema';

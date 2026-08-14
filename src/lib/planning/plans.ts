@@ -209,6 +209,16 @@ export function mergeWearHistories(
   return merged;
 }
 
+/**
+ * The longest window one generation call may cover.
+ *
+ * Lives here rather than in the route because travel mode has to size its request
+ * against the same number: a 20-day trip that asked for 20 days would not get a
+ * longer plan, it would get a truncated one, and the UI needs to be able to say so
+ * before the user presses the button rather than after.
+ */
+export const MAX_PLAN_WINDOW_DAYS = 14;
+
 /** Calendar dates from `start`, inclusive. Plain local dates, no time zone involved. */
 export function localDateRange(start: string, length: number): string[] {
   const anchor = new Date(`${start}T00:00:00Z`);

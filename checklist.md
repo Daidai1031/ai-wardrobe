@@ -1,6 +1,6 @@
 # AI Wardrobe — Implementation Checklist
 
-> Last updated: 2026-08-13（`/home` 与 `/plan` 已支持复用 Saved Looks、Canvas 修改后选择覆盖原 Look 或另存；待执行 schema section 20 后真实验证）
+> Last updated: 2026-08-13（Phase 6.3 出差模式 `/travel` 代码完成：日历识别行程 + business/leisure 分类 + 复用 `/plan` 同一批计划行 + 确认后打包 + 打印/PDF + 公开分享链接。**待执行 schema section 21 / 21b 后真实验证**；section 20 同样待执行）
 >
 > **本文件只负责「已完成的实现细节 + Debug Log」。未来要做什么、按什么顺序做、新功能的技术方案，全部移到 [`ROADMAP.md`](./ROADMAP.md)。**
 >
@@ -31,6 +31,7 @@
 | 8 | `middleware` file convention deprecated | Next.js 16 改名 middleware → proxy | 文件重命名 `middleware.ts` → `proxy.ts`，函数 `middleware()` → `default proxy()`，`config` → `proxyConfig` |
 | 9 | `@import` must precede all rules | CSS @import 在 @tailwind 指令之后 | 把 `@import url(...)` 移到 globals.css 第一行 |
 | 16 | 单品详情页加多角度照片时报 `PGRST205 — Could not find the table 'public.wardrobe_item_photos' in the schema cache` | 本仓库没有 migration 工具，schema.sql 只是「真相来源」，改了不等于生产库执行了。section 17 的建表语句还没在 Supabase SQL Editor 跑过；这类问题 `npm run build` 完全发现不了——TS 类型是手写镜像，对不存在的表照样通过 | 在 SQL Editor 执行 schema.sql 第 17 节（可重复执行）。若表已建好仍报同样的错，是 PostgREST 的 schema 缓存没刷新，补一句 `notify pgrst, 'reload schema';`。踩坑连带：insert 失败时那张图已经进了 Storage，代码会回头删掉它，但如果删除也一并失败，`wardrobe` bucket 里会留下 `<user_id>/<item_id>-angle-*.jpg` 这样没有对应数据库行的孤儿文件，需要手动清 |
+| 20 | 加完出差模式后 `/plan` 只剩第一天有内容，后面 6 格全空 | 出差模式给 `/api/ai/weekly` 加了 `?days=`，解析写成 `Number(searchParams.get("days"))`。**`Number(null)` 是 `0` 不是 `NaN`**，`Number.isFinite(0)` 为真，于是 `/plan` 这种不带 `days=` 的普通请求被夹成 `windowLength = 1`——只读/只排一天。因为 week-view 的网格是写死的 `grid-cols-7`，一天数据配七列，看起来正好像「后面几天丢了内容」。`tsc`、`lint`、`build` 全过：这是运行期取值，不是类型问题 | 「参数不存在」显式判断，不靠解析：`const daysParam = get("days"); const requested = daysParam === null ? NaN : Number(daysParam);`，再要求 `>= 1`。补了一个覆盖 10 种 query string（无参 / 空值 / `abc` / `0` / `-3` / 正常 / 超上限）的断言脚本，全绿 |
 | 19 | Next 16 下 `npm run lint` 把 `lint` 当项目目录并报 `Invalid project directory` | Next.js 16 已移除 `next lint`，同时仓库没有 Flat Config，`eslint-config-next` 还停在 15.x；此外 Next 16 的 `next build` 也不再自动跑 lint | `lint` 改为 `eslint .`，新增 `lint:fix` 与根目录 `eslint.config.mjs`，把 `eslint-config-next` 精确对齐为 16.2.10。保留 Core Web Vitals + TypeScript 规则；对现有客户端 Effect 取数和时间读取显式关闭 `react-hooks/set-state-in-effect` / `react-hooks/purity`，其它真实错误与未使用 import 已清理。`lint`、`tsc --noEmit`、生产构建均通过 |
 
 ### 鞋子配对 (segment.ts `mergeShoePairs`)
@@ -66,6 +67,9 @@
 | 18 | 运动场景（尤其 tennis / golf）和正式场景被合并成同一段；而且运动完出汗后，后面的段落还在继续穿运动时那套衣服 | 和 #17 同源，但更严重：golf/tennis 常常发生在工作日中间、在俱乐部、和客户一起，`classifyEvents()` 很容易给出 formality 4，于是和前后的会议/晚餐 formality 完全一样，`groupOccasions()` 直接合并；就算分开了，规则里也没有任何一条说"运动那套穿过就不能再穿" | 把 #17 的 transit 概念泛化成 `OccasionKind = transit \| athletic \| general`：① **分段**——kind 不同就断组，`MAX_FORMALITY_BY_KIND` 把 athletic/transit 的 formality 上限压到 2；② **两个 athletic 之间也不合并**（transit 之间合并是对的——打车到登机不换衣服；打完 golf 再打 tennis 要换），③ **出汗规则**——`enforceComfort()` 的 `sweat` 分支：当天更早的 athletic 段里穿过的东西（Bags/Accessories 除外，包不贴身）在之后所有段落都不可用，找同类替代品换掉；④ **prompt**——说明 golf/tennis 即使在俱乐部、和客户一起也按运动装穿（polo 衫、专业球鞋、网球白），并要求在 reasoning 里点名哪几件是运动装。踩坑：单段重生成路径原来只把那一段丢进规则引擎，`sweatyBefore()` 看不到前面的段，所以改成把**整天**（其他段保持原样、目标段换成新生成的）一起跑规则，只落库目标段那一行 |
 | 19 | 每次生成都反复推荐同样那几件（silver clutch / gold maxi dress / cream heeled sandals / olive pleated trousers），衣橱里明明还有别的裤子和包 | 四个独立原因叠在一起，每一个单独看都"符合设计"：① **规则用的是"最小间隔天数"而不是"一周最多几天"**——鞋 gap=2 实际允许周一/周三/周五三天，包和配饰 gap=0 等于完全不限制，所以一只 clutch 可以天天出现；② **daily route 根本不跑 rotation**（理由是"一天不可能和自己重复"），于是 `/home` 每日生成和 `/plan` 的「Redo this day」都不受任何轮换约束；③ **轮换只看本次请求里的那几天**，历史为空，所以"一周一次"每周一重新计数，下一周照样先挑同样的心头好；④ **`selectCandidates()` 的打分完全确定性**，同一个衣橱每次都产出同一份 top 45，模型在同一批候选里当然选同样的单品 | ① 规则模型换成 `MAX_WEAR_DAYS_BY_CATEGORY` + `ROTATION_WINDOW_DAYS = 7`（滚动 7 天内最多几**天**，同一天多段只算一天）：上装/下装/连衣裙/外套 1 天、鞋 2 天、包和配饰 3 天，并且**数值由用户决定**（`profiles.rotation_limits`，schema 第 19 节，`/plan` 的「Repeat rules」按钮）；② daily 也跑 `enforceRotation`；③ 新增 `RotationContext.history`，由 `readWearHistory()` 读周围几天已存的计划——weekly 读窗口前 6 天 + 窗口内已 `worn` 的天，daily 读该日 ±6 天；④ `selectCandidates()` 增加 `recentlyPlannedIds`（−2 分）和 `variety`（每件 0–1.5 分随机），重新生成才会真的换一批。踩坑：`rotation_limits` 用**独立一条查询**读（`readRotationLimits()`），不能加进 planner 那条 profile select——这个仓库的 schema 是手动贴的，列还没建时整条 select 会 400，daily/weekly 直接全挂 |
 | 20 | 运动装出现在比较正式的场合 | Comfort 族只有"航班不穿高跟"和"运动完不再穿"两条，没有反向的那条；而 `MAX_FORMALITY_BY_KIND` 只压低运动段的正式度，管不到一件运动裤被放进 formality 4 的会议 | Comfort 加第三个 reason `too_casual`：段落 formality ≥ `MIN_FORMALITY_BANNING_ACTIVEWEAR`(3) 时不接受 `isActivewear()` 的单品，和另外两条一样走 1:1 替换。判定要求**两个信号同时成立**，避免误伤：被分类器打了 `work`/`formal`/`party`/`wedding` 标签的一律不算运动装，其余要么 occasion 只有 `sport`，要么命中无歧义关键词（leggings/joggers/track pant/sweatpants/running/gym…）——`casual` 标签的小白鞋不会被判成运动装。运动段本身不会被误伤：`formalityForKind()`（原私有的 `groupFormality`，为此导出）已经把它压到 2，所以 `SegmentContext.formality` 必须走它而不是直接读事件的 formality |
+| 21 | 用户把 Outerwear 设成「一周 1 天」，但同一件 Blair Stanley 西装外套还是在一周里出现了 3 天 | 规则**查得出来但修不动**。`enforceRotation()` 的策略是「找同品类替换品，找不到就保留 + 出 warning」；用户只有这一件外套，所以替换品**按定义永远不存在**，每次都走「保留」分支。于是"每周 1 天"这条用户亲手设的规则，在最典型的场景（只有一件的心头好）下 100% 失效——而 UI 上那条限制还明晃晃写着 | 新增 `isDroppableCategory()`（由 `REQUIRED_SLOTS` 反推：外套/包/配饰不占任何必需槽位）。找不到替换品时，**不占槽位的直接从当天整段移除**，用户的上限就此成为硬保证；鞋/上装/下装/连衣裙仍然保留 + warning（光脚比重复更糟）。`enforceComfort()` 走同一个判定（高尔夫球场上的西装外套没有理由因为"没有第二件"而留下）。代价是明确的、也是刻意的：衣橱小的时候，一周里靠后的几天会**少一件外套/包**而不是重复穿 |
+| 22 | 运动场景（Morning Golf）里还是出现休闲连衣裙、黑色西裤和白色高跟鞋 | 三层原因：① Comfort 只有 `too_casual`（运动装**不能进**正式场合），**没有反向那条**——从来没有规则说"运动段**必须是**运动装"；② 就算加了规则也无从修：`selectCandidates()` 把这周的 formality 映射成 occasion 标签，一场被日历分类器按"客户 + 私人俱乐部 + 工作日"打成 formality 4 的高尔夫映射到 work/formal/party，**把所有 `sport` 标签的单品全过滤掉了**，候选池里根本没有运动服可换；③ 连衣裙即使被判违规也换不掉——1:1 替换只会找「另一条裙子」，大部分衣橱没有高尔夫裙 | ① Comfort 加第四个 reason `not_sport`：athletic 段里贴身穿的品类（包/配饰豁免）必须 `isSportSuitable()`。它是 `isActivewear()` 的镜像——**分类器的 `sport` 标签单独就够**（这条规则决定什么能**留下**，用户的原话就是"运动场景一定要穿打标了是运动的服饰"），另加 polo/golf/tennis/trainer/sneaker/performance/jersey 等俱乐部装关键词；② `selectCandidates()` 新增 `pinnedIds`，窗口里只要有 athletic 场合，weekly 就把所有运动单品**绕过 occasion 过滤和排序**钉进候选集——过滤器能饿死的规则不算规则；③ `enforceComfort()` 增加第二轮：1:1 换不掉时试着**摘掉它再用 `fillMissingSlots()`（与 `enforceCoverage` 共用）补回 torso+legs**，补不齐才回滚。裙子于是能被 polo + 球裙替代。真的无解时（唯一一双鞋、衣橱完全没有运动服、同一天第二场运动而 sweat 规则禁止复用）仍然保留 + warning |
+| 23 | 同一天两段推荐出来的穿搭基本一样（同一件外套/裤子/衬衫），只换了鞋和包，却被拆成两个 segment；而且文字对不上 canvas——"Retained the brown wedge sandals"配的图里是白色高跟鞋，第一段还带着一句 `changeFromPrevious` | 两个独立问题。① `mergeAdjacentEquivalentSegments()` 只在**完整 itemId 集合完全相同**时才合并，模型换一只鞋就绕过了它，于是"一套衣服 + 一个鞋柜"被展示成三套穿搭；② 所有规则都在模型写完 reasoning **之后**才跑，模型描述的是它自己那一版，规则换掉的单品它不知道；第一段那句 `changeFromPrevious` 则是 repair call 留下的——它描述的是"和上一版计划的差异"，不是"和同一天上一段的差异" | ① 合并判据改成**只比对核心品类**（Tops/Bottoms/Dresses/Outerwear）：核心一致就是同一套穿搭，换鞋换包不构成第二个 segment；真正的换装（正装→鸡尾酒裙、上班→运动）必然动核心件，所以永远不会被误合。存活的那段保留**第一段**的单品和 reasoning（第二段的 reasoning 存在的意义就是解释一个已经不发生的变化）。不同 `kind` 不合并，athletic 段不与任何段合并；② 新增 `src/lib/planning/segment-text.ts`：生成前给每段盖上 `originalItemIds`（各 `enforce*` 都是展开对象，字段自然透传），最后 `alignSegmentText()` 把提到"已经不在这段里的单品"的**整句**删掉（按两个显著词匹配，模型很少逐字照抄标签），`changeFromPrevious` 一律由**真实 item diff** 重算（整套换掉时输出"A complete change of clothes: …"），每天第一段直接删除该字段；只有两边都没被规则动过时才保留模型原话（它说的是**为什么**，diff 说不出来）。合并会改变"从哪一套过渡过来"，所以顺序是 enforce → merge → align。单段重生成路径共用 `scrubReasoning()` / `describeTransition()` |
 
 ---
 
@@ -129,10 +133,13 @@
 
 | 功能 | 状态 | 备注 |
 |------|------|------|
-| Capsule Wardrobe Generator | ❌ 占位页面 | ROADMAP Phase 6.3。目标函数和 daily/weekly 不同：最小化件数、最大化组合数（一衣多穿） |
-| Travel Packing Planner | ❌ 占位页面 | `src/app/(dashboard)/travel/page.tsx` 目前只是一句 "coming in Phase 5" 的静态文案；`travel_plans` 表（含 `packing_list`/`daily_outfits`/`weather_data` 三个 JSONB 列）已建好但零读写 |
-| Printable outfit cards | ❌ 待开发 | ROADMAP Phase 6.3。`/travel/[id]/print` + `@media print`，一天一卡（含天气/日程/单品图/理由/手写备注区），确定性网格排版而非自由拼贴 |
-| Packing List 导出 | ❌ 待开发 | 先做「复制为文本」+ 打印/PDF，不必一上来做原生分享 |
+| 日历行程识别（30 天） | ✅ 代码完成，⚠️ 待真实验证 | `src/lib/travel/detect-trips.ts`。纯 TS、零模型调用（D8）：离家 >120km 的坐标或标题里写明的目的地 → 合并成连续日期段（可跨 2 天空档）→ 前后各延一天吸收 transit 事件。已用 7 组合成日历验过（见下方任务 4） |
+| Business / Leisure 分类 | ✅ 代码完成，⚠️ 待真实验证 | 先看标题（Business Trip / Conference / Vacation / Wedding…），无定论时数行程内非 transit 事件的 formality 与 occasion。理由字符串 `typeReason` 会显示在徽章 tooltip 里，用户可手动改，改完以存的为准 |
+| Travel Packing Planner | ✅ 代码完成，⚠️ 待 section 21 + 真实验证 | `/travel` 列表 + `/travel/[id]` 工作台。**衣物清单是从「已确认的天」派生的**（`garmentsForDays`），不可手改——要改只能改搭配；非衣物部分是写死模板 + 用户增删（D11） |
+| 行程内搭配生成 | ✅ 代码完成，⚠️ 待 section 21 + 真实验证 | 走的就是 `/api/ai/weekly`（新增 `?days=` / `?keep=`），写的就是 `/plan` 那批 `outfit_plans` 行 —— 所以「已在 /plan 排过的天直接带进来」不是复制，是同一行。**故意偏离 ROADMAP 6.3 第 5 步**（`source='travel'` + `travel_plan_id`），理由见 CLAUDE.md「Travel mode」 |
+| Capsule Wardrobe Generator | ❌ 明确不做（2026-08-13） | 原方案是最小化件数、最大化组合数。实际取舍时用户选了「和 /plan 同一套规则」，所以行程日不放宽 rotation limit。要做的话入口在 weekly route 的 `rotationLimits` |
+| Printable outfit cards | ✅ 代码完成，⚠️ 待真实打印验证 | `/travel/[id]/print?section=all\|cards\|packing` + `@media print`（D7，不上 puppeteer）。确定性类别网格而非自由拼贴（D6）；图片用 eager `<img>`；天气读计划生成时的快照而不是重新拉预报 |
+| Packing List 导出 / 分享 | ✅ 代码完成，⚠️ 待真实验证 | 两条路都做了：打印/存 PDF，以及 `/trip/[token]` 公开只读页（128 位 CSPRNG token、service role 读、可随时撤销、`robots: noindex`） |
 
 ### Phase 6+ — 新增范围（详细方案见 ROADMAP.md）
 
@@ -143,7 +150,7 @@
 | `outfit_plans` 统一计划结构 | ✅ 完成且已真实验证 | 日/周/出差共用日期父行，动态段落与单品使用关系型子表；daily 已读写并完全替换 localStorage |
 | 日历事件抓取 + 语义化（occasion + formality） | ✅ 已实现且已真实验证 | 2026-07-30，分支 `phase-6.0-google-oauth`。`GET /api/google/calendar/sync` 拉真实 Google Calendar 事件（`src/lib/google/calendar.ts`）→ upsert 进 `calendar_events` → 对 `occasion IS NULL` 的行批量调一次 Haiku（`src/lib/calendar/classify-events.ts`，只喂 title/location/attendee_count，不喂 description，避免用户自己写的「预期答案」污染分类）。**已用真实 Google Calendar 里手动建的 8 个覆盖不同场合的测试事件跑通**：occasion 标签基本准确（`board_meeting`/`gym`/`travel`/`dinner`/`coffee`/`doctor_appointment` 等），6/8 formality 完全命中用户预期，2 个（board meeting、client call）低了 1 档——board meeting 期望 5 实际给 4，可能是模型把 5 分留给纯黑领结场合、公司会议算 4，如果要卡死「board meeting=5」需要在 prompt 里显式区分「business formal」和「black tie」。重跑同一批事件验证了「同一个 `google_event_id` 只分类一次」：occasion 已存在的行不会再触发 Haiku 调用 |
 | 本地日期分桶工具（`day-bucket.ts`） | ✅ 已实现且已真实验证 | 2026-07-30。`src/lib/calendar/day-bucket.ts` 的 `eventsOnLocalDay(events, localDate, timeZone)`——daily（6.1）和 weekly（6.2）共用同一份时区转换 + 跨天事件重叠判断逻辑，不各写一份。全天事件特殊处理：按 UTC 日期字符串直接比较，不经过时区转换（因为全天事件本来就没有真实的时刻，硬转时区会把它错误地挪到相邻的本地日）。**已用真实 8 个测试事件验证**：`America/New_York` 时区下，9:45am/3pm/8:15pm（跨 UTC 日期）三个事件正确落进同一个本地日——命中用户「一天三个场合」的测试意图；2 天的 Boston 出差全天事件正确出现在两个本地日上、且不出现在 exclusive 的结束日；换成 `Asia/Shanghai` 时区后分桶结果确实不同（不是写死某个时区）。这一步做完才开始 6.1 的 daily 专属逻辑 |
-| 轮换频率由用户决定（ROADMAP 并行小需求 B） | ✅ 代码完成，⚠️ 待 section 19 + 真实验证（2026-08-13） | 规则从「最小间隔天数」改成「滚动 7 天内最多几天」，默认上装/下装/连衣裙/外套 1 天、鞋 2 天、包和配饰 3 天；`profiles.rotation_limits` 只存用户改过的品类，`/plan` 的「Repeat rules」按钮里编辑（三档预设 + 按品类步进器 + 「这个品类你只有 N 件，排满一周需要 M 件」的可行性提示）。同一批改动还修了「总是那几件」的另外三个原因和「运动装进正式场合」——见 Debug Log #19/#20。**未跑真实生成**，section 19 没执行时会静默沿用默认值（`readRotationLimits()` 单独查询、失败即回落），只有设置面板存不进去 |
+| 轮换频率由用户决定（ROADMAP 并行小需求 B） | ✅ 代码完成，⚠️ 待 section 19 + 真实验证（2026-08-13） | 规则从「最小间隔天数」改成「滚动 7 天内最多几天」，默认上装/下装/连衣裙/外套 1 天、鞋 2 天、包和配饰 3 天；`profiles.rotation_limits` 只存用户改过的品类，`/plan` 的「Repeat rules」按钮里编辑（三档预设 + 按品类步进器 + 「这个品类你只有 N 件，排满一周需要 M 件」的可行性提示）。同一批改动还修了「总是那几件」的另外三个原因和「运动装进正式场合」——见 Debug Log #19/#20。**同日第二轮**按真实一周的截图修了三处：上限查得出来但没有替换品时被静默忽略（→ 不占槽位的品类改为直接摘掉）、运动段没有「必须是运动装」这条正向规则（→ 新增 `not_sport` + 候选池 `pinnedIds`）、只换一只鞋的两段没有被合并且文字对不上 canvas（→ 合并只比对核心品类 + 新增 `segment-text.ts`），见 Debug Log #21/#22/#23。规则本身有覆盖这三个场景的合成用例跑通，**仍未跑真实生成**；section 19 没执行时会静默沿用默认值（`readRotationLimits()` 单独查询、失败即回落），只有设置面板存不进去 |
 | 冷启动 Onboarding（问卷 + 风格滑卡） | ❌ 待开发 | Phase 7。`preference_swipes` 表 + `profiles.preference_dna` 字段都已就绪；ROADMAP 里建议把它排在 Avatar/Shopping 之前，因为它是所有推荐质量的上游且成本最低。唯一非代码工作量是准备 20–40 张风格参考图 |
 | Avatar 生成（fal.ai） | ❌ 待开发 | Phase 8。`profiles` 的 `skin_tone`/`hair_color`/`hair_length`/`body_shape` 就是给这个预留的。**成本量级和文本调用不同，必须缓存 + 限流**；虚拟试穿比静态 avatar 难得多，建议分两步 |
 | Shopping Recommendations | ❌ 待开发 | Phase 9。缺口信号已经在产出（daily 的 `gap`、出差 capsule 缺口、Analytics 类别失衡）只是丢掉了。**最大未决问题是商品数据源**，建议先接一个联盟 feed 而不是做通用爬虫 |
@@ -321,6 +328,26 @@
 
 **已验证**: `tsc --noEmit` 与 `npm run build` 通过（含 2026-08-13 二轮的五 tab 改造、单件评审、Overview 与 Build a look），构建路由含 `/pro`、`/pro/[clientId]`、`/api/stylist/reviews`、`/api/stylist/reviews/[id]/respond`。**未验证**: 五 tab、单件评审、Overview、Build a look 都还没真人点过，需要 section 18 重跑之后走两条链路——「Every piece 里点一件 → 打分 + 留言 → 客户 `/home` 收件箱看到那件图 + 留言 → Got it」，和「Build a look → 选 ≥2 件 + 起名 + 写说明 → 客户收件箱 Save to my Looks → `/outfits` 里确实多了这套且版式一致 → Undo 后它消失」；生产库还需手动执行 `supabase/schema.sql` section 18；执行前 `/pro` 会因为 `profiles.roles` 查得到但新表查不到而在收件箱那侧报 `PGRST205`（已做成打日志 + 返回空列表，不会让 `/home` 整页挂掉）。真实验证还需要：给搭配师账号手动 `update profiles set roles = '{client,stylist}'`、用 webhook 或手动给测试客户设 `access_expires_at`、然后跑一遍「评分 + 文字 + 改版 → 客户采纳 → 撤销」，并确认 L0/L1/L2 三档下搭配师看到的东西确实不同。
 
+### 任务 4: Phase 6.3 出差模式（`/travel`） — ✅ 代码完成，⚠️ 待 section 21 + 真实验证（2026-08-13）
+
+原来的 `/travel` 是一句 "coming in Phase 5" 的静态文案。现在是：从日历里找出行程 → 分类 business / leisure → 点进去排搭配 → 逐天确认 → 从确认的天生成打包清单 → 打印/存 PDF 或生成公开分享链接。
+
+**行程识别是纯 TS，零模型调用**（`src/lib/travel/detect-trips.ts`，D8 的同一套理由）。判「在外地」看两样：坐标离 `profiles.lat/lng` 超过 120km，或标题里写明了目的地（复用 Calendar sync 那个 `explicitTravelDestinationFromTitle`）。120km 是故意放宽的——给住在纽约的人显示一张「Trip to New York」比漏掉一趟真行程更糟。连续的外地日期合成一段，中间最多可跨 2 天空档（伦敦周二日历是空的，那天仍然在伦敦），前后各延一天用来吸收 transit 事件——一条傍晚 5 点的「Depart for JFK」地理编码落在**家门口**的机场，但那天确实已经在出差了。只有一天的不算行程（那是跑一趟），除非标题白纸黑字写了。
+
+**为什么不能交给模型**：同一份日历问两次会给出两个不同的行程数，而行程的身份（`calendar_signature`）是打包清单挂靠的地方——数量一变，存量行就全部对不上，清单直接成孤儿。
+
+**故意偏离 ROADMAP 6.3 第 5 步**：原方案是每日搭配写 `outfit_plans` 的 `source='travel'` + `travel_plan_id`。那个方案写在 6.2「一个日期只有一条计划」之前，照做的话同一个周四会有「行程里的周四」和「/plan 里的周四」两条独立生成、互不同步的行——正是 6.2 刚消灭掉的 bug。所以 `/travel` 读写的就是 `/plan` 那批行，走的就是 `GET/POST /api/ai/weekly`（新增 `?start=&days=`）。「已经排过的天直接带进来」因此不是复制，是同一行。`travel_plans.daily_outfits` / `weather_data` 保持不用，代码里没有任何路径会产生 `source='travel'`。
+
+**`?keep=` 是为了让「排剩下那几天」是真的而不是近似的**：被 keep 的日期照样送进模型（在 outline 里标 `alreadyWorn`）、照样并进 rotation history，所以真正会被写入的那几天是**绕着**它们选的，而不是对它们一无所知；落库时 `replace_weekly_plans` 跳过它们并连同 worn 的一起回传 `skippedDates`。为此 RPC 加了第二个参数，**必须先 `drop function ... (jsonb)`**，否则两个重载会让每次 `rpc()` 调用变成歧义（PostgREST 报 300，不报人话）。
+
+**确认这一步就是和 `/plan` 的全部差别**：打包清单的衣物部分是从已确认的天**派生**的（`garmentsForDays`），所以清单在结构上不可能和搭配不一致；那里的勾选框意思是「已经装进箱子了」，不是「加进清单」。重排某一天会顺手清掉那天的确认——清单赖以生成的那身衣服已经不在计划里了。非衣物部分是写死模板 + 用户增删，**不让 AI 生成（D11）**。
+
+**Capsule 生成明确不做**：原方案要最小化件数，实际取舍时用户选了「和 /plan 同一套规则」。
+
+**要跑的 SQL**：`supabase/schema.sql` section 21（`travel_plans` 加 `trip_type` / `origin` / `calendar_signature` / `confirmed_dates` / `share_token` / `shared_at` + 唯一约束）和 21b（两参数版 `replace_weekly_plans`）。**没跑之前**：`/travel` 列表页照常出（识别是纯函数，不碰这些列），但点进任何一趟行程会 500 报 `column travel_plans.trip_type does not exist`；21b 没跑的话**连 `/plan` 的生成也会挂**，因为参数个数对不上。
+
+**已验证**: `tsc --noEmit`、`npm run lint`、`npm run build` 全过，构建路由含 `/travel`、`/travel/[id]`、`/travel/[id]/print`、`/trip/[token]`、`/api/travel/trips`、`/api/travel/trips/[id]`、`/api/travel/trips/resolve`。行程识别用 7 组合成日历断言过：带航班的商务行程（出发日被正确吸收进来）、只有标题的度假、单日外地（正确地不算行程）、全在家（不算）、中间空一天（不拆成两趟）、相隔两周的两趟、没写明措辞的休闲行程（靠事件内容分类）。**未验证**: 全部真人链路——section 21 跑完之后要走一遍「Sync calendar → 列表里认出真实行程且 business/leisure 判对 → 点进去 → 已在 /plan 排过的天确实带着搭配出现 → 排剩下的天没有覆盖掉已排的 → 逐天确认 → Packing tab 的衣物确实等于那几天的并集 → 打印页图片不是空框 → 分享链接在无痕窗口打得开、撤销后 404」。
+
 ---
 
 ## 已完成任务详情（历史记录）
@@ -403,6 +430,21 @@
   - `src/components/closet/upload-zone.tsx`：新增「Single item / Multiple items」切换按钮（默认 single），上传时把 `mode` 一起传给后端；单件模式下拿掉「detecting」这个中间进度提示（因为后端根本不会跑这一步）。
 - **已验证 (2026-07-10)**: 类型检查通过；鞋子这条路径的底层函数（`classifySimilarItems`/`mergeDuplicateAccessories`）复用了已经用真实图片验证过的鞋子配对逻辑，只是参数化了名词和 prompt 措辞。
 - **未验证**: 手镯/耳环的泛化路径还没有用真实的手镯/耳环照片跑过 `fal.ai` + Anthropic 的真实调用；`mode="single"` 跳过检测调用这条路径也还没有登录到真实账号里点一次上传确认。
+
+---
+
+### 任务: 单品魔术棒照片优化（多参考图 + 标签识别）— ✅ 代码完成，⚠️ 待 photo-enhancement schema block + 真实图片验证
+
+- Closet 卡片与单品详情主图都有魔术棒入口；生成时原图上覆盖循环扫光遮罩和阶段文案，完成后打开 Before/After，只有用户确认才切换主展示图。
+- 生成使用低成本 `bytedance/seedream/v5/lite/edit`，主图加最多 4 张非标签 reference；prompt 锁定颜色、版型、领口、袖长、纽扣/口袋/拉链、logo、图案、面料和做旧细节，禁止重新设计。
+- `label` / care-tag 照不进入生成模型。reference 上传后由一次批量 Haiku vision 缓存 `kind/analysis/analyzed_at`，只从可读标签提取 brand 与精确材质成分并自动填入；旧 reference 第一次优化时懒分析一次，后续不重复付费。
+- Seedream 结果再次走现有 BiRefNet 抠图，再由 Sharp 按品类裁透明包围盒并放进统一 1024x1024 画布；统一留白/尺度是确定性处理，不交给生成模型猜。
+- 原 `original_url` / `clean_url` 不覆盖：候选存 `enhancement_candidate_*`，确认后才进入 `optimized_*`，可拒绝、重新生成和 Restore original。所有 Closet / Looks / plan / AI Stylist / Human Stylist 图片统一使用 `optimized_url ?? clean_url ?? original_url`。
+- API：`POST/GET/PATCH/DELETE /api/ai/items/[id]/enhance`，以及 `POST /api/ai/items/[id]/references/analyze`。
+- **已验证（2026-08-13）**：`tsc --noEmit`、全项目 `npm run lint`、Next.js production build 全部通过；build 中已列出两个新动态 API route。
+- **未验证**：没有为了开发验证额外烧 fal 调用；生产库需先执行 `supabase/schema.sql` 中的 `WARDROBE ITEM PHOTO ENHANCEMENT` block，再用真实的 2–4 张 reference（含一张 label）检查自动字段、身份保持、扫光、确认/拒绝/恢复和各搭配页面图片同步。
+- **Runtime debug（2026-08-13）**：远端库未执行该 block 时，显式读取 `optimized_url` 会报 Postgres `42703`，并曾被增强 API 误报成 404。普通读取现用兼容新旧 schema 的 star select；增强 API 会返回带迁移指引的 `503 ENHANCEMENT_SCHEMA_MISSING`。详情主图同时补了 eager loading，清除 LCP 警告。
+- **长任务 debug（2026-08-13）**：真实 3-reference 测试中，2 张 label 正确排除、1 张 back 进入生成；候选图成功落库，但 Seedream → BiRefNet → normalize 同步链路约 80 秒，原 UI 在十几秒后停在同一句 copy，容易误判卡死。现显示累计用时与 45–100 秒预期，刷新后自动恢复 `ready` candidate；fal 两段都有 request id / queue status / duration 日志和可取消硬超时，下载及 Haiku reference 分析也有上限。
 
 ---
 

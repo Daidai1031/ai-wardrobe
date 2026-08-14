@@ -19,6 +19,11 @@ import {
 } from "@/lib/planning/occasion-groups";
 import { mergeAdjacentEquivalentSegments } from "@/lib/planning/merge-segments";
 import {
+  alignSegmentText,
+  describeTransition,
+  scrubReasoning,
+} from "@/lib/planning/segment-text";
+import {
   hydrateSegments,
   localDateRange,
   readPlanForDate,
@@ -43,6 +48,7 @@ import {
   isActivewear,
   isHardToTravelIn,
   isLongSleeve,
+  isSportSuitable,
   rotationContext,
   type RotationContext,
   type RuleDay,
@@ -61,6 +67,10 @@ interface GeneratedSegment {
   changeFromPrevious?: string;
   reasoning: string;
   eventIds: string[];
+  /** What the model asked for, carried through the rule engine so the text can be realigned. */
+  originalItemIds?: string[];
+  /** Set when this segment absorbed the next one. */
+  merged?: boolean;
 }
 
 interface GeneratedPlan {
@@ -68,8 +78,10 @@ interface GeneratedPlan {
   gap?: string;
 }
 
-const WARDROBE_SELECT =
-  "id, display_name, user_notes, category, subcategory, color, material, season, occasion, style_tags, brand, clean_url, original_url";
+// Keep reads compatible while the enhancement migration rolls out. PostgREST
+// rejects a named column that is not present yet, whereas `*` safely returns
+// optimized_url once the database has it and omits it before then.
+const WARDROBE_SELECT = "*";
 
 /**
  * The rolling window the rotation limits are measured over, centred on the day
@@ -215,6 +227,7 @@ function toClientItem(item: Record<string, unknown>): DailyWardrobeItem {
     subcategory: typeof item.subcategory === "string" ? item.subcategory : null,
     color: typeof item.color === "string" ? item.color : null,
     brand: typeof item.brand === "string" ? item.brand : null,
+    optimized_url: typeof item.optimized_url === "string" ? item.optimized_url : null,
     clean_url: typeof item.clean_url === "string" ? item.clean_url : null,
     original_url: String(item.original_url),
   };
@@ -582,6 +595,18 @@ function buildDailyRules(
           })
         : false;
     },
+    isSportSuitableFor: (itemId: string) => {
+      const item = byId.get(itemId);
+      return item
+        ? isSportSuitable({
+            category: String(item.category),
+            subcategory: item.subcategory as string | null,
+            display_name: item.display_name as string | null,
+            occasion: (item.occasion as string[] | null) ?? null,
+            style_tags: (item.style_tags as string[] | null) ?? null,
+          })
+        : false;
+    },
     tempFor: () =>
       weatherLocations.length > 0
         ? Math.min(...weatherLocations.map((weather) => weather.temp))
@@ -606,6 +631,7 @@ function applyDailyRules(days: RuleDay[], rules: ReturnType<typeof buildDailyRul
     segmentContextFor,
     isHardToTravelInFor,
     isActivewearFor,
+    isSportSuitableFor,
     tempFor,
     pool,
     rotation,
@@ -633,6 +659,7 @@ function applyDailyRules(days: RuleDay[], rules: ReturnType<typeof buildDailyRul
       segmentContextFor,
       isHardToTravelInFor,
       isActivewearFor,
+      isSportSuitableFor,
       pool,
       rotation
     ),
@@ -764,7 +791,7 @@ Each segment's "eventIds" must be exactly the "eventIds" of its entry above.
 
 Each required segment carries a "kind". A segment whose kind is not "general" is dressed for what it IS, not for how formal the rest of the day is:
 - "transit" — time spent getting somewhere: a flight, a train, a long drive, an airport transfer. Flat shoes that come off easily (never heels), soft or stretch fabrics that survive hours of sitting, nothing that creases or restricts, and a layer for a cold cabin. A business trip's flight is still a flight — keep the tailoring for the meetings.
-- "athletic" — sport or a workout: real activewear and the right shoes for that activity, never office clothes made casual. Golf and tennis are the ones to get right, because they sit in the middle of a working day and often at a club: dress them as sport with the club's code in mind (a collared polo, proper court or golf shoes, tennis whites where the wardrobe has them), not as smart-casual.
+- "athletic" — sport or a workout. EVERY garment and every pair of shoes in that segment must be an item whose "occasions" include "sport", or unmistakable sport kit (a collared polo, a technical top, trainers, golf or court shoes). Never a dress, a skirt, tailoring, heels, pumps, wedges, sandals or dress shoes — golf and tennis are still sport when they happen at a private club, with clients, in the middle of a working day. Bags and accessories are exempt: a tote, a hat and sunglasses are fine on a course.
   Anything worn for sport is sweated in, so NOTHING from an athletic segment reappears in any later segment of the day — the following segment is a complete change of clothes. Bags and accessories are the exception; the same tote before and after is fine.
 
 NO SPORT KIT AT A FORMAL OCCASION. A segment whose formality is ${MIN_FORMALITY_BANNING_ACTIVEWEAR} or higher never wears activewear — no leggings, joggers, track pieces, sweatpants, gym tops or running shoes — however comfortable or expensive they are. Segments that ARE sport are exempt; they are already capped at a low formality.
@@ -790,7 +817,7 @@ These are hard caps on the whole segment, not per-occasion. Two pairs of trouser
 Every segment must also be a COMPLETE outfit — each of these slots needs at least one item (a dress covers both torso and legs):
 ${JSON.stringify(REQUIRED_SLOTS, null, 2)}
 
-For every segment after the first, prefer changing only what's necessary from the previous one rather than recomposing the whole outfit, unless the formality gap is too large or either segment's "kind" is not "general" — moving into or out of transit or sport is where a full change of outfit is expected rather than avoided. If the exact same complete outfit works for two adjacent segment entries, reuse the exact same "itemIds" for both; do not manufacture an accessory change just to make the occasions look different. Equivalent adjacent segments will be consolidated after generation. Every segment's "itemIds" must list the COMPLETE set worn during that segment. Put every calendar event covered by a segment in that segment's "eventIds"; use only event IDs shown above.
+CHANGE THE OUTFIT ONLY WHEN THE CLOTHES REALLY CHANGE. If the same outfit works for two adjacent segment entries, give them the exact same "itemIds". Swapping only the shoes, only the bag, or only an accessory is never a reason for two looks — a day of meetings that shares a blazer, trousers and shirt is ONE outfit however many entries it covers, and two adjacent entries whose tops, bottoms, dresses and outerwear are identical will be consolidated into one segment after generation, so an invented shoe swap simply disappears. A genuine change moves a core garment: office tailoring becoming a cocktail dress, work clothes becoming sport kit, dressing for a flight — which is also where a full change of outfit is expected rather than avoided. Every segment's "itemIds" must list the COMPLETE set worn during that segment. Put every calendar event covered by a segment in that segment's "eventIds"; use only event IDs shown above.
 
 Respond with ONLY this JSON, no other text:
 {
@@ -849,11 +876,22 @@ Respond with ONLY this JSON, no other text:
       rules
     );
 
-    const finalSegments = mergeAdjacentEquivalentSegments(
-      generated.segments.map((segment, index) => ({
-        ...segment,
-        itemIds: wearableDay.segments[index]?.itemIds ?? segment.itemIds,
-      }))
+    // Consolidate looks that are really one look, then make the words describe what
+    // the rules actually left behind: both passes are the same ones weekly runs, and
+    // /home can produce the same shoe-swap "changes" and the same stale reasoning.
+    const finalSegments = alignSegmentText(
+      mergeAdjacentEquivalentSegments(
+        generated.segments.map((segment, index) => ({
+          ...segment,
+          originalItemIds: [...segment.itemIds],
+          itemIds: wearableDay.segments[index]?.itemIds ?? segment.itemIds,
+        })),
+        {
+          categoryFor: rules.categoryFor,
+          kindFor: (segment) => rules.segmentContextFor(segment as RuleSegment).kind,
+        }
+      ),
+      labelFor
     );
 
     const { data: planId, error: persistError } = await supabase.rpc("replace_outfit_plan", {
@@ -1019,7 +1057,7 @@ ${JSON.stringify(planOutline, null, 2)}
 SEGMENT TO REGENERATE: "${target.label}" at position ${target.position}, covering event IDs ${JSON.stringify(target.event_ids || [])}.
 ${
   targetKinds.includes("athletic")
-    ? `This segment is sport or a workout. Dress it as sport: real activewear and the right shoes for the activity, never office clothes made casual. Golf and tennis still count as sport even at a club and even with clients — respect the club's code (a collared polo, proper court or golf shoes, tennis whites where the wardrobe has them) rather than dressing them up. It may look completely different from the segments around it.\n`
+    ? `This segment is sport or a workout. EVERY garment and every pair of shoes must be an item whose "occasions" include "sport", or unmistakable sport kit (a collared polo, a technical top, trainers, golf or court shoes) — never a dress, a skirt, tailoring, heels, pumps, wedges, sandals or dress shoes. Golf and tennis still count as sport at a club and with clients; respect the club's code rather than dressing them up. Bags and accessories are exempt. It may look completely different from the segments around it.\n`
     : targetKinds.includes("transit")
       ? `This segment is time spent in transit — a flight, a train, a long drive or an airport transfer. Dress it for the journey, not for what the trip is for: flat shoes that come off easily (never heels), soft or stretch fabrics that survive hours of sitting, nothing that creases or restricts, and a layer for a cold cabin. A business trip's flight is still a flight, so it may look completely different from the segments around it.\n`
       : ""
@@ -1115,14 +1153,48 @@ Respond with ONLY this JSON, no other text:
       buildDailyRules(wardrobe, candidateWardrobe, weatherLocations, occasionData.events, rotation)
     );
 
+    // The rules may have swapped pieces out from under the model's explanation —
+    // heels off a flight, a blazer over its weekly limit, office clothes in a sport
+    // segment. Whatever they touched, the words have to describe what will be shown.
+    const enforcedItemIds = wearableSegmentDay.segments[targetIndex].itemIds;
+    const removedByRules = generated.itemIds.filter((id) => !enforcedItemIds.includes(id));
+    const itemsChanged =
+      removedByRules.length > 0 ||
+      enforcedItemIds.some((id) => !generated.itemIds.includes(id));
+
+    const reasoning = scrubReasoning(
+      generated.reasoning,
+      removedByRules.map(labelFor),
+      () =>
+        `${enforcedItemIds.slice(0, 3).map(labelFor).join(", ")} for ${generated.label}.`
+    );
+    const changeFromPrevious = !previousSegment
+      ? null
+      : itemsChanged
+        ? describeTransition(
+            itemsBySegment.get(previousSegment.id) || [],
+            enforcedItemIds,
+            labelFor
+          ) ?? null
+        : generated.changeFromPrevious ?? null;
+    const nextChangeFromPrevious = !nextSegment
+      ? null
+      : itemsChanged
+        ? describeTransition(
+            enforcedItemIds,
+            itemsBySegment.get(nextSegment.id) || [],
+            labelFor
+          ) ?? null
+        : generated.nextChangeFromPrevious ?? null;
+
     const { error: persistError } = await supabase.rpc("regenerate_outfit_plan_segment", {
       p_segment_id: target.id,
       p_label: generated.label,
-      p_reasoning: generated.reasoning,
-      p_change_from_previous: previousSegment ? generated.changeFromPrevious ?? null : null,
+      p_reasoning: reasoning,
+      p_change_from_previous: changeFromPrevious,
       p_event_ids: generated.eventIds,
-      p_item_ids: wearableSegmentDay.segments[targetIndex].itemIds,
-      p_next_change_from_previous: nextSegment ? generated.nextChangeFromPrevious ?? null : null,
+      p_item_ids: enforcedItemIds,
+      p_next_change_from_previous: nextChangeFromPrevious,
     });
 
     if (persistError) throw persistError;

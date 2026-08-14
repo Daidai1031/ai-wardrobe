@@ -34,6 +34,7 @@ type OutfitItemPreview = Pick<
   WardrobeItem,
   | "id"
   | "display_name"
+  | "optimized_url"
   | "clean_url"
   | "original_url"
   | "category"

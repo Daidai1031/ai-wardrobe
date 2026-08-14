@@ -175,6 +175,7 @@ function toWardrobeItem(item: {
   subcategory: string | null;
   color: string | null;
   brand: string | null;
+  optimized_url: string | null;
   clean_url: string | null;
   original_url: string;
 }): StylistWardrobeItem {
@@ -206,9 +207,9 @@ export async function POST(request: NextRequest) {
       await Promise.all([
         supabase
           .from("wardrobe_items")
-          .select(
-            "id, display_name, user_notes, category, subcategory, color, colors, material, season, occasion, style_tags, brand, clean_url, original_url"
-          )
+          // Avoid taking the existing stylist offline while the enhancement
+          // schema is being rolled out; optimized_url is present after it lands.
+          .select("*")
           .eq("user_id", user.id)
           .eq("archived", false)
           .limit(100),

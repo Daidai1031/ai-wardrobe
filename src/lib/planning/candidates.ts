@@ -49,6 +49,17 @@ export interface CandidateFilterOptions {
    * else; a little noise in what it is offered is what makes that true.
    */
   variety?: number;
+  /**
+   * Items that must reach the prompt whatever the filter and the ranking think,
+   * because some segment of the window has no valid answer without them.
+   *
+   * Sport kit is the case this exists for. The occasion filter maps a formality of
+   * 4 to work/formal/party/date, so a golf round that the calendar classifier rated
+   * by its company rather than its activity filtered every `sport`-tagged item out
+   * of the candidate set — and then the sport rule in `plan-rules.ts` had nothing
+   * to swap the pumps for. A rule the candidate filter can starve is not a rule.
+   */
+  pinnedIds?: Set<string>;
   now?: Date;
 }
 
@@ -129,9 +140,11 @@ export function selectCandidates<T extends CandidateItem>(
 
   const wantedSeasons = seasonsForRange(options.tempMin, options.tempMax);
   const wantedOccasions = occasionsForFormality(options.formalityLevels);
+  const pinnedIds = options.pinnedIds ?? new Set<string>();
 
   const seasonOk = (item: T) => matches(item.season, wantedSeasons);
-  const occasionOk = (item: T) => matches(item.occasion, wantedOccasions);
+  const occasionOk = (item: T) =>
+    pinnedIds.has(item.id) || matches(item.occasion, wantedOccasions);
 
   // Stage down rather than returning something unusable.
   let pool = items.filter((item) => seasonOk(item) && occasionOk(item));
@@ -166,8 +179,20 @@ export function selectCandidates<T extends CandidateItem>(
   const jitter = new Map(pool.map((item) => [item.id, Math.random() * variety]));
   const rankOf = (item: T) => score(item) + (jitter.get(item.id) ?? 0);
 
+  // Pinned items skip the ranking entirely, not just the occasion filter: a sport
+  // top tagged for summer would still be cut by the season stage on a cold week,
+  // and being 46th of 45 is the same as being filtered out.
+  const withPinned = (selection: T[]): T[] => {
+    if (pinnedIds.size === 0) return selection;
+    const present = new Set(selection.map((item) => item.id));
+    return [
+      ...selection,
+      ...items.filter((item) => pinnedIds.has(item.id) && !present.has(item.id)),
+    ];
+  };
+
   const ranked = [...pool].sort((a, b) => rankOf(b) - rankOf(a));
-  if (ranked.length <= limit) return { items: ranked, relaxedTo };
+  if (ranked.length <= limit) return { items: withPinned(ranked), relaxedTo };
 
   // Take the top `limit`, but never let ranking wipe out a whole category — a week
   // with no shoes in the candidate set is not a plan the model can rescue.
@@ -202,5 +227,5 @@ export function selectCandidates<T extends CandidateItem>(
     }
   }
 
-  return { items: selected, relaxedTo };
+  return { items: withPinned(selected), relaxedTo };
 }

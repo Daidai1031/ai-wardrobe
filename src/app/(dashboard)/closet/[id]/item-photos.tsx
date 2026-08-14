@@ -7,9 +7,11 @@ import { createClient } from "@/lib/supabase/client";
 import { convertIfNeeded } from "@/lib/images/convert-heic";
 import type { WardrobeItem, WardrobeItemPhoto } from "@/types/database";
 import { wardrobeItemName } from "@/lib/wardrobe/item-label";
+import { wardrobeItemImage } from "@/lib/wardrobe/item-image";
 import { Heart, Plus, Trash2, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { ItemEnhancer } from "@/components/closet/item-enhancer";
 
 /**
  * Enough to cover back / side / detail / label / worn-on shots without turning
@@ -24,10 +26,12 @@ export function ItemPhotos({
   item,
   photos,
   onToggleFavorite,
+  onMetadataExtracted,
 }: {
   item: WardrobeItem;
   photos: WardrobeItemPhoto[];
   onToggleFavorite: () => void;
+  onMetadataExtracted?: (metadata: { brand: string | null; material: string | null }) => void;
 }) {
   const router = useRouter();
   const supabase = createClient();
@@ -39,9 +43,33 @@ export function ItemPhotos({
   const [uploading, setUploading] = useState(false);
   const [labelDraft, setLabelDraft] = useState<string | null>(null);
 
-  const primaryUrl = item.clean_url || item.original_url;
+  const [primaryUrl, setPrimaryUrl] = useState(wardrobeItemImage(item));
   const selected = photos.find((p) => p.id === selectedId) ?? null;
   const atLimit = photos.length >= MAX_EXTRA_PHOTOS;
+
+  async function analyzePhotoIds(photoIds: string[]) {
+    if (photoIds.length === 0) return;
+    try {
+      const response = await fetch(`/api/ai/items/${item.id}/references/analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ photoIds }),
+      });
+      const data = (await response.json()) as {
+        error?: string;
+        brand?: string | null;
+        material?: string | null;
+      };
+      if (!response.ok) throw new Error(data.error || "Reference analysis failed");
+      if (data.brand || data.material) {
+        onMetadataExtracted?.({ brand: data.brand ?? null, material: data.material ?? null });
+        toast.success("Brand and material updated from the label");
+      }
+    } catch (error) {
+      console.error("Reference analysis failed:", error);
+      toast.error("Photo added, but its reference details couldn't be analyzed");
+    }
+  }
 
   async function handleFiles(files: FileList | null) {
     if (!files || files.length === 0) return;
@@ -60,6 +88,7 @@ export function ItemPhotos({
 
       let position = photos.reduce((max, p) => Math.max(max, p.position), -1) + 1;
       let added = 0;
+      const addedPhotoIds: string[] = [];
 
       for (const original of picked) {
         try {
@@ -76,7 +105,7 @@ export function ItemPhotos({
             .from("wardrobe")
             .getPublicUrl(storagePath);
 
-          const { error: insertError } = await supabase
+          const { data: insertedPhoto, error: insertError } = await supabase
             .from("wardrobe_item_photos")
             .insert({
               item_id: item.id,
@@ -84,7 +113,9 @@ export function ItemPhotos({
               url: publicUrl,
               storage_path: storagePath,
               position,
-            });
+            })
+            .select("id")
+            .single();
           // Don't leave the uploaded object behind if the row it belongs to
           // never lands — it would be unreachable from the UI forever.
           if (insertError) {
@@ -94,6 +125,7 @@ export function ItemPhotos({
 
           position += 1;
           added += 1;
+          if (insertedPhoto?.id) addedPhotoIds.push(insertedPhoto.id);
         } catch (err) {
           console.error("Extra photo upload failed:", err);
           toast.error(`Couldn't add ${original.name}`);
@@ -102,6 +134,7 @@ export function ItemPhotos({
 
       if (added > 0) {
         toast.success(added === 1 ? "Photo added" : `${added} photos added`);
+        await analyzePhotoIds(addedPhotoIds);
         router.refresh();
       }
     } catch (err) {
@@ -141,13 +174,35 @@ export function ItemPhotos({
     const angle = value.trim() || null;
     if (angle === photo.angle) return;
 
+    const normalized = angle?.toLowerCase() ?? "";
+    const kind =
+      /label|tag|care|composition|fiber|标签|洗标|吊牌|成分/.test(normalized)
+        ? "label"
+        : /back|背面/.test(normalized)
+          ? "back"
+          : /side|侧面/.test(normalized)
+            ? "side"
+            : /front|正面/.test(normalized)
+              ? "front"
+              : /logo|pattern|print|embroidery|图案|刺绣/.test(normalized)
+                ? "logo_pattern"
+                : /material|fabric|texture|材质|面料/.test(normalized)
+                  ? "material"
+                  : /detail|close|细节/.test(normalized)
+                    ? "detail"
+                    : /worn|model|上身/.test(normalized)
+                      ? "worn"
+                      : "other";
     const { error } = await supabase
       .from("wardrobe_item_photos")
-      .update({ angle })
+      .update({ angle, kind })
       .eq("id", photo.id);
 
     if (error) toast.error("Failed to save label");
-    else router.refresh();
+    else {
+      if (kind === "label") await analyzePhotoIds([photo.id]);
+      router.refresh();
+    }
   }
 
   return (
@@ -161,6 +216,7 @@ export function ItemPhotos({
               : wardrobeItemName(item)
           }
           fill
+          loading="eager"
           className="object-contain p-4"
           unoptimized
         />
@@ -173,6 +229,9 @@ export function ItemPhotos({
             className={cn(item.favorite ? "fill-red-500 text-red-500" : "text-surface-400")}
           />
         </button>
+        {!selected && (
+          <ItemEnhancer item={item} className="bottom-3 right-3" onApplied={setPrimaryUrl} />
+        )}
         {selected && (
           <span className="absolute top-3 left-3 px-2 py-1 rounded-md bg-surface-900/70 text-white text-[11px]">
             Reference photo
@@ -266,8 +325,8 @@ export function ItemPhotos({
       )}
 
       <p className="text-xs text-surface-400 text-center">
-        Extra photos are for reference only — outfits and AI styling always use the
-        main background-removed photo.
+        Reference photos help preserve the exact item. Label photos only fill brand and
+        material details; they are never copied into the enhanced image.
       </p>
 
       {item.original_url !== item.clean_url && item.clean_url && (

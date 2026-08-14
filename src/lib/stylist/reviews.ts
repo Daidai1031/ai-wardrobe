@@ -27,6 +27,7 @@ export interface ReviewCardItem {
   category: string;
   subcategory: string | null;
   color: string | null;
+  optimized_url: string | null;
   clean_url: string | null;
   original_url: string;
   x: number | null;
@@ -69,12 +70,21 @@ interface RawReview {
   }[];
 }
 
-const ITEM_SELECT = "id, display_name, category, subcategory, color, clean_url, original_url";
+// A star select remains compatible with databases that have not received the
+// optional photo-enhancement columns yet.
+const ITEM_SELECT = "*";
 
 function toCardItem(
   item: Pick<
     WardrobeItem,
-    "id" | "display_name" | "category" | "subcategory" | "color" | "clean_url" | "original_url"
+    | "id"
+    | "display_name"
+    | "category"
+    | "subcategory"
+    | "color"
+    | "optimized_url"
+    | "clean_url"
+    | "original_url"
   >,
   geometry: { x: number | null; y: number | null; width: number | null }
 ): ReviewCardItem {

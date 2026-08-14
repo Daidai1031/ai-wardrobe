@@ -15,7 +15,7 @@ export default async function OutfitsPage() {
       supabase
         .from("outfits")
         .select(
-          "*, outfit_items(item_id, position, x, y, width, wardrobe_items(id, display_name, clean_url, original_url, category, subcategory, color, brand))"
+          "*, outfit_items(item_id, position, x, y, width, wardrobe_items(*))"
         )
         .eq("user_id", user.id)
         .order("created_at", { ascending: false }),

@@ -55,6 +55,7 @@ import {
 import type { StylistClientOverview } from "@/lib/stylist/client-overview";
 import type { StylistOccasionProjection } from "@/lib/stylist/occasion-projection";
 import { wardrobeItemLabel, wardrobeItemName } from "@/lib/wardrobe/item-label";
+import { wardrobeItemImage } from "@/lib/wardrobe/item-image";
 import { cn } from "@/lib/utils";
 import {
   ITEM_CATEGORIES,
@@ -1254,7 +1255,7 @@ function ClosetPanel({
                   <div className="relative aspect-square bg-surface-50 p-2">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
-                      src={item.clean_url || item.original_url}
+                      src={wardrobeItemImage(item)}
                       alt={wardrobeItemName(item)}
                       className="h-full w-full object-contain"
                     />
@@ -1340,7 +1341,7 @@ function ItemReviewPanel({
             <div className="aspect-square rounded-xl border border-surface-100 bg-surface-50 p-3">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                src={item.clean_url || item.original_url}
+                src={wardrobeItemImage(item)}
                 alt={wardrobeItemName(item)}
                 className="h-full w-full object-contain"
               />

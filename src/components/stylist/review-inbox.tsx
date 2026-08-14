@@ -8,12 +8,11 @@
  * overwrites the target and snapshots the previous arrangement server-side, so the undo
  * offered afterwards restores the collage exactly — geometry included.
  *
- * Layout: this sits above the daily plan on /home, so it must not push the plan off the
- * screen. The section is collapsed by default and each suggestion is one strip — the
+ * Layout: this sits above the daily plan on /home, so each pending suggestion stays
+ * visible as one compact strip instead of being hidden behind a section-level fold. The
  * two collages ride at its right end as thumbnails and only open to full size when the
- * strip is expanded. Only *pending* suggestions live under the heading; answered ones
- * move behind the "Reviewed" button beside it, which is also where an accepted
- * suggestion's undo goes on living.
+ * strip is expanded. Answered suggestions move behind the "Reviewed" button beside the
+ * heading, which is also where an accepted suggestion's undo goes on living.
  */
 
 import { useState } from "react";
@@ -32,6 +31,7 @@ import {
 import { OutfitCollage, layoutsFromRows } from "@/components/outfit/outfit-canvas";
 import type { ReviewCardItem, StylistReviewCard } from "@/lib/stylist/reviews";
 import { wardrobeItemLabel } from "@/lib/wardrobe/item-label";
+import { wardrobeItemImage } from "@/lib/wardrobe/item-image";
 import { cn } from "@/lib/utils";
 
 type Action = "accept" | "decline" | "revert";
@@ -41,7 +41,6 @@ export function StylistReviewInbox({ reviews }: { reviews: StylistReviewCard[] }
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
-  const [openSection, setOpenSection] = useState(false);
   const [openHistory, setOpenHistory] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -92,11 +91,7 @@ export function StylistReviewInbox({ reviews }: { reviews: StylistReviewCard[] }
   return (
     <section className="mb-6">
       <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => setOpenSection((open) => !open)}
-          className="flex items-center gap-2 rounded-lg py-1 pr-2 text-left transition-colors hover:text-brand-700"
-        >
+        <div className="flex items-center gap-2 py-1">
           <Sparkles size={15} className="text-brand-600" />
           <h2 className="text-sm font-semibold text-surface-900">From your stylist</h2>
           {pending.length > 0 && (
@@ -104,11 +99,7 @@ export function StylistReviewInbox({ reviews }: { reviews: StylistReviewCard[] }
               {pending.length}
             </span>
           )}
-          <ChevronDown
-            size={14}
-            className={cn("text-surface-400 transition-transform", openSection && "rotate-180")}
-          />
-        </button>
+        </div>
 
         {history.length > 0 && (
           <button
@@ -133,24 +124,18 @@ export function StylistReviewInbox({ reviews }: { reviews: StylistReviewCard[] }
         </p>
       )}
 
-      {openSection && (
+      {pending.length > 0 && (
         <div className="mt-3 space-y-2">
-          {pending.length === 0 ? (
-            <p className="rounded-2xl border border-dashed border-surface-200 px-4 py-3 text-xs text-surface-400">
-              Nothing waiting on you right now.
-            </p>
-          ) : (
-            pending.map((review) => (
-              <ReviewStrip
-                key={review.id}
-                review={review}
-                busy={busyId === review.id}
-                expanded={expandedId === review.id}
-                onToggle={() => toggleExpanded(review.id)}
-                onRespond={(action) => respond(review.id, action)}
-              />
-            ))
-          )}
+          {pending.map((review) => (
+            <ReviewStrip
+              key={review.id}
+              review={review}
+              busy={busyId === review.id}
+              expanded={expandedId === review.id}
+              onToggle={() => toggleExpanded(review.id)}
+              onRespond={(action) => respond(review.id, action)}
+            />
+          ))}
         </div>
       )}
 
@@ -291,7 +276,7 @@ function ReviewStrip({
             <div className="flex items-center gap-3">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                src={review.current[0].clean_url || review.current[0].original_url}
+                src={wardrobeItemImage(review.current[0])}
                 alt={review.targetLabel}
                 className="h-20 w-20 shrink-0 rounded-lg border border-surface-100 bg-surface-50 object-contain p-1"
               />
@@ -352,7 +337,7 @@ function ReviewThumbs({ review }: { review: StylistReviewCard }) {
     return (
       // eslint-disable-next-line @next/next/no-img-element
       <img
-        src={item.clean_url || item.original_url}
+        src={wardrobeItemImage(item)}
         alt=""
         className="h-14 w-14 rounded-lg border border-surface-100 bg-surface-50 object-contain p-1"
       />

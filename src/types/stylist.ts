@@ -10,6 +10,7 @@ export interface StylistWardrobeItem {
   subcategory: string | null;
   color: string | null;
   brand: string | null;
+  optimized_url: string | null;
   clean_url: string | null;
   original_url: string;
 }

@@ -2,10 +2,13 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import { useState } from "react";
 import type { WardrobeItem } from "@/types/database";
 import { Heart, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { wardrobeItemName } from "@/lib/wardrobe/item-label";
+import { wardrobeItemImage } from "@/lib/wardrobe/item-image";
+import { ItemEnhancer } from "./item-enhancer";
 
 interface ItemCardProps {
   item: WardrobeItem;
@@ -22,6 +25,8 @@ export function ItemCard({
   selected,
   onToggleSelect,
 }: ItemCardProps) {
+  const [imageUrl, setImageUrl] = useState(wardrobeItemImage(item));
+
   return (
     <Link
       href={`/closet/${item.id}`}
@@ -39,13 +44,17 @@ export function ItemCard({
       {/* Image */}
       <div className="relative aspect-square bg-surface-50">
         <Image
-          src={item.clean_url || item.original_url}
+          src={imageUrl}
           alt={wardrobeItemName(item)}
           fill
           className="object-contain p-2"
           sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 20vw"
           unoptimized
         />
+
+        {!selecting && (
+          <ItemEnhancer item={item} className="bottom-2 right-2" onApplied={setImageUrl} />
+        )}
 
         {/* Select checkbox */}
         {selecting && (

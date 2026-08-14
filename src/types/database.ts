@@ -59,6 +59,14 @@ export interface WardrobeItem {
   user_id: string;
   original_url: string;
   clean_url: string | null;
+  optimized_url: string | null;
+  optimized_storage_path: string | null;
+  enhancement_candidate_url: string | null;
+  enhancement_candidate_path: string | null;
+  enhancement_status: "idle" | "processing" | "ready" | "complete" | "failed";
+  enhancement_model: string | null;
+  enhancement_started_at: string | null;
+  enhanced_at: string | null;
   display_name: string | null;
   user_notes: string | null;
   category: ItemCategory;
@@ -82,8 +90,8 @@ export interface WardrobeItem {
 
 /**
  * An extra reference angle for a wardrobe item (back, side, detail, care tag).
- * Display-only: no background removal, no classification, and never used by any
- * styling path — those read WardrobeItem.clean_url / original_url.
+ * Its cached kind routes visual references into photo enhancement while keeping
+ * label/tag photos out of generation and using them only for brand/material OCR.
  */
 export interface WardrobeItemPhoto {
   id: string;
@@ -92,9 +100,23 @@ export interface WardrobeItemPhoto {
   url: string;
   storage_path: string | null;
   angle: string | null;
+  kind: ReferencePhotoKind | null;
+  analysis: Record<string, unknown>;
+  analyzed_at: string | null;
   position: number;
   created_at: string;
 }
+
+export type ReferencePhotoKind =
+  | "front"
+  | "back"
+  | "side"
+  | "detail"
+  | "logo_pattern"
+  | "material"
+  | "label"
+  | "worn"
+  | "other";
 
 export interface Outfit {
   id: string;
@@ -138,6 +160,9 @@ export interface StyleDNA {
   updated_at: string;
 }
 
+/** A business trip and a holiday are packed differently, so the trip carries which it is. */
+export type TripType = "business" | "leisure";
+
 export interface TravelPlan {
   id: string;
   user_id: string;
@@ -148,9 +173,22 @@ export interface TravelPlan {
   start_date: string;
   end_date: string;
   travel_goals: string[];
-  packing_list: unknown[];
+  /** Schema section 21: a `TripPackingList`, not the flat array the original column comment implied. */
+  packing_list: unknown;
+  /** Unused. A trip's day outfits are ordinary `outfit_plans` rows — see section 21. */
   daily_outfits: unknown[];
+  /** Unused, same reason: the forecast is read live rather than frozen onto the trip. */
   weather_data: Record<string, unknown>;
+  trip_type: TripType | null;
+  /** How this row came to exist. `calendar` rows carry a `calendar_signature`. */
+  origin: "manual" | "calendar";
+  /** First local date + normalized destination; what makes re-detection idempotent. */
+  calendar_signature: string | null;
+  /** Local dates the user has confirmed they're wearing, which is what the packing list is built from. */
+  confirmed_dates: string[];
+  /** Public share credential for /trip/[token]. Null until shared, cleared on revoke. */
+  share_token: string | null;
+  shared_at: string | null;
   created_at: string;
   updated_at: string;
 }

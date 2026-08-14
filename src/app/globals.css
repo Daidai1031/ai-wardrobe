@@ -20,3 +20,36 @@
   }
 }
 
+@keyframes wardrobe-enhance-sweep {
+  0% {
+    transform: translateX(-115%) skewX(-10deg);
+    opacity: 0;
+  }
+  16% {
+    opacity: 1;
+  }
+  82% {
+    opacity: 0.95;
+  }
+  100% {
+    transform: translateX(250%) skewX(-10deg);
+    opacity: 0;
+  }
+}
+
+.wardrobe-enhance-sweep {
+  background:
+    radial-gradient(circle at 52% 25%, rgb(255 255 255 / 90%) 0 2px, transparent 3px),
+    radial-gradient(circle at 70% 62%, rgb(255 255 255 / 75%) 0 1.5px, transparent 3px),
+    linear-gradient(90deg, transparent, rgb(167 139 250 / 28%), rgb(255 255 255 / 75%), transparent);
+  filter: blur(0.2px) drop-shadow(0 0 12px rgb(139 92 246 / 45%));
+  animation: wardrobe-enhance-sweep 2.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wardrobe-enhance-sweep {
+    animation: none;
+    left: 16.6667%;
+    opacity: 0.65;
+  }
+}

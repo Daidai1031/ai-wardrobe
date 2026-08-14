@@ -17,6 +17,7 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 import { Layers3, Maximize2, Plus, Search, Shirt, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { wardrobeItemName } from "@/lib/wardrobe/item-label";
+import { wardrobeItemImage } from "@/lib/wardrobe/item-image";
 import { ITEM_CATEGORIES, type ItemCategory } from "@/types/database";
 
 export interface CanvasItem {
@@ -26,6 +27,7 @@ export interface CanvasItem {
   subcategory?: string | null;
   color?: string | null;
   clean_url: string | null;
+  optimized_url?: string | null;
   original_url: string;
 }
 
@@ -45,7 +47,7 @@ export function itemName(item: CanvasItem) {
 }
 
 export function imageUrl(item: CanvasItem) {
-  return item.clean_url || item.original_url;
+  return wardrobeItemImage(item);
 }
 
 export function writeDragPayload(event: DragEvent, payload: DragPayload) {

@@ -235,6 +235,25 @@ export const REQUIRED_SLOTS: { slot: string; anyOf: string[] }[] = [
   { slot: "feet", anyOf: ["Shoes"] },
 ];
 
+const CATEGORIES_COVERING_A_SLOT = new Set(REQUIRED_SLOTS.flatMap((entry) => entry.anyOf));
+
+/**
+ * Whether an item of this category can simply be taken off the look when it breaks
+ * a rule and the closet has nothing free to swap in — outerwear, a bag, a belt.
+ *
+ * This is the difference between a rule that is guaranteed and one that is merely
+ * attempted. `enforceRotation` and `enforceComfort` both used to keep the offending
+ * item whenever no substitute existed, on the reasoning that a 1:1 swap is the only
+ * safe repair; that is true of shoes, where the alternative is barefoot, and false
+ * of everything here. It is why a user who set Outerwear to one day a week still
+ * saw the same blazer on three days: they own one blazer, so there was never a
+ * substitute, so the repeat was kept every time. Nothing requires a segment to
+ * carry outerwear, so the honest answer is to leave it off.
+ */
+export function isDroppableCategory(category: string): boolean {
+  return !CATEGORIES_COVERING_A_SLOT.has(category);
+}
+
 /**
  * `eventIds` is optional because most rules only need the item set; the comfort
  * rule needs it, since "is this segment spent on a plane" is a fact about the
@@ -472,6 +491,59 @@ export function findCoverageViolations(
   return violations;
 }
 
+/** The required slots this item set leaves uncovered. */
+function missingSlots(itemIds: string[], categoryFor: CategoryLookup): string[] {
+  const present = new Set(itemIds.map(categoryFor));
+  return REQUIRED_SLOTS.filter(({ anyOf }) => !anyOf.some((category) => present.has(category))).map(
+    ({ slot }) => slot
+  );
+}
+
+/**
+ * Add pieces from the pool until every required slot is covered, or until nothing
+ * eligible is left. Shared by `enforceCoverage` and by `enforceComfort`, which
+ * needs the same fill after it takes something off — see its second pass.
+ *
+ * `isAllowed` carries whatever the caller's rules are (rotation, weather, comfort);
+ * this only knows about slots, incompatibility and per-category caps.
+ */
+function fillMissingSlots(
+  itemIds: string[],
+  categoryFor: CategoryLookup,
+  pool: CandidatePool,
+  isAllowed: (itemId: string) => boolean
+): string[] {
+  const result = [...itemIds];
+
+  for (const { anyOf } of REQUIRED_SLOTS) {
+    const present = new Set(result.map(categoryFor));
+    if (anyOf.some((category) => present.has(category))) continue;
+
+    // Prefer the earlier categories in `anyOf` (a top before a dress, since a
+    // dress would also have satisfied the other slot and the model didn't pick one).
+    const banned = new Set<string>();
+    for (const [category, incompatible] of Object.entries(INCOMPATIBLE_WITH)) {
+      if (present.has(category)) incompatible.forEach((other) => banned.add(other));
+      if (incompatible.some((other) => present.has(other))) banned.add(category);
+    }
+
+    const filler = anyOf
+      .filter((category) => !banned.has(category))
+      .flatMap((category) => pool.get(category) || [])
+      .find(
+        (itemId) =>
+          !result.includes(itemId) &&
+          countInSegment(result, categoryFor(itemId), categoryFor) <
+            (MAX_PER_CATEGORY_IN_SEGMENT[categoryFor(itemId)] ?? Number.POSITIVE_INFINITY) &&
+          isAllowed(itemId)
+      );
+
+    if (filler) result.push(filler);
+  }
+
+  return result;
+}
+
 /**
  * Fill any slot a segment is still missing after the model has had its chance.
  *
@@ -496,32 +568,15 @@ export function enforceCoverage(
 
   for (const day of result) {
     for (const segment of day.segments) {
-      for (const { anyOf } of REQUIRED_SLOTS) {
-        const present = new Set(segment.itemIds.map(categoryFor));
-        if (anyOf.some((category) => present.has(category))) continue;
-
-        // Prefer the earlier categories in `anyOf` (a top before a dress, since a
-        // dress would also have satisfied the other slot and the model didn't pick one).
-        const banned = new Set<string>();
-        for (const [category, incompatible] of Object.entries(INCOMPATIBLE_WITH)) {
-          if (present.has(category)) incompatible.forEach((other) => banned.add(other));
-          if (incompatible.some((other) => present.has(other))) banned.add(category);
-        }
-
-        const filler = anyOf
-          .filter((category) => !banned.has(category))
-          .flatMap((category) => pool.get(category) || [])
-          .find(
-            (itemId) =>
-              !segment.itemIds.includes(itemId) &&
-              !isBanned(itemId, day.planDate) &&
-              countInSegment(segment.itemIds, categoryFor(itemId), categoryFor) <
-                (MAX_PER_CATEGORY_IN_SEGMENT[categoryFor(itemId)] ?? Number.POSITIVE_INFINITY) &&
-              !wouldExceedRotation(result, itemId, day.planDate, categoryFor, rotation)
-          );
-
-        if (filler) segment.itemIds.push(filler);
-      }
+      const filled = fillMissingSlots(
+        segment.itemIds,
+        categoryFor,
+        pool,
+        (itemId) =>
+          !isBanned(itemId, day.planDate) &&
+          !wouldExceedRotation(result, itemId, day.planDate, categoryFor, rotation)
+      );
+      segment.itemIds.splice(0, segment.itemIds.length, ...filled);
     }
   }
 
@@ -634,6 +689,55 @@ export function isActivewear(item: {
   return ACTIVEWEAR_KEYWORDS.some((keyword) => text.includes(keyword));
 }
 
+/**
+ * Words that mean a piece is meant to be moved in. Broader than
+ * `ACTIVEWEAR_KEYWORDS` on purpose: that list answers "is this gym kit that would
+ * be wrong in a boardroom", this one answers "could you play in this", which
+ * includes the club sports whose kit reads as smart — a golf polo, tennis whites,
+ * a pair of trainers.
+ */
+const SPORT_SUITABLE_KEYWORDS = [
+  ...ACTIVEWEAR_KEYWORDS,
+  "polo",
+  "golf",
+  "tennis",
+  "athleisure",
+  "performance",
+  "jersey",
+  "sneaker",
+  "trainer",
+  "bike short",
+  "cycling short",
+  "hiking",
+  "windbreaker",
+  "visor",
+];
+
+/**
+ * Whether an item can actually be played, run or trained in.
+ *
+ * The user's rule, stated plainly: a sport occasion wears the things tagged for
+ * sport. So the classifier's own `sport` occasion tag is sufficient on its own —
+ * unlike `isActivewear`, which needs two agreeing signals because it *removes*
+ * things from formal occasions and a false positive there costs the user an outfit.
+ * This one is the mirror: it decides what may STAY in a sport segment, so the
+ * conservative direction is to demand the tag rather than to infer around it.
+ *
+ * A "casual" midi dress and a pair of pumps have neither the tag nor a keyword, so
+ * they fail, which is the whole point — those are what kept turning up for golf.
+ */
+export function isSportSuitable(item: {
+  category: string;
+  subcategory?: string | null;
+  display_name?: string | null;
+  occasion?: string[] | null;
+  style_tags?: string[] | null;
+}): boolean {
+  if ((item.occasion ?? []).some((tag) => tag.toLowerCase() === "sport")) return true;
+  const text = `${item.subcategory ?? ""} ${item.display_name ?? ""} ${(item.style_tags ?? []).join(" ")}`.toLowerCase();
+  return SPORT_SUITABLE_KEYWORDS.some((keyword) => text.includes(keyword));
+}
+
 /** What a segment is — supplied by the caller, who is the one holding the calendar. */
 export type SegmentKind = "transit" | "athletic" | "general";
 
@@ -651,9 +755,10 @@ export interface SegmentContext {
 export type SegmentContextLookup = (segment: RuleSegment) => SegmentContext;
 export type HardToTravelInLookup = (itemId: string) => boolean;
 export type ActivewearLookup = (itemId: string) => boolean;
+export type SportSuitableLookup = (itemId: string) => boolean;
 
 /** Why an item can't be in this particular segment. */
-export type ComfortReason = "transit" | "sweat" | "too_casual";
+export type ComfortReason = "transit" | "sweat" | "too_casual" | "not_sport";
 
 export interface ComfortViolation {
   planDate: string;
@@ -695,9 +800,21 @@ function comfortReasonFor(
   context: SegmentContext,
   sweaty: Set<string>,
   isHardToTravelInFor: HardToTravelInLookup,
-  isActivewearFor: ActivewearLookup
+  isActivewearFor: ActivewearLookup,
+  isSportSuitableFor: SportSuitableLookup,
+  categoryFor: CategoryLookup
 ): ComfortReason | null {
   if (sweaty.has(itemId)) return "sweat";
+  // Sport is dressed as sport. Only what is worn against the skin has to qualify:
+  // the tote and the sunglasses on a golf course are nobody's problem, and making
+  // them one would be the same noise that kept bags out of the rotation limits.
+  if (
+    context.kind === "athletic" &&
+    WORN_AGAINST_SKIN(categoryFor(itemId)) &&
+    !isSportSuitableFor(itemId)
+  ) {
+    return "not_sport";
+  }
   if (context.kind === "transit" && isHardToTravelInFor(itemId)) return "transit";
   if (
     context.formality !== null &&
@@ -714,6 +831,7 @@ export function findComfortViolations(
   contextFor: SegmentContextLookup,
   isHardToTravelInFor: HardToTravelInLookup,
   isActivewearFor: ActivewearLookup,
+  isSportSuitableFor: SportSuitableLookup,
   categoryFor: CategoryLookup
 ): ComfortViolation[] {
   const violations: ComfortViolation[] = [];
@@ -728,7 +846,9 @@ export function findComfortViolations(
           context,
           sweaty,
           isHardToTravelInFor,
-          isActivewearFor
+          isActivewearFor,
+          isSportSuitableFor,
+          categoryFor
         );
         if (reason) violations.push({ planDate: day.planDate, segmentIndex, itemId, reason });
       }
@@ -742,11 +862,13 @@ export function findComfortViolations(
  * Swap out anything a segment can't wear: heels on a flight, and anything already
  * sweated in earlier that day.
  *
- * Unlike `enforceWeather` this never drops the offending item — the substitution is
- * 1:1 or nothing. Removing the only pair of shoes from a segment would leave the
- * wearer barefoot, which is worse than the problem being fixed, so if the closet
- * has no free alternative the item stays and the caller reports it as a warning,
- * the same way rotation handles a wardrobe that is simply too small.
+ * The substitution is 1:1 where the category covers a required slot: removing the
+ * only pair of shoes from a segment would leave the wearer barefoot, which is worse
+ * than the problem being fixed, so if the closet has no free alternative the item
+ * stays and the caller reports it as a warning. Where the category covers nothing —
+ * outerwear, a bag, a belt — an unreplaceable offender is taken off instead, since
+ * a blazer on a golf course has no business being kept just because the closet has
+ * no second one. See `isDroppableCategory`.
  *
  * Segments are walked in order so that each one sees the *already corrected*
  * versions of the segments before it.
@@ -757,6 +879,7 @@ export function enforceComfort(
   contextFor: SegmentContextLookup,
   isHardToTravelInFor: HardToTravelInLookup,
   isActivewearFor: ActivewearLookup,
+  isSportSuitableFor: SportSuitableLookup,
   pool: CandidatePool,
   rotation: RotationContext
 ): RuleDay[] {
@@ -769,21 +892,64 @@ export function enforceComfort(
     day.segments.forEach((segment, segmentIndex) => {
       const context = contextFor(segment);
       const sweaty = sweatyBefore(day, segmentIndex, contextFor, categoryFor);
+      const reasonFor = (itemId: string) =>
+        comfortReasonFor(
+          itemId,
+          context,
+          sweaty,
+          isHardToTravelInFor,
+          isActivewearFor,
+          isSportSuitableFor,
+          categoryFor
+        );
 
-      for (let i = 0; i < segment.itemIds.length; i++) {
+      // Backwards, so removing an entry can't skip the one after it.
+      for (let i = segment.itemIds.length - 1; i >= 0; i--) {
         const itemId = segment.itemIds[i];
-        if (!comfortReasonFor(itemId, context, sweaty, isHardToTravelInFor, isActivewearFor)) {
-          continue;
-        }
+        if (!reasonFor(itemId)) continue;
 
         const substitute = (pool.get(categoryFor(itemId)) || []).find(
           (candidate) =>
-            !comfortReasonFor(candidate, context, sweaty, isHardToTravelInFor, isActivewearFor) &&
+            !reasonFor(candidate) &&
             !segment.itemIds.includes(candidate) &&
             !wouldExceedRotation(result, candidate, day.planDate, categoryFor, rotation)
         );
 
         if (substitute) segment.itemIds[i] = substitute;
+        else if (isDroppableCategory(categoryFor(itemId))) segment.itemIds.splice(i, 1);
+      }
+
+      // Second pass, for what a 1:1 swap structurally cannot fix. A gray wool midi
+      // dress at a golf round has no replacement *as a dress* in most closets, so
+      // the first pass kept it and the segment stayed wrong — which is precisely
+      // the "sport still comes back in a casual dress" complaint. It can still go,
+      // as long as what it covered can be covered again: drop it, refill torso and
+      // legs from the pool with pieces that pass the same test, and keep the result
+      // only if the segment is still a complete outfit. Where it isn't — the only
+      // pair of shoes, a closet with no sport clothes at all — the item stays and
+      // the caller reports it, because barefoot is worse than badly dressed.
+      const keep = new Set<string>();
+      for (let guard = 0; guard <= segment.itemIds.length; guard++) {
+        const index = segment.itemIds.findIndex(
+          (itemId) => reasonFor(itemId) && !keep.has(itemId)
+        );
+        if (index < 0) break;
+
+        const offender = segment.itemIds[index];
+        const rebuilt = fillMissingSlots(
+          segment.itemIds.filter((_, position) => position !== index),
+          categoryFor,
+          pool,
+          (candidate) =>
+            !reasonFor(candidate) &&
+            !wouldExceedRotation(result, candidate, day.planDate, categoryFor, rotation)
+        );
+
+        if (missingSlots(rebuilt, categoryFor).length === 0) {
+          segment.itemIds.splice(0, segment.itemIds.length, ...rebuilt);
+        } else {
+          keep.add(offender);
+        }
       }
     });
   }
@@ -902,9 +1068,17 @@ export function findRotationViolations(
  *
  * A code-chosen substitute styles worse than the model would, but three rounds of
  * "the prompt says so and it did it anyway" is enough evidence that the invariant
- * has to be guaranteed rather than requested. If no substitute exists the item
- * stays and the caller reports it as a warning — that case is a genuinely too-small
- * wardrobe, which the user should see rather than have papered over.
+ * has to be guaranteed rather than requested.
+ *
+ * When there is no substitute, what happens next depends on whether the category
+ * covers a required slot. Outerwear, bags and accessories are simply taken off:
+ * this is the case that made the setting look broken, because a user who owns one
+ * blazer and sets Outerwear to one day a week has no substitute by construction, so
+ * "keep it and warn" meant the same blazer on three days of the week with the limit
+ * sitting right there in the UI saying otherwise. Shoes, tops, bottoms and dresses
+ * still stay — dropping them would leave the wearer barefoot or half-dressed — and
+ * the caller reports those as a warning, which is the genuinely too-small wardrobe
+ * the user should see rather than have papered over.
  */
 export function enforceRotation(
   days: RuleDay[],
@@ -921,7 +1095,7 @@ export function enforceRotation(
   // The cap is generous because a week of over-used favourites is exactly the case
   // that needs several swaps, and each pass fixes at most one item.
   const unfixable = new Set<string>();
-  for (let pass = 0; pass < 40; pass++) {
+  for (let pass = 0; pass < 80; pass++) {
     const violation = findRotationViolations(result, categoryFor, rotation).find(
       (entry) => !unfixable.has(`${entry.itemId}@${entry.conflictDate}`)
     );
@@ -936,10 +1110,19 @@ export function enforceRotation(
         !day.segments.some((segment) => segment.itemIds.includes(itemId)) &&
         !wouldExceedRotation(result, itemId, day.planDate, categoryFor, rotation)
     );
-    // One unfillable repeat must not stop the rest from being fixed; it is
-    // reported as a warning instead, which is the "your closet is too small for
-    // this setting" case.
     if (!substitute) {
+      // Nothing to swap in, but nothing needs this slot either — take it off, and
+      // the user's limit holds. This is the ordinary case for a one-blazer closet.
+      if (isDroppableCategory(violation.category)) {
+        for (const segment of day.segments) {
+          const index = segment.itemIds.indexOf(violation.itemId);
+          if (index >= 0) segment.itemIds.splice(index, 1);
+        }
+        continue;
+      }
+      // One unfillable repeat must not stop the rest from being fixed; it is
+      // reported as a warning instead, which is the "your closet is too small for
+      // this setting" case.
       unfixable.add(`${violation.itemId}@${violation.conflictDate}`);
       continue;
     }
@@ -1001,6 +1184,11 @@ export function describeViolations(
       add(
         violation.planDate,
         `Segment ${violation.segmentIndex + 1} is spent travelling (a flight, train or transfer) but wears "${labelFor(violation.itemId)}". Rebuild that segment for the journey rather than the destination: flat, easy-on shoes and soft, unrestrictive pieces.`
+      );
+    } else if (violation.reason === "not_sport") {
+      add(
+        violation.planDate,
+        `Segment ${violation.segmentIndex + 1} is sport, but "${labelFor(violation.itemId)}" is not something you can play or train in. Every garment and shoe in that segment must be a candidate whose "occasions" include "sport" (or unmistakable sport kit) — no dresses, skirts, tailoring, heels, pumps, wedges, sandals or dress shoes, however smart the club is.`
       );
     } else {
       add(

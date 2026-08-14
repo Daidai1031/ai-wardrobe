@@ -1,6 +1,6 @@
 # AI Wardrobe — 产品路线图 & 进度总览
 
-> Last updated: 2026-08-06
+> Last updated: 2026-08-13
 > 本文件负责「往前看」：进度快照 + 优先级 + 未来功能的技术方案。
 > `checklist.md` 负责「往回看」：已完成任务的实现细节 + Debug Log。
 > `CLAUDE.md` 负责「当前架构」：给 Claude Code 的代码导航。
@@ -34,6 +34,7 @@ Phase 1–4 已基本覆盖，Phase 6.0 / 6.1 / 6.2 均已落地（6.0/6.1 已�
 - AI Stylist 的多轮澄清 → Canvas → 编辑/保存已过 type/build；真实 Anthropic 首次返回暴露的纯文本解析 502 已改为 forced tool call + 文本降级，修复后尚待登录账号重新跑完整链路
 - Human Stylist 预约代码已完成，但生产库尚需手动执行 `schema.sql` section 16 后再真实预约验证
 - 单品多角度参考照（`/closet/[id]`）代码完成、build 通过，但生产库尚需手动执行 `schema.sql` section 17；未执行时上传会以 `PGRST205` 失败（2026-07-30 实际踩到）
+- **单品魔术棒照片优化**：代码完成、type/lint/build 通过；低成本 Seedream 5 Lite + 最多 4 张非标签 reference → BiRefNet → Sharp 统一品类尺度 → Before/After 确认。标签照单独批量识别并自动填 brand/material，不进入生成。生产库需执行 `WARDROBE ITEM PHOTO ENHANCEMENT` schema block，并用真实 2–4 张参考图验证身份保持和完整交互。
 - ~~`/home` 的 Phase 6.1 多段计划~~ ✅ 已真实验证（2026-07-30），见 6.1 小节
 - ~~`outfit_items` 的 `x/y/width` 三列需要在 Supabase SQL Editor 手动跑~~ ✅ 已随 Phase 6.0 section 15 迁移块一起在生产库执行（2026-07-30）
 - **Phase 6.2 Weekly planning（`/plan`）**：代码完成、type/build 通过，但需重跑 section 15（唯一键去掉 `source` + `replace_weekly_plans`），且规则引擎（轮换/结构/完整度/天气）的最后一版尚未真实生成验证
@@ -44,8 +45,9 @@ Phase 1–4 已基本覆盖，Phase 6.0 / 6.1 / 6.2 均已落地（6.0/6.1 已�
 | 项 | 现状 |
 |---|---|
 | Gmail | 从未进入过计划（D1 里定了策略，`?scope=gmail` 目前 400） |
-| 出差模式 | `/travel` 是纯占位页；`travel_plans` 表建好了但零读写 |
-| Capsule Wardrobe / Packing List | 无 |
+| 出差模式 | ✅ 2026-08-13 完成（见 6.3）。`/travel` 从日历识别行程、分类、排搭配、确认后打包、打印/分享；`travel_plans` 现在存行程身份与用户决定，schema 第 21 节 |
+| Capsule Wardrobe | ❌ 明确不做。取舍时选了「行程日和 /plan 同一套 rotation 规则」，所以没有最小化件数这一目标函数 |
+| Packing List | ✅ 衣物部分从已确认的天派生，其余是模板 + 可编辑（D11） |
 | Folders UI | schema 就绪，无前端 |
 | Outfit Journal / 日历视图 | schema 就绪，无前端 |
 | Preference Engine（滑卡） | `preference_swipes` 表就绪，无前端 |
@@ -304,9 +306,17 @@ interface WeatherProvider {
 - 成本：这是唯一值得用 Sonnet 的规划调用（7 天 × 约束满足），但一周只跑一次。也可以先用 Haiku 试，效果不行再升。
 - UI：7 列周视图，每格一个缩略拼贴；点开进 outfits Canvas 编辑；支持「换一套这天」单天重生成（只重算一天，不重算整周）
 
-### 6.3 出差模式（重写 `/travel`）
+### 6.3 出差模式（重写 `/travel`） — ✅ 2026-08-13 完成，实现与下面的原方案有三处出入
 
-流程设计：
+> **实现记录（读代码前先看这三条，下面的原方案是 6.2 之前写的）：**
+>
+> 1. **行程不是手填的，是从日历识别的。** 原方案把手填当主路径、Gmail 导入当加速器。实际做的是 30 天日历 → `detectTrips()` 纯 TS 识别（离家 >120km 的坐标或标题写明的目的地 → 合并连续日期 → 前后延一天吸收 transit）→ business/leisure 也在 TS 里分类。理由和 D8 一致，而且行程的身份（`calendar_signature`）是打包清单挂靠的地方：同一份日历问模型两次会得到两个行程数，存量清单会直接变孤儿。手填行程仍然可以后补（`travel_plans.origin='manual'` 那一支已经留好），Gmail 导入依然是可选加速器。
+> 2. **每日搭配写的是 `/plan` 那批行，不是 `source='travel'` + `travel_plan_id`。** 第 5 步是 6.2「一个日期只有一条计划」之前写的；照做的话同一个周四会有两条独立生成、互不同步的计划行，正是 6.2 刚消灭的 bug。所以 `/travel` 走 `GET/POST /api/ai/weekly?start=&days=`（另加 `?keep=` 保护已排/已确认的天），`travel_plans.daily_outfits` / `weather_data` 保持不用。
+> 3. **Capsule 生成没做。** 原方案要「最小化件数、最大化组合数」并且值得上 Sonnet。取舍时选了「和 /plan 同一套 rotation 规则」，所以行程日不放宽限制，也就没有这一步。要做的话入口在 weekly route 传给规则引擎的 `rotationLimits`。
+>
+> 打印卡片和 D6/D7 完全按原方案实现；额外做了 `/trip/[token]` 公开只读分享页（128 位 CSPRNG token、service role 读、可撤销、`robots: noindex`）。
+
+原方案（保留作对照）：
 
 1. **建行程**：手动填（目的地/日期/目的标签）—— 这是主路径。**或**从 Gmail 检测到的行程一键导入（可选加速器，见 6.0-D）。目的地要落 `destination_timezone`（D4）
 2. **拉数据**：目的地逐日预报走 Open-Meteo（D2）。超出 16 天预报范围的日期退化成历史气候均值并置 `isEstimate=true`，UI 上必须区分显示 + 该时间段的日历事件
@@ -618,10 +628,13 @@ Folk 有完整 REST API（workspace 级 Bearer key）、自定义字段、pipeli
          ★ 并行小需求（2026-08-06 新增，可插在 6.3 之前/期间，互不依赖）
            · B. ✅ 轮换频率由用户决定（6.2 收尾：schema 第 19 节 + /plan「Repeat rules」面板）
            · A. 单品详情页的「搭配过的 Look」（/closet/[id] → /outfits?open=）
-         Phase 6.3  出差模式
-           · 手填行程为主路径 + Gmail 导入为可选加速器
-           · capsule 生成（Sonnet）+ packing list（模板 + 可编辑，D11）
+         Phase 6.3  ✅ 出差模式（2026-08-13，待 section 21 后真实验证）
+           · 行程从日历识别（纯 TS，零模型）+ business/leisure 分类
+           · 搭配复用 /plan 同一批计划行（weekly route 加 ?days= / ?keep=）
+           · 确认后打包：衣物从已确认的天派生 + 模板可编辑（D11）
            · printable outfit cards（/travel/[id]/print，网格排版，D6/D7）
+           · /trip/[token] 公开只读分享页（可撤销）
+           · capsule 生成：明确不做（选了和 /plan 同一套 rotation 规则）
          ─────────────────────────────────────────────
          Phase 7    Onboarding（便宜、提升全局推荐质量）
          ★ 决策点：Phase 11 的角色/组织模型（不写代码，只定 schema 方向）
