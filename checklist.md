@@ -346,6 +346,8 @@
 
 **要跑的 SQL**：`supabase/schema.sql` section 21（`travel_plans` 加 `trip_type` / `origin` / `calendar_signature` / `confirmed_dates` / `share_token` / `shared_at` + 唯一约束）和 21b（两参数版 `replace_weekly_plans`）。**没跑之前**：`/travel` 列表页照常出（识别是纯函数，不碰这些列），但点进任何一趟行程会 500 报 `column travel_plans.trip_type does not exist`；21b 没跑的话**连 `/plan` 的生成也会挂**，因为参数个数对不上。
 
+**线上库核查（2026-08-14）**：直接读生产库的 PostgREST OpenAPI spec 确认——section 21 / 21b **确实一次都没跑过**：`travel_plans` 只有 `packing_list` / `daily_outfits` / `weather_data` / `destination_*` 这些老列，`trip_type` / `origin` / `calendar_signature` / `confirmed_dates` / `share_token` / `shared_at` 六列全缺；`replace_weekly_plans` 仍然是**只有 `p_days` 的单参数版**，而 route 传的是 `{p_keep_dates, p_days}`，所以此刻 `/plan` 的「Generate」和 `/travel` 的排搭配**都是挂的**（PostgREST 找不到匹配签名），不只是点进行程 500。其余 block 都已在库里：section 17（`wardrobe_item_photos` 含 `kind`/`analysis`/`analyzed_at`）、18（`stylist_reviews` 含 `target_item_id`/`proposed_name`/`created_outfit_id`，即 8/13 之后重跑过）、19（`profiles.rotation_limits`）、20（`outfit_plan_segments.source_outfit_id`）、photo-enhancement block（`optimized_url`/`enhancement_candidate_url`）。**照 CLAUDE.md 的两条踩坑执行**：直接从 `supabase/schema.sql` 复制（21 = 2472–2527 行，21b = 2529–2613 行），两段**分两次提交**跑——SQL Editor 一次提交是一个事务，后面一句报错会把前面成功的悄悄回滚掉。
+
 **已验证**: `tsc --noEmit`、`npm run lint`、`npm run build` 全过，构建路由含 `/travel`、`/travel/[id]`、`/travel/[id]/print`、`/trip/[token]`、`/api/travel/trips`、`/api/travel/trips/[id]`、`/api/travel/trips/resolve`。行程识别用 7 组合成日历断言过：带航班的商务行程（出发日被正确吸收进来）、只有标题的度假、单日外地（正确地不算行程）、全在家（不算）、中间空一天（不拆成两趟）、相隔两周的两趟、没写明措辞的休闲行程（靠事件内容分类）。**未验证**: 全部真人链路——section 21 跑完之后要走一遍「Sync calendar → 列表里认出真实行程且 business/leisure 判对 → 点进去 → 已在 /plan 排过的天确实带着搭配出现 → 排剩下的天没有覆盖掉已排的 → 逐天确认 → Packing tab 的衣物确实等于那几天的并集 → 打印页图片不是空框 → 分享链接在无痕窗口打得开、撤销后 404」。
 
 ---
