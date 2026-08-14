@@ -328,7 +328,7 @@
 
 **已验证**: `tsc --noEmit` 与 `npm run build` 通过（含 2026-08-13 二轮的五 tab 改造、单件评审、Overview 与 Build a look），构建路由含 `/pro`、`/pro/[clientId]`、`/api/stylist/reviews`、`/api/stylist/reviews/[id]/respond`。**未验证**: 五 tab、单件评审、Overview、Build a look 都还没真人点过，需要 section 18 重跑之后走两条链路——「Every piece 里点一件 → 打分 + 留言 → 客户 `/home` 收件箱看到那件图 + 留言 → Got it」，和「Build a look → 选 ≥2 件 + 起名 + 写说明 → 客户收件箱 Save to my Looks → `/outfits` 里确实多了这套且版式一致 → Undo 后它消失」；生产库还需手动执行 `supabase/schema.sql` section 18；执行前 `/pro` 会因为 `profiles.roles` 查得到但新表查不到而在收件箱那侧报 `PGRST205`（已做成打日志 + 返回空列表，不会让 `/home` 整页挂掉）。真实验证还需要：给搭配师账号手动 `update profiles set roles = '{client,stylist}'`、用 webhook 或手动给测试客户设 `access_expires_at`、然后跑一遍「评分 + 文字 + 改版 → 客户采纳 → 撤销」，并确认 L0/L1/L2 三档下搭配师看到的东西确实不同。
 
-### 任务 4: Phase 6.3 出差模式（`/travel`） — ✅ 代码完成，⚠️ 待 section 21 + 真实验证（2026-08-13）
+### 任务 4: Phase 6.3 出差模式（`/travel`） — ✅ 代码完成，✅ section 21/21b 已应用并对真实数据验过识别与 upsert，⚠️ 浏览器端链路待走（2026-08-14）
 
 原来的 `/travel` 是一句 "coming in Phase 5" 的静态文案。现在是：从日历里找出行程 → 分类 business / leisure → 点进去排搭配 → 逐天确认 → 从确认的天生成打包清单 → 打印/存 PDF 或生成公开分享链接。
 
@@ -346,9 +346,19 @@
 
 **要跑的 SQL**：`supabase/schema.sql` section 21（`travel_plans` 加 `trip_type` / `origin` / `calendar_signature` / `confirmed_dates` / `share_token` / `shared_at` + 唯一约束）和 21b（两参数版 `replace_weekly_plans`）。**没跑之前**：`/travel` 列表页照常出（识别是纯函数，不碰这些列），但点进任何一趟行程会 500 报 `column travel_plans.trip_type does not exist`；21b 没跑的话**连 `/plan` 的生成也会挂**，因为参数个数对不上。
 
-**线上库核查（2026-08-14）**：直接读生产库的 PostgREST OpenAPI spec 确认——section 21 / 21b **确实一次都没跑过**：`travel_plans` 只有 `packing_list` / `daily_outfits` / `weather_data` / `destination_*` 这些老列，`trip_type` / `origin` / `calendar_signature` / `confirmed_dates` / `share_token` / `shared_at` 六列全缺；`replace_weekly_plans` 仍然是**只有 `p_days` 的单参数版**，而 route 传的是 `{p_keep_dates, p_days}`，所以此刻 `/plan` 的「Generate」和 `/travel` 的排搭配**都是挂的**（PostgREST 找不到匹配签名），不只是点进行程 500。其余 block 都已在库里：section 17（`wardrobe_item_photos` 含 `kind`/`analysis`/`analyzed_at`）、18（`stylist_reviews` 含 `target_item_id`/`proposed_name`/`created_outfit_id`，即 8/13 之后重跑过）、19（`profiles.rotation_limits`）、20（`outfit_plan_segments.source_outfit_id`）、photo-enhancement block（`optimized_url`/`enhancement_candidate_url`）。**照 CLAUDE.md 的两条踩坑执行**：直接从 `supabase/schema.sql` 复制（21 = 2472–2527 行，21b = 2529–2613 行），两段**分两次提交**跑——SQL Editor 一次提交是一个事务，后面一句报错会把前面成功的悄悄回滚掉。
+**section 21 / 21b 已应用（2026-08-14）**。应用前先读生产库的 PostgREST OpenAPI spec 确认了故障面：两段**一次都没跑过**，`travel_plans` 六列全缺，`replace_weekly_plans` 还是**只收 `p_days` 的单参数版**——而 route 传的是 `{p_keep_dates, p_days}`，所以当时挂掉的不只是「点进行程 500」，**`/plan` 的 Generate 同样挂**（PostgREST 找不到匹配签名）。其余 block 当时就都在库里：17、18（含 `target_item_id`/`proposed_name`/`created_outfit_id`，即 8/13 之后重跑过）、19、20、photo-enhancement block。
 
-**已验证**: `tsc --noEmit`、`npm run lint`、`npm run build` 全过，构建路由含 `/travel`、`/travel/[id]`、`/travel/[id]/print`、`/trip/[token]`、`/api/travel/trips`、`/api/travel/trips/[id]`、`/api/travel/trips/resolve`。行程识别用 7 组合成日历断言过：带航班的商务行程（出发日被正确吸收进来）、只有标题的度假、单日外地（正确地不算行程）、全在家（不算）、中间空一天（不拆成两趟）、相隔两周的两趟、没写明措辞的休闲行程（靠事件内容分类）。**未验证**: 全部真人链路——section 21 跑完之后要走一遍「Sync calendar → 列表里认出真实行程且 business/leisure 判对 → 点进去 → 已在 /plan 排过的天确实带着搭配出现 → 排剩下的天没有覆盖掉已排的 → 逐天确认 → Packing tab 的衣物确实等于那几天的并集 → 打印页图片不是空框 → 分享链接在无痕窗口打得开、撤销后 404」。
+**应用方式改了**：不用再手工粘 SQL Editor——`npx supabase db query --linked --project-ref <ref> -f x.sql` 走 Management API 直接跑，不需要 Docker、不需要 `supabase link` 往仓库落文件、也不用建 `supabase/migrations/`，"本仓库手工应用 schema"的约定不变。唯一前提是 `npx supabase login` 要在**真 TTY** 里做一次（Claude Code 的 `!` 前缀是非 TTY，会报 `LegacyLoginMissingTokenError`）。两段仍然分两次调用跑，理由和以前一样：一次提交 = 一个事务。
+
+**应用前修掉了 21b 自己的一个洞**：`revoke ... from public, anon` / `grant ... to authenticated` 那对授权挂在**单参数签名**上，被 21b 的 `drop function` 一起带走，而 Postgres 新建函数默认对 PUBLIC 开 EXECUTE——照原样应用会白送 `anon` 一个执行权限（`security invoker` 下 RLS 仍会拦住它，但"碰巧被行策略挡住"和"anon 根本调不到"不是同一种保证）。21b 结尾现已重新声明这对授权。
+
+**落库后双向复核**（这一节存在的理由就是上次「报成功、事后 `pg_constraint` 里查不到」）：`information_schema` 里六列齐全、默认值正确（`origin` 默认 `manual`、`confirmed_dates` 默认 `{}`）；`pg_constraint` 里 `travel_plans_trip_type_check` / `origin_check` / `calendar_signature_key` 三条都在；`travel_plans_share_token_key` 是带 `WHERE share_token IS NOT NULL` 的部分唯一索引；`pg_proc` 里 `replace_weekly_plans` **只有一个签名** `(jsonb, date[])`（没有重载歧义），授权是 postgres/authenticated/service_role，**`anon` 不在其中**；PostgREST 侧 spec 也已刷新成 `p_days, p_keep_dates`。
+
+**已验证**: `tsc --noEmit`、`npm run lint`、`npm run build` 全过，构建路由含 `/travel`、`/travel/[id]`、`/travel/[id]/print`、`/trip/[token]`、`/api/travel/trips`、`/api/travel/trips/[id]`、`/api/travel/trips/resolve`。行程识别用 7 组合成日历断言过：带航班的商务行程（出发日被正确吸收进来）、只有标题的度假、单日外地（正确地不算行程）、全在家（不算）、中间空一天（不拆成两趟）、相隔两周的两趟、没写明措辞的休闲行程（靠事件内容分类）。
+
+**对真实数据验过（2026-08-14）**：拿生产库里真实的 29 条日历行喂给真正的 `detectTrips()`（不是合成断言），检出 `Hamptons 2026-08-14 → 2026-08-21`（8 天，leisure，理由「"vacation: Hamptons" 是日历上写着的」），signature `2026-08-14|hamptons`；Chicago 那个没同步过日历的账号正确地检出 0 趟。resolve 的 upsert 也在事务里试过 `on conflict (user_id, calendar_signature) do update` 能命中真约束（CLAUDE.md 警告的「部分唯一索引会让 PostgREST 的 upsert 全挂」在这里不适用，因为 21 建的是真约束），跑完 `rollback`，`travel_plans` 仍是 0 行。
+
+**未验证**: 浏览器里的那一串——「Sync calendar → 列表里认出这趟 Hamptons → 点进去 → 已在 /plan 排过的天确实带着搭配出现 → 排剩下的天没有覆盖掉已排的 → 逐天确认 → Packing tab 的衣物确实等于那几天的并集 → 打印页图片不是空框 → 分享链接在无痕窗口打得开、撤销后 404」。这几步要么需要登录态、要么需要肉眼看渲染，服务端脚本replace不了。
 
 ---
 
