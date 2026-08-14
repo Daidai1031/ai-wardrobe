@@ -2610,4 +2610,15 @@ begin
 end;
 $$;
 
+-- The grants do not survive the drop above: they were attached to the
+-- single-argument signature, and Postgres grants EXECUTE to PUBLIC on a newly
+-- created function. Restate them for the new signature, or applying 21b quietly
+-- hands anon a function the one-argument version explicitly revoked. It is
+-- `security invoker` so RLS would still stop an anonymous caller, but "the row
+-- policy happens to catch it" is not the same guarantee as "anon cannot call it".
+revoke execute on function public.replace_weekly_plans(jsonb, date[])
+  from public, anon;
+grant execute on function public.replace_weekly_plans(jsonb, date[])
+  to authenticated;
+
 notify pgrst, 'reload schema';
