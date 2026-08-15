@@ -2622,3 +2622,61 @@ grant execute on function public.replace_weekly_plans(jsonb, date[])
   to authenticated;
 
 notify pgrst, 'reload schema';
+
+-- ============================================================
+-- 22. TRIP DECISIONS (Phase 6.3 follow-up)
+-- Re-runnable against an existing database.
+--
+-- Detection is a pure function of the calendar and it is wrong sometimes: two cities
+-- inside `AWAY_RADIUS_KM` read as one trip, a genuine two-city tour reads as two.
+-- Rather than pile on heuristics that would each be wrong somewhere else, the user
+-- answers, and the answer is stored here and applied on top of detection.
+--
+-- **Why its own table and not columns on `travel_plans`.** A split produces a second
+-- half that has no `travel_plans` row yet, and a merge makes the later trip's
+-- signature disappear along with its row. Neither correction can be recorded on the
+-- thing it corrects, so decisions anchor on `anchor_signature` -- the signature of
+-- the trip the user was looking at -- and exist independently of any row.
+--
+-- One answer per trip (`unique (user_id, anchor_signature)`), including `keep`, which
+-- means "leave it as detected". `keep` is a stored answer rather than nothing at all
+-- because otherwise a dismissed suggestion would be asked again on the next load.
+--
+-- A decision deliberately does NOT survive a calendar change that moves the trip: the
+-- signature changes, the decision stops matching, and detection is believed again. A
+-- stale decision quietly reshaping a trip the user never saw is worse than one more
+-- question. Rows are left behind rather than cleaned up -- they are small, and one
+-- restored calendar event brings the answer back with it.
+-- ============================================================
+create table if not exists public.travel_trip_decisions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  anchor_signature text not null,
+  action text not null,
+  boundary_date date,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.travel_trip_decisions drop constraint if exists travel_trip_decisions_action_check;
+alter table public.travel_trip_decisions add constraint travel_trip_decisions_action_check check ((action = 'split' and boundary_date is not null) or (action in ('merge','keep') and boundary_date is null));
+
+alter table public.travel_trip_decisions drop constraint if exists travel_trip_decisions_anchor_key;
+alter table public.travel_trip_decisions add constraint travel_trip_decisions_anchor_key unique (user_id, anchor_signature);
+
+create index if not exists travel_trip_decisions_user_idx on public.travel_trip_decisions (user_id);
+
+alter table public.travel_trip_decisions enable row level security;
+
+-- Ordinary owned data, unlike the stylist-review tables: the user both makes and reads
+-- these corrections, so all four verbs are theirs and nothing server-side is required.
+drop policy if exists "travel_trip_decisions_select_own" on public.travel_trip_decisions;
+create policy "travel_trip_decisions_select_own" on public.travel_trip_decisions for select using (auth.uid() = user_id);
+drop policy if exists "travel_trip_decisions_insert_own" on public.travel_trip_decisions;
+create policy "travel_trip_decisions_insert_own" on public.travel_trip_decisions for insert with check (auth.uid() = user_id);
+drop policy if exists "travel_trip_decisions_update_own" on public.travel_trip_decisions;
+create policy "travel_trip_decisions_update_own" on public.travel_trip_decisions for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+drop policy if exists "travel_trip_decisions_delete_own" on public.travel_trip_decisions;
+create policy "travel_trip_decisions_delete_own" on public.travel_trip_decisions for delete using (auth.uid() = user_id);
+
+notify pgrst, 'reload schema';

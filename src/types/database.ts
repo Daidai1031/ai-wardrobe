@@ -193,6 +193,25 @@ export interface TravelPlan {
   updated_at: string;
 }
 
+/**
+ * A correction the user made to trip detection (schema section 22).
+ *
+ * Keyed by `anchor_signature` — the signature of the trip they were looking at —
+ * rather than by a `travel_plans` id, because the half a split produces has no row
+ * yet and the trip a merge absorbs loses its signature along with its row. One answer
+ * per trip; `keep` is a real answer meaning "stop asking", not the absence of one.
+ */
+export interface TravelTripDecision {
+  id: string;
+  user_id: string;
+  anchor_signature: string;
+  action: "split" | "merge" | "keep";
+  /** Required by `split` (the second trip's first local date), null for the others. */
+  boundary_date: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 // google_connections is service-role-only (no client-facing RLS policy) — this type
 // exists for src/lib/google/client.ts, not for use with the browser/server Supabase clients.
 export interface GoogleConnection {

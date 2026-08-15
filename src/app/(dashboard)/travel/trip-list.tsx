@@ -12,6 +12,7 @@ import {
   Palmtree,
   Plane,
   RefreshCw,
+  Scissors,
   Share2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -43,6 +44,7 @@ export function TripList() {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [openingSignature, setOpeningSignature] = useState<string | null>(null);
+  const [decidingSignature, setDecidingSignature] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -118,6 +120,48 @@ export function TripList() {
     }
   }
 
+  /**
+   * Answer a detection question. The whole list is reloaded afterwards rather than
+   * patched in place, because one answer reshapes trips either side of it — a split
+   * produces a trip that did not exist a moment ago, and a merge removes one — and
+   * every derived number on the cards (planned days, confirmed days) belongs to the
+   * new shapes rather than the old.
+   */
+  async function decide(trip: TripSummary, action: "split" | "merge" | "keep", boundaryDate?: string) {
+    setDecidingSignature(trip.signature);
+    try {
+      const response = await fetch("/api/travel/trips/decisions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ signature: trip.signature, action, boundaryDate: boundaryDate ?? null }),
+      });
+      const payload = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(payload.error || "Couldn't save that.");
+      await load();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Couldn't save that.");
+    } finally {
+      setDecidingSignature(null);
+    }
+  }
+
+  async function undoDecision(trip: TripSummary) {
+    setDecidingSignature(trip.signature);
+    try {
+      const response = await fetch(
+        `/api/travel/trips/decisions?signature=${encodeURIComponent(trip.signature)}`,
+        { method: "DELETE" }
+      );
+      const payload = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(payload.error || "Couldn't undo that.");
+      await load();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Couldn't undo that.");
+    } finally {
+      setDecidingSignature(null);
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-surface-200 bg-white p-10 text-surface-400">
@@ -170,6 +214,9 @@ export function TripList() {
               trip={trip}
               opening={openingSignature === trip.signature}
               onOpen={() => void openTrip(trip)}
+              onDecide={(action, boundaryDate) => void decide(trip, action, boundaryDate)}
+              onUndo={() => void undoDecision(trip)}
+              deciding={decidingSignature === trip.signature}
             />
           ))}
         </div>
@@ -182,21 +229,34 @@ function TripCard({
   trip,
   opening,
   onOpen,
+  onDecide,
+  onUndo,
+  deciding,
 }: {
   trip: TripSummary;
   opening: boolean;
   onOpen: () => void;
+  onDecide: (action: "split" | "merge" | "keep", boundaryDate?: string) => void;
+  onUndo: () => void;
+  deciding: boolean;
 }) {
   const business = trip.tripType === "business";
   const Icon = business ? Briefcase : Palmtree;
   const allPlanned = trip.plannedDays >= trip.dates.length;
   const allConfirmed = trip.confirmedDays >= trip.dates.length;
 
+  // The card itself is one big button, so the question below it lives outside that
+  // button rather than inside — nested buttons are invalid, and a click meant for
+  // "Split" would otherwise also open the trip.
   return (
+    <div className="flex flex-col">
     <button
       onClick={onOpen}
       disabled={opening}
-      className="flex flex-col gap-3 rounded-2xl border border-surface-200 bg-white p-4 text-left transition-colors hover:border-brand-300 disabled:opacity-60"
+      className={cn(
+        "flex flex-1 flex-col gap-3 border border-surface-200 bg-white p-4 text-left transition-colors hover:border-brand-300 disabled:opacity-60",
+        trip.suggestion ? "rounded-t-2xl border-b-0" : "rounded-2xl"
+      )}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -260,8 +320,49 @@ function TripCard({
             Shared
           </span>
         )}
+        {trip.userShaped && (
+          <span
+            title="You told us how this trip is grouped, so detection leaves it alone."
+            className="flex items-center gap-1 rounded-full bg-surface-100 px-2 py-0.5 text-[10px] font-semibold text-surface-500"
+          >
+            <Check size={10} />
+            Your grouping
+          </span>
+        )}
         {opening && <Loader2 size={13} className="ml-auto animate-spin text-brand-500" />}
       </div>
     </button>
+
+      {trip.suggestion && (
+        <div className="flex flex-wrap items-center gap-2 rounded-b-2xl border border-amber-200 bg-amber-50 px-4 py-3">
+          <p className="w-full text-xs text-amber-900">{trip.suggestion.question}</p>
+          <button
+            onClick={() => onDecide(trip.suggestion!.kind, trip.suggestion!.boundaryDate)}
+            disabled={deciding}
+            className="flex items-center gap-1 rounded-lg bg-surface-900 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-surface-800 disabled:opacity-50"
+          >
+            {deciding ? <Loader2 size={11} className="animate-spin" /> : <Scissors size={11} />}
+            {trip.suggestion.actionLabel}
+          </button>
+          <button
+            onClick={() => onDecide("keep")}
+            disabled={deciding}
+            className="rounded-lg border border-amber-300 px-2.5 py-1.5 text-[11px] font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+          >
+            No, it&apos;s right
+          </button>
+        </div>
+      )}
+
+      {trip.userShaped && (
+        <button
+          onClick={onUndo}
+          disabled={deciding}
+          className="mt-1 self-start text-[11px] font-medium text-surface-400 underline-offset-2 hover:text-surface-600 hover:underline disabled:opacity-50"
+        >
+          Undo my grouping
+        </button>
+      )}
+    </div>
   );
 }

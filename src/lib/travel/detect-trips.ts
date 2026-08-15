@@ -17,7 +17,7 @@ import { eventLocalDateBounds } from "@/lib/weather/calendar-location";
 import { explicitTravelDestinationFromTitle } from "@/lib/calendar/classify-events";
 import { occasionKind } from "@/lib/planning/occasion-groups";
 import type { CalendarEvent } from "@/types/database";
-import type { DetectedTrip, TripType } from "@/types/travel";
+import type { DetectedTrip, TripDecision, TripLeg, TripSuggestion, TripType } from "@/types/travel";
 
 /**
  * How far from the profile city counts as away. Generous on purpose: a suburb, a
@@ -35,6 +35,13 @@ const MAX_GAP_DAYS = 2;
  * so many words ("Business Trip (London)"), in which case believe it.
  */
 const MIN_TRIP_DAYS = 2;
+
+/**
+ * How many times a trip may be cut by user decisions in one detection pass. Each cut
+ * re-keys what it produced, so the loop is what lets a three-city stretch be split
+ * twice; the cap is only there so a malformed decision set cannot spin.
+ */
+const MAX_DECISION_ROUNDS = 8;
 
 const BUSINESS_TITLE_PATTERNS = [
   /\bbusiness\s+(?:trip|travel)\b/i,
@@ -318,8 +325,82 @@ export function detectTrips(
   home: HomeLocation | null,
   timeZone: string,
   windowStart: string,
-  windowEnd: string
+  windowEnd: string,
+  decisions: TripDecision[] = []
 ): DetectedTrip[] {
+  const runs = buildRuns(events, home, timeZone);
+  const shaped = applyDecisions(runs, events, timeZone, windowStart, windowEnd, decisions);
+  return runsToTrips(shaped, events, timeZone, windowStart, windowEnd).map((pair) => pair.trip);
+}
+
+/**
+ * What detection wants to double-check, given what it produced and what it was told.
+ *
+ * Two questions, both raised only on concrete evidence:
+ * - a trip whose legs name **more than one city** — the split boundary offered is the
+ *   second leg's first date, so the answer is one click rather than a date picker;
+ * - two trips that are **back to back on the calendar** — the mirror of the rule that
+ *   ends a run when the destination changes. That rule is right for a Hamptons weekend
+ *   followed by a London week and wrong for one journey with two stops, and nothing in
+ *   the calendar distinguishes them, so this is the one the user has to settle. Note
+ *   it deliberately does *not* also require the destinations to be close: two adjacent
+ *   trips within `AWAY_RADIUS_KM` of each other were already merged into one run, so
+ *   asking about them would be a question that could never fire.
+ *
+ * A trip the user has already answered about is never asked again: that is what the
+ * `keep` action is for, and it is why dismissing a suggestion has to be stored rather
+ * than handled in component state.
+ */
+export function suggestionsForTrips(
+  trips: DetectedTrip[],
+  decisions: TripDecision[]
+): Map<string, TripSuggestion> {
+  const answered = new Set(decisions.map((decision) => decision.anchorSignature));
+  const out = new Map<string, TripSuggestion>();
+
+  trips.forEach((trip, index) => {
+    if (answered.has(trip.signature)) return;
+
+    const secondLeg = trip.legs[1];
+    if (trip.legs.length > 1 && secondLeg && secondLeg.startDate > trip.startDate) {
+      out.set(trip.signature, {
+        kind: "split",
+        signature: trip.signature,
+        question: `This trip covers ${trip.legs.map((leg) => leg.city).join(" and ")}. Is it two trips?`,
+        actionLabel: `Split from ${secondLeg.startDate}`,
+        boundaryDate: secondLeg.startDate,
+      });
+      return;
+    }
+
+    const next = trips[index + 1];
+    if (!next) return;
+    if (daysBetween(trip.endDate, next.startDate) <= MAX_GAP_DAYS + 1) {
+      out.set(trip.signature, {
+        kind: "merge",
+        signature: trip.signature,
+        question: `${trip.destination} and ${next.destination} are back to back. Is that one trip?`,
+        actionLabel: "Merge into one trip",
+      });
+    }
+  });
+
+  return out;
+}
+
+/** A stretch of consecutive away dates, before it is shaped into a trip. */
+interface TripRun {
+  start: string;
+  end: string;
+  away: AwayEvent[];
+  anchor: DestinationRef;
+}
+
+function buildRuns(
+  events: CalendarEvent[],
+  home: HomeLocation | null,
+  timeZone: string
+): TripRun[] {
   const awayEvents = events
     .map((event) => awayEventFor(event, home, timeZone))
     .filter((away): away is AwayEvent => away !== null)
@@ -337,7 +418,7 @@ export function detectTrips(
   // packing list. A change of destination therefore ends the run, whatever the dates
   // say — the same reasoning `occasion-groups.ts` uses for a change of `kind`, where
   // being on a plane is not a matter of degree.
-  const runs: { start: string; end: string; away: AwayEvent[]; anchor: DestinationRef }[] = [];
+  const runs: TripRun[] = [];
   for (const away of awayEvents) {
     const current = runs[runs.length - 1];
     const bridges = current != null && daysBetween(current.end, away.first) <= MAX_GAP_DAYS + 1;
@@ -371,6 +452,27 @@ export function detectTrips(
     });
   }
 
+  return runs;
+}
+
+/**
+ * Runs, shaped into the trips the UI shows.
+ *
+ * Kept separate from `buildRuns` because a user decision (split, merge) is applied to
+ * runs and then re-shaped, so everything derived — dates, event ids, type, highlights,
+ * signature — is computed by this one function rather than patched afterwards. It
+ * returns the run beside each trip so a decision can be matched to the trip the user
+ * was actually looking at.
+ */
+function runsToTrips(
+  runs: TripRun[],
+  events: CalendarEvent[],
+  timeZone: string,
+  windowStart: string,
+  windowEnd: string
+): { trip: DetectedTrip; run: TripRun }[] {
+  if (runs.length === 0) return [];
+
   const transitDates = new Set(
     events
       .filter(
@@ -384,7 +486,7 @@ export function detectTrips(
       })
   );
 
-  const trips: DetectedTrip[] = [];
+  const trips: { trip: DetectedTrip; run: TripRun }[] = [];
   // The departure and return legs belong to the trip even when the flight itself is
   // geocoded to the home airport, which is exactly what a 5pm "Depart for JFK" is.
   // Only one day on each side, and only when something is actually flying.
@@ -430,27 +532,177 @@ export function detectTrips(
     const { tripType, typeReason } = classifyTrip(tripEvents);
 
     trips.push({
-      signature: tripSignature(start, destination),
-      destination,
-      cities,
-      destinationLat: lat,
-      destinationLng: lng,
-      destinationTimezone: timezone,
-      startDate: start,
-      endDate: end,
-      dates,
-      tripType,
-      typeReason,
-      eventIds: tripEvents.map((event) => event.id),
-      highlights: [
-        ...new Set(
-          run.away
-            .map((away) => away.event.title)
-            .filter((title): title is string => Boolean(title))
-        ),
-      ].slice(0, 3),
+      run,
+      trip: {
+        signature: tripSignature(start, destination),
+        destination,
+        cities,
+        legs: legsOf(run.away, start, end),
+        destinationLat: lat,
+        destinationLng: lng,
+        destinationTimezone: timezone,
+        startDate: start,
+        endDate: end,
+        dates,
+        tripType,
+        typeReason,
+        eventIds: tripEvents.map((event) => event.id),
+        highlights: [
+          ...new Set(
+            run.away
+              .map((away) => away.event.title)
+              .filter((title): title is string => Boolean(title))
+          ),
+        ].slice(0, 3),
+      },
     });
   }
 
-  return trips.sort((a, b) => a.startDate.localeCompare(b.startDate));
+  return trips.sort((a, b) => a.trip.startDate.localeCompare(b.trip.startDate));
+}
+
+/**
+ * The user's answers, applied to the runs before they become trips.
+ *
+ * Detection is a pure function of the calendar, and it is wrong sometimes: two cities
+ * inside 120km read as one trip, and a genuine two-city tour reads as two. Rather than
+ * add heuristics that would each be wrong somewhere else, the user answers, and the
+ * answer is data applied on top — detection itself stays the same function it was.
+ *
+ * **Decisions anchor on the signature of the trip the user was looking at**, so they
+ * survive a re-detection that produces the same trips. They deliberately do NOT
+ * survive one that doesn't: if the calendar moves the trip, its signature changes, the
+ * decision stops matching, and detection is believed again. A stale decision quietly
+ * reshaping a trip the user never saw would be worse than asking once more.
+ *
+ * Merges are applied first and the trips re-derived, because a split can then be
+ * anchored on the merged trip's signature. Splits then run in a bounded loop so a trip
+ * can be cut more than once — each cut changes the signatures, so the next decision is
+ * matched against the shape the user actually answered about.
+ */
+function applyDecisions(
+  runs: TripRun[],
+  events: CalendarEvent[],
+  timeZone: string,
+  windowStart: string,
+  windowEnd: string,
+  decisions: TripDecision[]
+): TripRun[] {
+  if (decisions.length === 0 || runs.length === 0) return runs;
+
+  const shape = (input: TripRun[]) => runsToTrips(input, events, timeZone, windowStart, windowEnd);
+  const merges = new Set(
+    decisions.filter((d) => d.action === "merge").map((d) => d.anchorSignature)
+  );
+  const splits = new Map(
+    decisions
+      .filter((d) => d.action === "split" && d.boundaryDate)
+      .map((d) => [d.anchorSignature, d.boundaryDate as string])
+  );
+
+  let current = runs;
+
+  if (merges.size > 0) {
+    // Walked over the original ordering rather than applied one at a time, so a chain
+    // (A joins B, B joins C) collapses into one trip: applying them singly would
+    // re-key the middle trip after the first join and strand the second decision.
+    const pairs = shape(current);
+    const joined: TripRun[] = [];
+    for (const [index, { run }] of pairs.entries()) {
+      // "Merge" is answered on the earlier trip and means "this one continues into the
+      // next", so what decides whether this trip joins the group is the *previous*
+      // trip's answer — and the previous trip's signature as it was detected, which is
+      // what the user was shown even if it has since been absorbed into a group.
+      const previousAnswered = merges.has(pairs[index - 1]?.trip.signature ?? "");
+      const group = joined[joined.length - 1];
+      if (group && previousAnswered) {
+        group.end = run.end > group.end ? run.end : group.end;
+        group.away = [...group.away, ...run.away];
+        continue;
+      }
+      joined.push({ ...run, away: [...run.away] });
+    }
+    // Runs the shaping dropped (too short, outside the window) are not in `pairs` and
+    // would be lost by rebuilding from it alone, so they are carried through unchanged.
+    const kept = new Set(pairs.map((pair) => pair.run));
+    current = [...joined, ...current.filter((run) => !kept.has(run))].sort((a, b) =>
+      a.start.localeCompare(b.start)
+    );
+  }
+
+  for (let round = 0; round < MAX_DECISION_ROUNDS && splits.size > 0; round += 1) {
+    const pairs = shape(current);
+    const target = pairs.find((pair) => splits.has(pair.trip.signature));
+    if (!target) break;
+
+    const boundary = splits.get(target.trip.signature) as string;
+    splits.delete(target.trip.signature);
+
+    const halves = splitRun(target.run, boundary);
+    if (halves.length < 2) continue;
+    current = current.flatMap((run) => (run === target.run ? halves : [run]));
+  }
+
+  return current;
+}
+
+/**
+ * One run cut in two at `boundary`, which becomes the first date of the second half.
+ *
+ * An away event that spans the cut belongs to both halves with its own dates clipped —
+ * an all-day "Business Trip (London)" container covering the whole stretch is exactly
+ * that case, and dropping it from either half would leave that half with no stated
+ * destination at all. A cut that would leave either half with nothing is refused
+ * rather than producing a trip with no evidence behind it.
+ */
+function splitRun(run: TripRun, boundary: string): TripRun[] {
+  if (boundary <= run.start || boundary > run.end) return [run];
+
+  const clip = (away: AwayEvent, first: string, last: string): AwayEvent => ({
+    ...away,
+    first: away.first < first ? first : away.first,
+    last: away.last > last ? last : away.last,
+  });
+
+  const beforeEnd = addDays(boundary, -1);
+  const first = run.away.filter((away) => away.first <= beforeEnd).map((a) => clip(a, run.start, beforeEnd));
+  const second = run.away.filter((away) => away.last >= boundary).map((a) => clip(a, boundary, run.end));
+  if (first.length === 0 || second.length === 0) return [run];
+
+  const anchorOf = (list: AwayEvent[]): DestinationRef => {
+    const known = list.find((away) => away.city) ?? list[0];
+    return { city: known.city, lat: known.lat, lng: known.lng };
+  };
+
+  return [
+    { start: run.start, end: beforeEnd, away: first, anchor: anchorOf(first) },
+    { start: boundary, end: run.end, away: second, anchor: anchorOf(second) },
+  ];
+}
+
+/**
+ * The trip's cities with the dates each one covers.
+ *
+ * `cities` alone says a trip touches two places; this says *when*, which is what turns
+ * "is this two trips?" into a question with a concrete answer — the second leg's first
+ * date is the split boundary the UI can offer. Legs are clipped to the trip and merged
+ * when the same city reappears adjacently, so a city interleaved with locationless
+ * events reads as one stay rather than three.
+ */
+function legsOf(awayEvents: AwayEvent[], start: string, end: string): TripLeg[] {
+  const legs: TripLeg[] = [];
+  for (const away of [...awayEvents].sort((a, b) => a.first.localeCompare(b.first))) {
+    if (!away.city) continue;
+    const from = away.first < start ? start : away.first;
+    const to = away.last > end ? end : away.last;
+    if (to < from) continue;
+
+    const previous = legs[legs.length - 1];
+    if (previous && normalizeCityName(previous.city) === normalizeCityName(away.city)) {
+      if (to > previous.endDate) previous.endDate = to;
+      continue;
+    }
+    legs.push({ city: away.city, startDate: from, endDate: to });
+  }
+  return legs;
 }

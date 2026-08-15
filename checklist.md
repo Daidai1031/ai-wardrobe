@@ -359,6 +359,14 @@
 
 **对真实数据验过（2026-08-14）**：拿生产库里真实的 29 条日历行喂给真正的 `detectTrips()`（不是合成断言），检出 `Hamptons 2026-08-14 → 2026-08-21`（8 天，leisure，理由「"vacation: Hamptons" 是日历上写着的」），signature `2026-08-14|hamptons`；Chicago 那个没同步过日历的账号正确地检出 0 趟。resolve 的 upsert 也在事务里试过 `on conflict (user_id, calendar_signature) do update` 能命中真约束（CLAUDE.md 警告的「部分唯一索引会让 PostgREST 的 upsert 全挂」在这里不适用，因为 21 建的是真约束），跑完 `rollback`，`travel_plans` 仍是 0 行。
 
+**人工修正（2026-08-14 追加）**：识别推错时用户可以纠正，而不是只能干看着。三件事：① **主动问**——`suggestionsForTrips()` 只在有具体证据时提问：一趟行程的 `legs` 里出现两个城市就问"是两趟吗？"（并把第二段的首日作为切分点直接给出），两趟首尾相接就问"是一趟吗？"；② **拆/合**——答案存进 `travel_trip_decisions`（schema 22），由 `applyDecisions()` 在 **run 层**应用（先合并、重新推导、再拆分，拆分走有上限的循环所以一段能切多次），因此 dates/eventIds/tripType/highlights/signature 全部由原有代码算出来，不是事后打补丁；③ **改名**——`PATCH` 接受 `destination`，只写行、**不重算 `calendar_signature`**，否则改个名字就会把打包清单甩在旧身份上。
+
+两个设计上的坑，都记下来：**`keep`（"不用改"）必须是一条真实存储的答案**，不能用"没有记录"表示，否则消掉的提示每次加载都会弹回来；**决定在日历移动导致 signature 变化后自动失效**，回到相信检测——一条过期的决定悄悄重塑一趟用户没看过的行程，比多问一次糟得多。另外发现并修掉一个连带 bug：`resolveTripBySignature` 原来每次都无条件 upsert `destination` 和 `trip_type`，改名（以及已有的 business/leisure 人工修正）会在下次打开行程时被检测结果冲掉；现在只在**创建时**写入一次（`ignoreDuplicates`，两个标签页仍不会竞争），之后只刷新日历拥有的字段（日期和坐标）。
+
+**合并建议一开始是死代码**：最初的条件是"两趟相邻**且**目的地相近"，但相近 + 相邻的两趟在 run 阶段就已经自动并成一趟了，这个条件永远不成立。真正该问的是相邻但**不同**目的地的两趟——也就是刚被上面那条规则拆开的那种。合成用例把这个抓了出来。
+
+**已验证**：`tsc`/`lint`/`build` 全过（新路由 `/api/travel/trips/decisions` 在构建产物里）；schema 22 已应用到生产库并复核（7 列 / 4 约束 / 4 policy / RLS 开启）；10 条决定用例全绿（拆分、合并、keep 不改形状、链式合并 A→B→C、越界切分点被忽略、日历变了决定失效、近距离双城并成一趟、一趟两城提议拆分并给边界、已回答不再问、相邻两趟提议合并且挂在前一趟上）；7 条检测回归用例重构后仍全绿；真实日历上 Hamptons 那趟正确地收到"和 London 是一趟吗？"的提问。断言脚本在 scratchpad 的 `detect-cases.mts` / `decide-cases.mts`（本仓库没有测试框架，沿用一次性脚本的惯例）。
+
 **未验证**: 浏览器里的那一串——「Sync calendar → 列表里认出这趟 Hamptons → 点进去 → 已在 /plan 排过的天确实带着搭配出现 → 排剩下的天没有覆盖掉已排的 → 逐天确认 → Packing tab 的衣物确实等于那几天的并集 → 打印页图片不是空框 → 分享链接在无痕窗口打得开、撤销后 404」。这几步要么需要登录态、要么需要肉眼看渲染，服务端脚本replace不了。
 
 ---

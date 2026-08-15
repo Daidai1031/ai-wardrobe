@@ -83,6 +83,8 @@ export function TripView({
   const [regeneratingDate, setRegeneratingDate] = useState<string | null>(null);
   const [regeneratingSegmentId, setRegeneratingSegmentId] = useState<string | null>(null);
   const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const [draftName, setDraftName] = useState("");
   const [reusingSegmentId, setReusingSegmentId] = useState<string | null>(null);
 
   /**
@@ -350,9 +352,46 @@ export function TripView({
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h1 className="font-display text-2xl font-semibold text-surface-900">
-                {trip.destination}
-              </h1>
+              {renaming ? (
+                // Detection names a trip after the city it found, which is right until
+                // it isn't ("Hamptons" for a house in Montauk, "Away" when no event
+                // carried a city). The name is the row's; the signature stays what the
+                // calendar produced, so renaming can't strand the packing list.
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    setRenaming(false);
+                    if (draftName.trim() === trip.destination) return;
+                    void patchTrip({ destination: draftName }, "Couldn't rename the trip.");
+                  }}
+                  className="flex items-center gap-1.5"
+                >
+                  <input
+                    autoFocus
+                    value={draftName}
+                    onChange={(event) => setDraftName(event.target.value)}
+                    onBlur={() => setRenaming(false)}
+                    maxLength={80}
+                    placeholder={trip.destination}
+                    aria-label="Trip name"
+                    className="w-56 rounded-lg border border-surface-300 px-2 py-1 font-display text-2xl font-semibold text-surface-900 focus:border-brand-400 focus:outline-none"
+                  />
+                  <span className="text-[11px] text-surface-400">Enter to save · empty to reset</span>
+                </form>
+              ) : (
+                <h1 className="font-display text-2xl font-semibold text-surface-900">
+                  <button
+                    onClick={() => {
+                      setDraftName(trip.destination);
+                      setRenaming(true);
+                    }}
+                    title="Rename this trip"
+                    className="hover:text-brand-600"
+                  >
+                    {trip.destination}
+                  </button>
+                </h1>
+              )}
               <button
                 onClick={() =>
                   void patchTrip(

@@ -17,9 +17,9 @@
 
 import { createServerSupabase } from "@/lib/supabase/server";
 import { MAX_PLAN_WINDOW_DAYS, readPlansForDates } from "@/lib/planning/plans";
-import { detectTrips, type HomeLocation } from "@/lib/travel/detect-trips";
+import { detectTrips, suggestionsForTrips, type HomeLocation } from "@/lib/travel/detect-trips";
 import type { CalendarEvent, TravelPlan } from "@/types/database";
-import type { DetectedTrip, TripMeta, TripSummary } from "@/types/travel";
+import type { DetectedTrip, TripDecision, TripMeta, TripSummary } from "@/types/travel";
 
 type ServerSupabase = Awaited<ReturnType<typeof createServerSupabase>>;
 
@@ -68,24 +68,72 @@ export async function detectTripsForUser(
   userId: string,
   profile: TripProfile | null,
   timeZone: string
-): Promise<{ trips: DetectedTrip[]; windowStart: string; windowEnd: string }> {
+): Promise<{
+  trips: DetectedTrip[];
+  decisions: TripDecision[];
+  windowStart: string;
+  windowEnd: string;
+}> {
   const windowStart = new Intl.DateTimeFormat("en-CA", { timeZone }).format(new Date());
   const windowEnd = addDays(windowStart, TRIP_WINDOW_DAYS - 1);
 
-  const { data, error } = await supabase
-    .from("calendar_events")
-    .select(CALENDAR_EVENT_SELECT)
-    .eq("user_id", userId)
-    .gte("starts_at", `${addDays(windowStart, -7)}T00:00:00Z`)
-    .lte("starts_at", `${addDays(windowEnd, 7)}T23:59:59Z`);
+  const [events, decisions] = await Promise.all([
+    supabase
+      .from("calendar_events")
+      .select(CALENDAR_EVENT_SELECT)
+      .eq("user_id", userId)
+      .gte("starts_at", `${addDays(windowStart, -7)}T00:00:00Z`)
+      .lte("starts_at", `${addDays(windowEnd, 7)}T23:59:59Z`),
+    readTripDecisions(supabase, userId),
+  ]);
 
-  if (error) throw error;
+  if (events.error) throw events.error;
 
   return {
-    trips: detectTrips((data || []) as CalendarEvent[], profile, timeZone, windowStart, windowEnd),
+    trips: detectTrips(
+      (events.data || []) as CalendarEvent[],
+      profile,
+      timeZone,
+      windowStart,
+      windowEnd,
+      decisions
+    ),
+    decisions,
     windowStart,
     windowEnd,
   };
+}
+
+/**
+ * The user's corrections to detection (schema 22).
+ *
+ * Read as its own query rather than joined onto anything, because decisions anchor on
+ * a signature and not on a `travel_plans` row — the half a split produces has no row
+ * yet, and the trip a merge absorbs no longer has a signature to join on.
+ *
+ * A missing table is treated as "no corrections yet" rather than as a failure: section
+ * 22 is applied by hand like every other block, and a trip list that 500s until it has
+ * been run would take away the working feature to protect the new one.
+ */
+export async function readTripDecisions(
+  supabase: ServerSupabase,
+  userId: string
+): Promise<TripDecision[]> {
+  const { data, error } = await supabase
+    .from("travel_trip_decisions")
+    .select("anchor_signature, action, boundary_date")
+    .eq("user_id", userId);
+
+  if (error) {
+    console.error("Trip decisions unavailable (has schema section 22 been applied?):", error.message);
+    return [];
+  }
+
+  return (data || []).map((row) => ({
+    anchorSignature: row.anchor_signature as string,
+    action: row.action as TripDecision["action"],
+    boundaryDate: (row.boundary_date as string | null) ?? null,
+  }));
 }
 
 export async function readStoredTrips(
@@ -116,10 +164,13 @@ export async function readTripSummaries(
   profile: TripProfile | null,
   timeZone: string
 ): Promise<{ trips: TripSummary[]; windowStart: string; windowEnd: string }> {
-  const [{ trips: detected, windowStart, windowEnd }, stored] = await Promise.all([
+  const [{ trips: detected, decisions, windowStart, windowEnd }, stored] = await Promise.all([
     detectTripsForUser(supabase, userId, profile, timeZone),
     readStoredTrips(supabase, userId),
   ]);
+
+  const suggestions = suggestionsForTrips(detected, decisions);
+  const shapedBy = new Map(decisions.map((decision) => [decision.anchorSignature, decision.action]));
 
   const storedBySignature = new Map(
     stored
@@ -140,6 +191,13 @@ export async function readTripSummaries(
       // re-deriving it from the same events that got it wrong the first time.
       tripType: row?.trip_type ?? trip.tripType,
       typeReason: row?.trip_type && row.trip_type !== trip.tripType ? "you set this" : trip.typeReason,
+      // The destination is the row's when the user renamed it there — the signature is
+      // computed from what the calendar says and is deliberately not re-keyed by a
+      // rename, so the stored label can differ from the detected one without the row
+      // ever losing its trip.
+      destination: row?.destination || trip.destination,
+      suggestion: suggestions.get(trip.signature),
+      userShaped: shapedBy.get(trip.signature) === "split" || shapedBy.get(trip.signature) === "merge",
       plannedDays: trip.dates.filter((date) => plans.has(date)).length,
       confirmedDays: trip.dates.filter((date) => confirmed.has(date)).length,
       shared: Boolean(row?.share_token),
@@ -162,27 +220,48 @@ export async function resolveTripBySignature(
   userId: string,
   trip: DetectedTrip
 ): Promise<TravelPlan> {
+  // Insert only if it isn't there. `ignoreDuplicates` keeps two tabs opening the same
+  // trip from racing — the constraint decides, and the loser simply reads the winner's
+  // row — while making sure the columns below are written **once**, at creation.
+  //
+  // That distinction is the whole point: `destination` and `trip_type` start as what
+  // detection said, but both are editable, and the old unconditional upsert wrote
+  // detection's answer back over the user's every time the trip was resolved. The
+  // renamed trip would revert on the next open, which reads as the rename not saving.
+  const { error: insertError } = await supabase.from("travel_plans").upsert(
+    {
+      user_id: userId,
+      destination: trip.destination,
+      destination_lat: trip.destinationLat,
+      destination_lng: trip.destinationLng,
+      destination_timezone: trip.destinationTimezone,
+      start_date: trip.startDate,
+      end_date: trip.endDate,
+      trip_type: trip.tripType,
+      origin: "calendar",
+      calendar_signature: trip.signature,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "user_id,calendar_signature", ignoreDuplicates: true }
+  );
+
+  if (insertError) throw insertError;
+
+  // Dates and coordinates are refreshed on every resolve, because the calendar stays
+  // the source of truth for *when and where* a trip is; the row is the source of truth
+  // only for what the user decided about it.
   const { data, error } = await supabase
     .from("travel_plans")
-    .upsert(
-      {
-        user_id: userId,
-        destination: trip.destination,
-        destination_lat: trip.destinationLat,
-        destination_lng: trip.destinationLng,
-        destination_timezone: trip.destinationTimezone,
-        start_date: trip.startDate,
-        // Dates are refreshed on every resolve: the calendar is the source of truth
-        // for when the trip is, and the row is only the source of truth for what the
-        // user decided about it.
-        end_date: trip.endDate,
-        trip_type: trip.tripType,
-        origin: "calendar",
-        calendar_signature: trip.signature,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "user_id,calendar_signature", ignoreDuplicates: false }
-    )
+    .update({
+      destination_lat: trip.destinationLat,
+      destination_lng: trip.destinationLng,
+      destination_timezone: trip.destinationTimezone,
+      start_date: trip.startDate,
+      end_date: trip.endDate,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("user_id", userId)
+    .eq("calendar_signature", trip.signature)
     .select(TRAVEL_PLAN_SELECT)
     .single();
 

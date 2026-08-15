@@ -12,11 +12,39 @@ export type { TripType };
  * rather than going stale. `signature` is what carries the identity across those
  * re-detections — see schema section 21.
  */
+/** One city of a trip, with the dates it covers. */
+export interface TripLeg {
+  city: string;
+  startDate: string;
+  endDate: string;
+}
+
+/**
+ * A correction the user made to what detection produced.
+ *
+ * Anchored on the signature of the trip they were looking at, never on a stored row:
+ * a split produces a half that has no row yet, and a merge makes the later trip's
+ * signature disappear, so neither can be recorded on `travel_plans`. Schema 22.
+ */
+export interface TripDecision {
+  /**
+   * `split` cuts the trip at `boundaryDate`; `merge` joins it with the trip that
+   * follows it; `keep` is "leave it as detected", which exists so a dismissed
+   * suggestion stays dismissed instead of being asked again on every load.
+   */
+  action: "split" | "merge" | "keep";
+  anchorSignature: string;
+  /** Required by `split`, the first local date of the second half. Null otherwise. */
+  boundaryDate: string | null;
+}
+
 export interface DetectedTrip {
   signature: string;
   destination: string;
   /** Every distinct city the trip touches, in first-seen order. Multi-city trips are real. */
   cities: string[];
+  /** Those cities with their dates — what makes "is this two trips?" answerable. */
+  legs: TripLeg[];
   destinationLat: number | null;
   destinationLng: number | null;
   destinationTimezone: string | null;
@@ -32,8 +60,30 @@ export interface DetectedTrip {
   highlights: string[];
 }
 
+/**
+ * A question detection wants to ask about a trip it isn't sure it got right.
+ *
+ * Only ever raised where the evidence is concrete — a trip covering two cities, or two
+ * trips whose destinations are close enough that the split may have been wrong — never
+ * as a general "is this right?", which would train the user to dismiss it.
+ */
+export interface TripSuggestion {
+  kind: "split" | "merge";
+  /** The signature the answer will be anchored on. */
+  signature: string;
+  question: string;
+  /** What the affirmative button does, e.g. "Split into two trips". */
+  actionLabel: string;
+  /** `split` only: the date the second trip would start on. */
+  boundaryDate?: string;
+}
+
 /** A detected trip joined to its stored row, when it has one. */
 export interface TripSummary extends DetectedTrip {
+  /** Set when detection wants to check its own work on this trip. */
+  suggestion?: TripSuggestion;
+  /** True when this trip's shape is the user's decision rather than detection's. */
+  userShaped?: boolean;
   /** Null until the user opens the trip and it is materialized. */
   id: string | null;
   /** Days of the trip that already have a plan, from /plan or from here. */

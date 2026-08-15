@@ -48,6 +48,12 @@ interface TripPatchBody {
   confirmedDates?: unknown;
   packing?: unknown;
   tripType?: unknown;
+  /**
+   * The user's own name for the trip. Stored on the row and never fed back into
+   * `calendar_signature`, which stays what the calendar produced — renaming a trip
+   * must not re-key it, or the packing list would be stranded on the old identity.
+   */
+  destination?: unknown;
   /** "create" mints a share token if there isn't one; "revoke" clears it. */
   share?: unknown;
 }
@@ -122,6 +128,14 @@ export async function PATCH(
       update.trip_type = body.tripType;
     }
 
+    if (typeof body.destination === "string") {
+      const destination = body.destination.trim().slice(0, 80);
+      // An empty name is a request to go back to what detection called it, not a trip
+      // with no name — and detection is re-derived on every read, so restoring it is
+      // simply writing today's detected label back.
+      update.destination = destination || found.meta.destination;
+    }
+
     if (body.share === "create" && !found.row.share_token) {
       // 32 hex characters of CSPRNG. This is the only credential the public
       // /trip/[token] page has, so it has to be unguessable rather than merely
@@ -139,7 +153,7 @@ export async function PATCH(
       .update(update)
       .eq("id", id)
       .eq("user_id", user.id)
-      .select("packing_list, trip_type, confirmed_dates, share_token")
+      .select("packing_list, trip_type, confirmed_dates, share_token, destination")
       .single();
 
     if (error) throw error;
@@ -148,12 +162,14 @@ export async function PATCH(
       trip_type: "business" | "leisure" | null;
       confirmed_dates: string[] | null;
       share_token: string | null;
+      destination: string | null;
     };
 
     const tripType = row.trip_type ?? found.meta.tripType;
     const response: TripDetailResponse = {
       trip: {
         ...found.meta,
+        destination: row.destination || found.meta.destination,
         tripType,
         confirmedDates: row.confirmed_dates ?? [],
         shareToken: row.share_token,
