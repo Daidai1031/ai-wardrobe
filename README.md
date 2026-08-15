@@ -2,7 +2,9 @@
 
 **Photograph a garment, and the app cuts it out, classifies it, and then plans what you wear — per day, per week, and per trip — against your real calendar, the real forecast, and rules about what can physically be worn together.**
 
-🔗 **Live:** [closet.daidingrdesigns.com](https://closet.daidingrdesigns.com)
+Built for **[The Style That Binds Us](https://thestylethatbindsus.com/)** — in active development through summer 2026, not yet launched.
+
+🔗 **Development deployment:** [closet.daidingrdesigns.com](https://closet.daidingrdesigns.com) — the author's own domain, used for staging. The product has not shipped under the company's.
 
 ![Next.js](https://img.shields.io/badge/Next.js-16-000?logo=next.js&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
@@ -14,7 +16,7 @@
 [![CI](https://github.com/Daidai1031/ai-wardrobe/actions/workflows/ci.yml/badge.svg)](https://github.com/Daidai1031/ai-wardrobe/actions/workflows/ci.yml)
 ![License](https://img.shields.io/badge/license-Proprietary-lightgrey)
 
-This is a working product with a custom domain, a paying-service surface (a human stylist console), and a production Supabase database — not a demo. ~24,900 lines of TypeScript across 110 files, 17 pages, 24 route handlers, 20 tables, and 83 unit tests over the parts that decide things deterministically.
+Not a toy: it runs end to end against a live Supabase database, a real Google Calendar, and four paid AI providers, and it carries a staff-facing console for the company's human stylists. It is also not finished — the status tables below say exactly which paths have been walked in a browser and which have not. ~24,900 lines of TypeScript across 110 files, 17 pages, 24 route handlers, 20 tables, and 83 unit tests over the parts that decide things deterministically.
 
 ---
 
@@ -527,12 +529,14 @@ This repo keeps four documents with four different jobs, and each is updated in 
 
 ## License
 
-Copyright © 2026 Dingran Dai. All rights reserved.
+Copyright © 2026 The Style That Binds Us. All rights reserved. Developed by Dingran Dai.
 
-A personal project, built and owned by one author, and operated as a live product with real users and a paid stylist service — which is why it is **not** open source. The source is published for portfolio and evaluation purposes only: no license is granted to copy, modify, distribute, or use it commercially. See [`LICENSE`](./LICENSE).
+This is commercial product work, not an open-source project, which is why the license is proprietary: the source is readable for portfolio and evaluation purposes only, and no license is granted to copy, modify, distribute, or use it commercially. See [`LICENSE`](./LICENSE).
 
 ---
 
 ## Author
 
-**Dingran Dai** — [github.com/Daidai1031](https://github.com/Daidai1031) · dd699@cornell.edu
+Designed and built by **Dingran Dai** — sole developer, summer 2026.
+
+[github.com/Daidai1031](https://github.com/Daidai1031) · dd699@cornell.edu
