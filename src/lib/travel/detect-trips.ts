@@ -103,7 +103,48 @@ function datesInclusive(start: string, end: string): string[] {
  * packing list on the old one.
  */
 export function tripSignature(startDate: string, destination: string): string {
-  return `${startDate}|${destination.trim().toLowerCase().replace(/\s+/g, " ")}`;
+  return `${startDate}|${normalizeCityName(destination)}`;
+}
+
+function normalizeCityName(city: string | null | undefined): string {
+  return (city ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/** Whatever we know about where an event is. Either half may be missing. */
+interface DestinationRef {
+  city: string | null;
+  lat: number | null;
+  lng: number | null;
+}
+
+/**
+ * Are these the same place, for the purpose of deciding whether they belong to the
+ * same trip?
+ *
+ * **The name is checked before the coordinates, and that order is the point.** A real
+ * calendar produced "Hamptons" geocoded to East Hampton NY on one event and to
+ * Auburndale, Florida on another — same word, two resolutions 1,500km apart — so a
+ * coordinate-first test would split one weekend into two trips. Coordinates are the
+ * fallback for the opposite failure: "London" and "Westminster" are different words
+ * for the same week, and 120km apart is where this file already draws the line
+ * between here and away.
+ *
+ * Two different names with nothing to check them against are treated as different,
+ * because that is the case this function exists for — an adjacent Hamptons weekend
+ * and London week are two trips, not one. A side that knows nothing cannot
+ * contradict the other, so it joins.
+ */
+function sameDestination(a: DestinationRef, b: DestinationRef): boolean {
+  const aCity = normalizeCityName(a.city);
+  const bCity = normalizeCityName(b.city);
+  if (aCity && bCity && aCity === bCity) return true;
+
+  if (a.lat != null && a.lng != null && b.lat != null && b.lng != null) {
+    return distanceKm(a.lat, a.lng, b.lat, b.lng) <= AWAY_RADIUS_KM;
+  }
+
+  if (aCity && bCity) return false;
+  return true;
 }
 
 export interface HomeLocation {
@@ -288,15 +329,46 @@ export function detectTrips(
 
   // Runs of dates that are away, bridging short gaps. A Tuesday with nothing on the
   // calendar between two London days is still London.
-  const runs: { start: string; end: string; away: AwayEvent[] }[] = [];
+  //
+  // **Adjacency alone is not enough to be one trip.** A Hamptons weekend ending on the
+  // 16th and a London week beginning on the 17th bridge perfectly, and until the
+  // destination was compared they came back as a single 8-day "Hamptons" trip: the
+  // London half was planned for the wrong city's weather and both halves shared one
+  // packing list. A change of destination therefore ends the run, whatever the dates
+  // say — the same reasoning `occasion-groups.ts` uses for a change of `kind`, where
+  // being on a plane is not a matter of degree.
+  const runs: { start: string; end: string; away: AwayEvent[]; anchor: DestinationRef }[] = [];
   for (const away of awayEvents) {
     const current = runs[runs.length - 1];
-    if (current && daysBetween(current.end, away.first) <= MAX_GAP_DAYS + 1) {
+    const bridges = current != null && daysBetween(current.end, away.first) <= MAX_GAP_DAYS + 1;
+
+    if (current && bridges && sameDestination(current.anchor, away)) {
       current.end = away.last > current.end ? away.last : current.end;
       current.away.push(away);
+      // The run's anchor is the first destination it actually learned. An event that
+      // knew nothing joined without changing it; the first one that knows something
+      // sets it, so later events are compared against a stable reference rather than
+      // against their immediate predecessor, which could drift city by city.
+      if (!current.anchor.city && !current.anchor.lat && away.city) {
+        current.anchor = { city: away.city, lat: away.lat, lng: away.lng };
+      }
       continue;
     }
-    runs.push({ start: away.first, end: away.last, away: [away] });
+
+    // A new destination starting on or before the previous run's last day: the day you
+    // leave belongs to where you are going, so the earlier trip ends the day before.
+    // Without this both trips would claim the same date, and a date has exactly one
+    // plan (6.2) — the two trips would fight over it.
+    if (current && away.first <= current.end) {
+      current.end = addDays(away.first, -1);
+    }
+
+    runs.push({
+      start: away.first,
+      end: away.last,
+      away: [away],
+      anchor: { city: away.city, lat: away.lat, lng: away.lng },
+    });
   }
 
   const transitDates = new Set(
@@ -313,12 +385,29 @@ export function detectTrips(
   );
 
   const trips: DetectedTrip[] = [];
-  for (const run of runs) {
-    // The departure and return legs belong to the trip even when the flight itself
-    // is geocoded to the home airport, which is exactly what a 5pm "Depart for JFK"
-    // is. Only one day on each side, and only when something is actually flying.
-    let start = transitDates.has(addDays(run.start, -1)) ? addDays(run.start, -1) : run.start;
-    let end = transitDates.has(addDays(run.end, 1)) ? addDays(run.end, 1) : run.end;
+  // The departure and return legs belong to the trip even when the flight itself is
+  // geocoded to the home airport, which is exactly what a 5pm "Depart for JFK" is.
+  // Only one day on each side, and only when something is actually flying.
+  const padded = runs.map((run) => ({
+    run,
+    start: transitDates.has(addDays(run.start, -1)) ? addDays(run.start, -1) : run.start,
+    end: transitDates.has(addDays(run.end, 1)) ? addDays(run.end, 1) : run.end,
+  }));
+
+  // Padding is what makes two back-to-back trips fight: the evening flight between
+  // them is the ending trip's return leg and the starting trip's departure leg at
+  // once, so both reach for it. Resolved the same way the overlap above is — the day
+  // you leave belongs to where you are going — because a date has exactly one plan
+  // (6.2), and two trips holding the same date would each try to plan it.
+  for (let index = 0; index < padded.length - 1; index += 1) {
+    if (padded[index].end >= padded[index + 1].start) {
+      padded[index].end = addDays(padded[index + 1].start, -1);
+    }
+  }
+
+  for (const { run, start: paddedStart, end: paddedEnd } of padded) {
+    let start = paddedStart;
+    let end = paddedEnd;
 
     if (start < windowStart) start = windowStart;
     if (end > windowEnd) end = windowEnd;
