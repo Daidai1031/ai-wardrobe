@@ -4,7 +4,7 @@
 
 Built for **[The Style That Binds Us](https://thestylethatbindsus.com/)** — in active development through summer 2026, not yet launched.
 
-🔗 **Development deployment:** [closet.daidingrdesigns.com](https://closet.daidingrdesigns.com) — the author's own domain, used for staging. The product has not shipped under the company's.
+🔗 **Development deployment:** [ai-wardrobe-six.vercel.app](https://ai-wardrobe-six.vercel.app) — a staging build. The product has not shipped under the company's domain.
 
 ![Next.js](https://img.shields.io/badge/Next.js-16-000?logo=next.js&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
