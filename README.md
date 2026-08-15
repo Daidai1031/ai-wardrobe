@@ -527,12 +527,12 @@ This repo keeps four documents with four different jobs, and each is updated in 
 
 ## License
 
-Copyright © 2026 Daiding Ren. All rights reserved.
+Copyright © 2026 Dingran Dai. All rights reserved.
 
-This source is published for portfolio and evaluation purposes. It is **not** open source: no license is granted to copy, modify, distribute, or use it commercially. See [`LICENSE`](./LICENSE).
+A personal project, built and owned by one author, and operated as a live product with real users and a paid stylist service — which is why it is **not** open source. The source is published for portfolio and evaluation purposes only: no license is granted to copy, modify, distribute, or use it commercially. See [`LICENSE`](./LICENSE).
 
 ---
 
 ## Author
 
-**Daiding Ren** — [github.com/Daidai1031](https://github.com/Daidai1031) · dd699@cornell.edu
+**Dingran Dai** — [github.com/Daidai1031](https://github.com/Daidai1031) · dd699@cornell.edu
