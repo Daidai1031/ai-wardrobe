@@ -65,14 +65,17 @@ Not a toy: it runs end to end against a live Supabase database, a real Google Ca
 
 ## Screenshots
 
+<!-- Every file in docs/screenshots/ is normalized to 1350x900 (3:2) by padding with the
+     screenshot's own background color — nothing is cropped or stretched — so the cells
+     below line up at identical width and height. Keep new screenshots to that size. -->
 
 | Closet | Daily plan (`/home`) | Week plan (`/plan`) |
 |---|---|---|
-| _`docs/screenshots/closet.png`_ | _`docs/screenshots/home.png`_ | _`docs/screenshots/plan.png`_ |
+| <img src="docs/screenshots/closet.png" alt="Closet" width="100%"> | <img src="docs/screenshots/home.png" alt="Daily plan" width="100%"> | _`docs/screenshots/plan.png`_ |
 
 | Outfit Canvas | Magic Enhance | Stylist console (`/pro`) |
 |---|---|---|
-| _`docs/screenshots/canvas.png`_ | _`docs/screenshots/enhance.png`_ | _`docs/screenshots/pro.png`_ |
+| <img src="docs/screenshots/canvas.png" alt="Outfit Canvas" width="100%"> | <img src="docs/screenshots/enhance.png" alt="Magic Enhance" width="100%"> | <img src="docs/screenshots/pro.png" alt="Stylist console" width="100%"> |
 
 ---
 
