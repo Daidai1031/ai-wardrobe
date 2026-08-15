@@ -33,7 +33,20 @@ export async function GET(request: NextRequest) {
 
   const state = randomBytes(24).toString("hex");
   const redirectUri = new URL("/api/google/callback", request.url).toString();
-  const authUrl = buildGoogleAuthUrl({ redirectUri, state, scope: CALENDAR_SCOPE });
+
+  // Without this the user is bounced to Google and reads "Error 401: invalid_client —
+  // The OAuth client was not found", which describes a Cloud Console problem rather than
+  // the actual one: GOOGLE_CLIENT_ID isn't set on whatever host is serving this request.
+  let authUrl: string;
+  try {
+    authUrl = buildGoogleAuthUrl({ redirectUri, state, scope: CALENDAR_SCOPE });
+  } catch (err) {
+    console.error("Google Calendar OAuth is not configured:", err);
+    return NextResponse.json(
+      { error: "Google Calendar OAuth is not configured on this deployment" },
+      { status: 500 }
+    );
+  }
 
   const response = NextResponse.redirect(authUrl);
   response.cookies.set(STATE_COOKIE, state, {

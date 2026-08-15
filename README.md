@@ -22,36 +22,57 @@ Not a toy: it runs end to end against a live Supabase database, a real Google Ca
 
 ## Table of contents
 
-- [Screenshots](#screenshots)
-- [What it does](#what-it-does)
-- [Feature status](#feature-status)
-- [Architecture](#architecture)
-- [Tech stack](#tech-stack)
-- [Project structure](#project-structure)
-- [Data model](#data-model)
-- [Engineering decisions](#engineering-decisions)
-- [Tests & CI](#tests--ci)
-- [Getting started](#getting-started)
-- [Deployment](#deployment)
-- [Cost](#cost)
-- [Known gaps](#known-gaps)
-- [Roadmap](#roadmap)
-- [Documentation map](#documentation-map)
-- [License](#license)
+- [AI Wardrobe](#ai-wardrobe)
+  - [Table of contents](#table-of-contents)
+  - [Screenshots](#screenshots)
+  - [What it does](#what-it-does)
+    - [1. Digitizing a wardrobe](#1-digitizing-a-wardrobe)
+    - [2. Outfits on a freeform canvas](#2-outfits-on-a-freeform-canvas)
+    - [3. Planning against a real calendar](#3-planning-against-a-real-calendar)
+    - [4. The model proposes; TypeScript disposes](#4-the-model-proposes-typescript-disposes)
+    - [5. A human stylist console](#5-a-human-stylist-console)
+  - [Feature status](#feature-status)
+    - [Wardrobe](#wardrobe)
+    - [Outfits \& stylist](#outfits--stylist)
+    - [Planning](#planning)
+    - [Travel](#travel)
+    - [Operations](#operations)
+  - [Architecture](#architecture)
+    - [Upload pipeline](#upload-pipeline)
+    - [Planning pipeline](#planning-pipeline)
+    - [Auth \& data boundary](#auth--data-boundary)
+  - [Tech stack](#tech-stack)
+  - [Project structure](#project-structure)
+  - [Data model](#data-model)
+  - [Engineering decisions](#engineering-decisions)
+  - [Tests \& CI](#tests--ci)
+  - [Getting started](#getting-started)
+    - [Prerequisites](#prerequisites)
+    - [1. Supabase](#1-supabase)
+    - [2. Auth](#2-auth)
+    - [3. Environment variables](#3-environment-variables)
+    - [4. Google Calendar OAuth](#4-google-calendar-oauth)
+    - [5. Opening a stylist's access window](#5-opening-a-stylists-access-window)
+  - [Deployment](#deployment)
+  - [Cost](#cost)
+  - [Known gaps](#known-gaps)
+  - [Roadmap](#roadmap)
+  - [Documentation map](#documentation-map)
+  - [License](#license)
+  - [Author](#author)
 
 ---
 
 ## Screenshots
 
-> _Add images to `docs/screenshots/` and swap the placeholders below._
 
 | Closet | Daily plan (`/home`) | Week plan (`/plan`) |
 |---|---|---|
 | _`docs/screenshots/closet.png`_ | _`docs/screenshots/home.png`_ | _`docs/screenshots/plan.png`_ |
 
-| Outfit Canvas | Travel mode (`/travel`) | Stylist console (`/pro`) |
+| Outfit Canvas | Magic Enhance | Stylist console (`/pro`) |
 |---|---|---|
-| _`docs/screenshots/canvas.png`_ | _`docs/screenshots/travel.png`_ | _`docs/screenshots/pro.png`_ |
+| _`docs/screenshots/canvas.png`_ | _`docs/screenshots/enhance.png`_ | _`docs/screenshots/pro.png`_ |
 
 ---
 
@@ -449,6 +470,11 @@ Separate from Supabase's Google *login* provider: that one is sign-in only, and 
 5. Under **Scopes**, add `.../auth/calendar.readonly`.
 
 Testing-mode refresh tokens expire after ~7 days. `getAccessToken()` handles a failed refresh by marking the connection invalid and returning `null`, so the app degrades to "please reconnect Calendar" rather than a 500. Re-running the auth flow re-authorizes and clears the flag.
+
+Two failures that look like Cloud Console problems but aren't:
+
+- **`Error 401: invalid_client — The OAuth client was not found`** means `GOOGLE_CLIENT_ID` is unset on the host serving the request (locally: a dev server started before the value was added; on Vercel: the variable was never added to the project). `/api/google/auth` now returns a 500 saying so instead of bouncing you to Google, but an older deployment will still show Google's version.
+- **`Error 400: redirect_uri_mismatch`** means you started the flow from a host whose callback isn't registered. The redirect URI is derived from the request origin, so **every** origin you connect from needs its own entry in step 4 — including `*.vercel.app` preview domains, which change per deployment. In practice: connect Calendar from localhost or from the production domain, not from a preview URL.
 
 ### 5. Opening a stylist's access window
 

@@ -12,6 +12,18 @@ export const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.readonly
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 
+/**
+ * A missing credential must fail here, not at Google. `process.env.X!` interpolates the
+ * literal string "undefined" into the request, and Google answers that with
+ * "Error 401: invalid_client — The OAuth client was not found", which reads as a deleted
+ * Cloud Console client rather than as an unset environment variable on this deployment.
+ */
+function requireGoogleEnv(name: "GOOGLE_CLIENT_ID" | "GOOGLE_CLIENT_SECRET"): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} is not set on this deployment`);
+  return value;
+}
+
 interface GoogleTokenResponse {
   access_token: string;
   refresh_token?: string;
@@ -26,7 +38,7 @@ export function buildGoogleAuthUrl(opts: {
   scope: string;
 }): string {
   const params = new URLSearchParams({
-    client_id: process.env.GOOGLE_CLIENT_ID!,
+    client_id: requireGoogleEnv("GOOGLE_CLIENT_ID"),
     redirect_uri: opts.redirectUri,
     response_type: "code",
     scope: opts.scope,
@@ -45,8 +57,8 @@ export async function exchangeCodeForTokens(
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      client_id: process.env.GOOGLE_CLIENT_ID!,
-      client_secret: process.env.GOOGLE_CLIENT_SECRET!,
+      client_id: requireGoogleEnv("GOOGLE_CLIENT_ID"),
+      client_secret: requireGoogleEnv("GOOGLE_CLIENT_SECRET"),
       code,
       grant_type: "authorization_code",
       redirect_uri: redirectUri,
@@ -68,8 +80,8 @@ async function refreshAccessToken(
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
-        client_id: process.env.GOOGLE_CLIENT_ID!,
-        client_secret: process.env.GOOGLE_CLIENT_SECRET!,
+        client_id: requireGoogleEnv("GOOGLE_CLIENT_ID"),
+        client_secret: requireGoogleEnv("GOOGLE_CLIENT_SECRET"),
         refresh_token: refreshToken,
         grant_type: "refresh_token",
       }),
