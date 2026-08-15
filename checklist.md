@@ -158,6 +158,14 @@
 | 搭配师授权访问 + Folk CRM 集成 | 🟡 预约入口 + Phase 10-A 评审工作台已完成 / CRM 流程待开发 | 已完成单一共享产能日历的线上/线下预约 MVP，以及 Phase 10-A 的 `/pro` 搭配师工作台（见下方任务 3）。人员分配、付款、取消/改期、通知和 Folk 同步仍待开发。**`wardrobe_grants` 按 D16 暂不建** —— 只有一位搭配师时每行 `stylist_id` 都是同一个值；门禁改用 `roles` + `access_expires_at`，加第二位搭配师时再迁移。预约成功不会隐式放开衣橱数据 |
 | 双端（C 端客户 + B 端公司/造型师） | 🚫 **已取消**（2026-07-30，D12） | 公司为自有少数长期搭配师，不做第三方入驻平台。改为 Folk CRM 管客户列表/阶段/跟进 + App 只做 `wardrobe_grants` 授权访问。省掉 Stripe Connect 分账、入驻审核、评价体系 |
 
+### 工程基建
+
+| 功能 | 状态 | 备注 |
+|------|------|------|
+| 单元测试（Vitest） | ✅ 完成并跑通（2026-08-14） | 83 个用例，`npm test`，约 0.5s。**只覆盖确定性内核**——`plan-rules.ts` / `occasion-groups.ts` / `detect-trips.ts` / `day-bucket.ts`，也就是 D8 说的「用 TS 判定而不是问模型」的那几个模块，因为只有它们的回归既可能发生又完全无声。每个用例都对应本文件 Debug Log 里真实出现过的故障：一套里两条裤子、一整天只有一双凉鞋、高跟鞋上飞机、高尔夫穿 midi 裙配 pumps、外套上限设成一周一天却连着三天同一件、Hamptons 与 London 相邻被并成一趟、同一个 "Hamptons" 被 geocode 成两地却被拆成两趟、全天事件被时区转换挪到相邻日。**全部是纯函数调用，不碰网络/Supabase/API key/组件**——所以它替代不了状态表里那些「待浏览器验证」，写测试不等于验过。`vitest.config.mts` 里塞了一个假的 `ANTHROPIC_API_KEY`：`classify-events.ts` 在模块作用域构造 SDK client，而 `detect-trips.ts` 从它 import 了一个纯函数，SDK 在空 key 时构造即抛 |
+| CI（GitHub Actions） | ✅ 代码完成，⚠️ 待首次 push 后看结果 | `.github/workflows/ci.yml`：push 到 main 和每个 PR 跑 lint → typecheck → test → build，Node 22 + `npm ci` + npm cache，同分支新 push 取消旧 run。build 步骤喂占位 env（同样是模块作用域 client 的原因），CI 里不会发出任何真实请求。**已在本地用与 CI 完全相同的那组占位环境变量跑过 `npm run build` 并通过**，所以这一步不是没验证过的写法；只是 workflow 本身还没在 GitHub 上跑过一次。注意 CI 是拿手写的 `src/types/database.ts` 做类型检查的，**抓不到 schema drift**，绿灯也不代表某个 schema section 已经执行过 |
+| 仓库整理 | ✅ 完成（2026-08-14） | 删掉根目录三张测试图（`test_shoe_1.jpg` / `test_belts.jpg` / `test_bag&single_shoe.jpg`，共 ~12.8MB，已 `git rm`；它们在 Debug Log「鞋子配对」里被引用为历史验证素材，需要时从 git 历史取回）。`.env.local.example` 本来就不存在（且 `.gitignore` 的 `.env*` 会把它一并忽略），README 里那句 `cp .env.local.example .env.local` 已改成直接看环境变量表。新增 `LICENSE`（专有，源码可读、可评估，禁止复制/改造/分发/商用/训练模型） |
+
 ### 部署
 
 | 功能 | 状态 | 备注 |
@@ -365,7 +373,7 @@
 
 **合并建议一开始是死代码**：最初的条件是"两趟相邻**且**目的地相近"，但相近 + 相邻的两趟在 run 阶段就已经自动并成一趟了，这个条件永远不成立。真正该问的是相邻但**不同**目的地的两趟——也就是刚被上面那条规则拆开的那种。合成用例把这个抓了出来。
 
-**已验证**：`tsc`/`lint`/`build` 全过（新路由 `/api/travel/trips/decisions` 在构建产物里）；schema 22 已应用到生产库并复核（7 列 / 4 约束 / 4 policy / RLS 开启）；10 条决定用例全绿（拆分、合并、keep 不改形状、链式合并 A→B→C、越界切分点被忽略、日历变了决定失效、近距离双城并成一趟、一趟两城提议拆分并给边界、已回答不再问、相邻两趟提议合并且挂在前一趟上）；7 条检测回归用例重构后仍全绿；真实日历上 Hamptons 那趟正确地收到"和 London 是一趟吗？"的提问。断言脚本在 scratchpad 的 `detect-cases.mts` / `decide-cases.mts`（本仓库没有测试框架，沿用一次性脚本的惯例）。
+**已验证**：`tsc`/`lint`/`build` 全过（新路由 `/api/travel/trips/decisions` 在构建产物里）；schema 22 已应用到生产库并复核（7 列 / 4 约束 / 4 policy / RLS 开启）；10 条决定用例全绿（拆分、合并、keep 不改形状、链式合并 A→B→C、越界切分点被忽略、日历变了决定失效、近距离双城并成一趟、一趟两城提议拆分并给边界、已回答不再问、相邻两趟提议合并且挂在前一趟上）；7 条检测回归用例重构后仍全绿；真实日历上 Hamptons 那趟正确地收到"和 London 是一趟吗？"的提问。当时的断言脚本写在 scratchpad 的 `detect-cases.mts` / `decide-cases.mts`（那时本仓库还没有测试框架）；**2026-08-14 起这些用例已迁进 `tests/travel/detect-trips.test.ts`，由 `npm test` 常驻跑**，不再是一次性脚本。
 
 **未验证**: 浏览器里的那一串——「Sync calendar → 列表里认出这趟 Hamptons → 点进去 → 已在 /plan 排过的天确实带着搭配出现 → 排剩下的天没有覆盖掉已排的 → 逐天确认 → Packing tab 的衣物确实等于那几天的并集 → 打印页图片不是空框 → 分享链接在无痕窗口打得开、撤销后 404」。这几步要么需要登录态、要么需要肉眼看渲染，服务端脚本replace不了。
 
@@ -482,7 +490,14 @@ ai-wardrobe/
 │   ├── lib/ai/remove-bg.ts, classify.ts, segment.ts (多件检测 + 配对泛化) + supabase/client.ts, server.ts
 │   ├── proxy.ts (原 middleware.ts)
 │   └── types/database.ts
+├── tests/                    # Vitest，只覆盖确定性内核
+│   ├── planning/plan-rules.test.ts, occasion-groups.test.ts, fixtures.ts
+│   ├── travel/detect-trips.test.ts
+│   └── calendar/day-bucket.test.ts
+├── .github/workflows/ci.yml  # lint → typecheck → test → build
 ├── supabase/schema.sql
+├── vitest.config.mts
+├── LICENSE
 ├── .env.local
 └── package.json
 ```

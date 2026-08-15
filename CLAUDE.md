@@ -5,13 +5,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-npm run dev      # start dev server (Next.js, http://localhost:3000)
-npm run build    # production build
-npm run start    # run production build
-npm run lint     # ESLint CLI (Next 16 removed `next lint`)
+npm run dev        # start dev server (Next.js, http://localhost:3000)
+npm run build      # production build
+npm run start      # run production build
+npm run lint       # ESLint CLI (Next 16 removed `next lint`)
+npm run typecheck  # tsc --noEmit, over src/ and tests/
+npm test           # vitest run
+npm run test:watch # vitest in watch mode
 ```
 
-There is no test suite configured. There is no single-test command.
+Run one file or one case with `npx vitest run tests/planning/plan-rules.test.ts` / `npx vitest run -t "gets heels off a flight"`.
+
+**The test suite covers the deterministic core only**, and that boundary is deliberate: `plan-rules.ts`, `occasion-groups.ts`, `detect-trips.ts` and `day-bucket.ts` are the modules that decide things in TypeScript rather than by asking a model (D8), so they are the ones where a regression is both possible and silent. Every case in `tests/` reproduces a failure that actually shipped and is recorded in `checklist.md`'s debug log. Nothing in the suite touches the network, Supabase, an API key, or a component — so it is **not** a substitute for the live verification the status tables track, and adding a test must never be recorded as having verified a browser path. `vitest.config.mts` sets a dummy `ANTHROPIC_API_KEY` because `classify-events.ts` constructs its SDK client at module scope and `detect-trips.ts` imports one pure helper from it; the SDK throws on an empty key at construction time.
+
+`.github/workflows/ci.yml` runs lint → typecheck → test → build on every push to `main` and every PR, with placeholder credentials for the same module-scope-client reason. CI type-checks against `src/types/database.ts`, which is a hand-maintained mirror — it therefore cannot catch schema drift, and a green build still says nothing about whether a schema section has been applied.
 
 ## Architecture
 
@@ -273,7 +280,7 @@ Required: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `FAL_KEY`
 
 ## Doc maintenance (keep these files in sync with the code)
 
-After making a change, update the matching doc **in the same working session** — don't leave it for later. This repo has no migration tooling and no test suite, so these docs are the only record of intent and state; a stale doc is worse than none.
+After making a change, update the matching doc **in the same working session** — don't leave it for later. This repo has no migration tooling, and its tests cover only the deterministic planning/travel/calendar core, so for everything else these docs are the only record of intent and state; a stale doc is worse than none.
 
 Route the update by *what kind of change it was*:
 

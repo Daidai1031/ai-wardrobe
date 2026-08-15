@@ -11,9 +11,10 @@
 ![Claude](https://img.shields.io/badge/Claude-Haiku%20%2F%20Sonnet-D97757?logo=anthropic&logoColor=white)
 ![fal.ai](https://img.shields.io/badge/fal.ai-BiRefNet%20%2F%20SAM%203.1-FF4B4B)
 ![Vercel](https://img.shields.io/badge/Vercel-deployed-000?logo=vercel&logoColor=white)
+[![CI](https://github.com/Daidai1031/ai-wardrobe/actions/workflows/ci.yml/badge.svg)](https://github.com/Daidai1031/ai-wardrobe/actions/workflows/ci.yml)
 ![License](https://img.shields.io/badge/license-Proprietary-lightgrey)
 
-This is a working product with a custom domain, a paying-service surface (a human stylist console), and a production Supabase database — not a demo. ~24,900 lines of TypeScript across 110 files, 17 pages, 24 route handlers, 20 tables.
+This is a working product with a custom domain, a paying-service surface (a human stylist console), and a production Supabase database — not a demo. ~24,900 lines of TypeScript across 110 files, 17 pages, 24 route handlers, 20 tables, and 83 unit tests over the parts that decide things deterministically.
 
 ---
 
@@ -27,6 +28,7 @@ This is a working product with a custom domain, a paying-service surface (a huma
 - [Project structure](#project-structure)
 - [Data model](#data-model)
 - [Engineering decisions](#engineering-decisions)
+- [Tests & CI](#tests--ci)
 - [Getting started](#getting-started)
 - [Deployment](#deployment)
 - [Cost](#cost)
@@ -293,7 +295,12 @@ src/
 │   └── images/                     HEIC conversion
 ├── types/                          hand-maintained DB + API contract mirrors
 └── proxy.ts                        Next 16's middleware equivalent
+tests/                              unit tests for the deterministic core
+├── planning/                       plan rules, occasion segmentation
+├── travel/                         trip detection
+└── calendar/                       local-day bucketing
 supabase/schema.sql                 source of truth for the database
+.github/workflows/ci.yml            lint → typecheck → test → build
 ```
 
 ---
@@ -335,6 +342,30 @@ The reasoning is in `CLAUDE.md` and `Roadmap.md`; these are the ones that shaped
 
 ---
 
+## Tests & CI
+
+```bash
+npm test           # 83 tests, ~0.5s
+npm run test:watch
+```
+
+Vitest, no test runner config beyond a path alias — `vitest.config.mts` is 30 lines and pulls in no plugin.
+
+**The suite covers the deterministic core, and deliberately nothing else.** Those are the modules that decide things in TypeScript rather than by asking a model, so they are the ones where a regression is both possible and silent:
+
+| Suite | What it locks in |
+|---|---|
+| `tests/planning/plan-rules.test.ts` | Composition, coverage, weather, comfort and rotation — every case is a failure that actually shipped: two pairs of trousers in one segment, a day whose whole outfit was one pair of sandals, heels on an overnight flight, golf in a midi dress and pumps, the same blazer three days running under a one-day-a-week limit. Plus the full enforcement pipeline in the order the routes run it. |
+| `tests/planning/occasion-groups.test.ts` | That a day's segment count is stable, that a change of *kind* splits a group regardless of formality, and that "Travel budget review" is a meeting while "Depart for JFK" is a flight. |
+| `tests/travel/detect-trips.test.ts` | Trip boundaries, including both adjacency bugs: a Hamptons weekend and a London week must not fuse, and one word geocoded to two different places must not split. Plus signature stability, the no-date-in-two-trips rule, and the user's split/merge overrides. |
+| `tests/calendar/day-bucket.test.ts` | The two timezone traps — a timed event crossing the UTC date boundary must land on the local day it happens on, and an all-day event must *not* be converted at all. |
+
+Every test is a pure function call. Nothing here reaches the network, Supabase, or an API key, and nothing renders a component — so the suite is not a substitute for the live verification the status tables track, and it isn't meant to be. It exists so that the rules which took three rounds of "the prompt says so and it did it anyway" to get right cannot quietly regress.
+
+`.github/workflows/ci.yml` runs **lint → typecheck → test → build** on every push to `main` and every PR. The build step supplies placeholder credentials, because several modules construct their SDK client at module scope and the Anthropic SDK throws on an empty key — nothing in CI issues a request.
+
+---
+
 ## Getting started
 
 ### Prerequisites
@@ -345,15 +376,18 @@ Node 20+, a Supabase project, and API keys for Anthropic and fal.ai. OpenWeather
 git clone https://github.com/Daidai1031/ai-wardrobe.git
 cd ai-wardrobe
 npm install
-cp .env.local.example .env.local   # then fill it in, see below
+# create .env.local with the variables in the table below
 npm run dev                        # http://localhost:3000
 ```
 
 ```bash
-npm run dev      # dev server
-npm run build    # production build
-npm run start    # serve the production build
-npm run lint     # ESLint (Next 16 removed `next lint`)
+npm run dev        # dev server
+npm run build      # production build
+npm run start      # serve the production build
+npm run lint       # ESLint (Next 16 removed `next lint`)
+npm run typecheck  # tsc --noEmit, over src/ and tests/
+npm test           # vitest run
+npm run test:watch # vitest, in watch mode
 ```
 
 ### 1. Supabase
@@ -455,10 +489,10 @@ The cost levers are structural rather than incidental: calendar events are class
 
 Stated plainly, because a README that only lists strengths isn't a useful engineering document.
 
-- **No test suite.** The plan rules are covered by a synthetic harness that reproduces the reported failures, but there is no runner and no CI. This is the largest gap.
+- **No integration or component tests.** The deterministic core is covered (see [Tests & CI](#tests--ci)), but nothing exercises a route handler, a Server Component, or a real Supabase query. Those need fixtures and a test database, which is the next thing worth building.
 - **No migration tooling.** `supabase/schema.sql` is the source of truth and is applied by hand, which is why a skipped block surfaces at runtime rather than at build time. Real migrations are the natural next infrastructure step.
-- **The TypeScript DB types are hand-maintained mirrors**, so they can drift from the schema without failing a build. Generating them from the database would close this.
-- **Verification is manual.** Several features are code-complete and unwalked in a browser; the status tables above say which.
+- **The TypeScript DB types are hand-maintained mirrors**, so they can drift from the schema without failing a build — and CI cannot catch it, since it type-checks against the mirrors rather than the database. Generating them from the schema would close this.
+- **Verification is manual** for anything that needs a browser or a live account. Several features are code-complete and unwalked; the status tables above say which.
 - **No scheduled calendar sync.** `/plan`'s "Sync calendar" button is the only entry point; an un-synced account plans as if the calendar were empty, silently.
 - **No frontend selection step for multi-item uploads** — every detected item is auto-classified, with no checkbox to drop one first.
 
