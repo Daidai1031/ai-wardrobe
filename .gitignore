@@ -12,3 +12,18 @@ next-env.d.ts
 
 # Supabase CLI local state (project link cache)
 supabase/.temp/
+
+# 显式放行示例文件(.env* 会误伤它们)
+!.env.example
+!.env.local.example
+
+# AI 工具 / MCP 配置(可能含密钥)
+.codex/
+.cursor/mcp.json
+.claude/settings.local.json
+.mcp.json
+*.local.toml
+
+# 扫描输出
+.secrets.baseline
+scan-result.json
