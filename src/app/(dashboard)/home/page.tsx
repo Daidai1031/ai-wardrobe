@@ -4,15 +4,27 @@ import { STYLIST_ROLE } from "@/lib/stylist/access";
 import { readStylistReviewsForClient } from "@/lib/stylist/reviews";
 import { StylistReviewInbox } from "@/components/stylist/review-inbox";
 import { DailyRecommendation } from "./daily-recommendation";
+import { StyleSwipe, type SwipeOutfitRow } from "./style-swipe";
+
+/** Enough to swipe through without paying for the user's whole Look library. */
+const SWIPE_DECK_SIZE = 20;
 
 export default async function HomePage() {
   const supabase = await createServerSupabase();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return null;
 
-  const [{ data: profile }, stylistReviews] = await Promise.all([
+  const [{ data: profile }, stylistReviews, { data: swipeOutfits }] = await Promise.all([
     supabase.from("profiles").select("name, roles").eq("id", user.id).single(),
     readStylistReviewsForClient(supabase, user.id),
+    supabase
+      .from("outfits")
+      .select(
+        "id, name, folder, outfit_items(item_id, position, x, y, width, wardrobe_items(id, display_name, optimized_url, clean_url, original_url, category, subcategory, color, brand))"
+      )
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false })
+      .limit(SWIPE_DECK_SIZE),
   ]);
 
   // A staff-only account has no closet, so /home is a page of empty states. Sign-in
@@ -38,6 +50,10 @@ export default async function HomePage() {
       <StylistReviewInbox reviews={stylistReviews} />
 
       <DailyRecommendation userId={user.id} />
+
+      {/* Below the plan on purpose: the plan is what the user came for, and the
+          deck is a prototype that collects signal rather than answering a question. */}
+      <StyleSwipe outfits={(swipeOutfits || []) as unknown as SwipeOutfitRow[]} />
     </div>
   );
 }

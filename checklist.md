@@ -380,6 +380,23 @@
 
 ---
 
+### 任务 5: Swipe 原型（`/home` Style swipe） — ✅ 纯前端完成，⚠️ 不落库、未真实验证（2026-09-01）
+
+`docs/recommendation-system-plan.md` 的第一块落地，故意只做计划里**最小**的那部分：一个不写数据库的前端 deck。
+
+**为什么不从计划 §8 的 onboarding deck 开始**：三条具体阻塞。① onboarding 刷的是 external inspiration images，而 §5.3 明令禁止在 app 里展示 Polyvore 图片——第一天要解决的是版权干净的图源，不是工程；② 按 §4.4 自己的权重排序，onboarding 刷的是用户**不拥有**的衣服、产出最弱的一档信号，而且每个用户一生只发生一次；③ §3.2 要求按不确定性退出而不是固定次数，那得先有 personal model。所以卡片喂的是**已保存的 Looks**——用户自己的照片、已经在页面上、零法律问题。
+
+**三个文件**：`src/lib/swipe/gestures.ts`（只有词汇表：§4.1 四手势、§4.2 六个 dislike 理由、§4.3 的 `SwipeEventDraft`；无存储无 React，单独成模块是为了让原型和将来的 `swipe_event` 表说同一套字符串）、`src/components/swipe/swipe-deck.tsx`（通用 deck：指针拖拽 + 方向键 + 四个按钮）、`src/app/(dashboard)/home/style-swipe.tsx`（`/home` 适配器，卡片走共享的 `OutfitCollage` + `layoutsFromRows`，所以 Look 是按用户排的版式出现的）。
+
+**两处不是装饰的设计**：左滑**从不直接提交**，先弹理由面板——没有理由的 dislike 分不清「这件不行」「这套搭不到一起」「场合不对」，是三种不同的修法；选了「不喜欢这件具体单品」还会追问**是哪一件**，因为这个标签没有 item id 和没标签一样不可学。deck 结尾把 `SwipeEventDraft` 原样打印出来——先建原型再建表的意义就在于先把行的形状看一眼。
+
+**现有反馈依然没有落库，这才是下一步**：`/home` 的 👍 写的是 `outfit_plans.status = 'accepted'`——一个**状态**，每天覆盖一次，没有理由也没有历史；👎 用完 `rejectedItemIds` 就扔。`stylist_reviews` 有 `rating`/`note`，但没有 `rationale_tags[]` / `candidate_source` / `model_version`。把这三处变成 append-only 的事件行是下一步，和 deck 是两件事：deck 是界面，事件才是资产。
+
+**已验证**：`tsc --noEmit` / `npm run lint` / `npm run build` 全过。
+**未验证**：浏览器里的一切——拖拽手感、理由面板、卡片图片是否真的渲染出来（`/home` 新增了一条 `outfits` + `outfit_items` + `wardrobe_items` 的联表查询，limit 20）。
+
+---
+
 ## 已完成任务详情（历史记录）
 
 ### 任务: Saved Looks 支持删除 — ✅ 完成
