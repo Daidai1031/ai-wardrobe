@@ -10,7 +10,8 @@
     "lint:fix": "eslint . --fix",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "seed:victoria": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --env-file=.env.local scripts/seed-victoria-calendar.mts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

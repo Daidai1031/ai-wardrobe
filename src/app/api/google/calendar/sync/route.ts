@@ -21,6 +21,10 @@ export const dynamic = "force-dynamic";
  * never persisted (no column for it) and never passed into classification.
  *
  * Defaults to [start of today UTC, +14 days] when timeMin/timeMax aren't given.
+ *
+ * With `DEMO_CALENDAR=victoria` **in development only** the Google leg is replaced by a
+ * canned month (src/lib/demo/) and no Calendar connection is needed; the window only
+ * filters the response, since the whole month is written.
  */
 export async function GET(request: NextRequest) {
   const supabase = await createServerSupabase();
@@ -31,20 +35,10 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Not signed in" }, { status: 401 });
   }
 
-  if (!(await hasScope(user.id, CALENDAR_SCOPE))) {
-    return NextResponse.json(
-      { error: "Calendar not connected. Visit /api/google/auth?scope=calendar first." },
-      { status: 400 }
-    );
-  }
-
-  const accessToken = await getAccessToken(user.id);
-  if (!accessToken) {
-    return NextResponse.json(
-      { error: "Calendar connection is invalid — reconnect via /api/google/auth?scope=calendar" },
-      { status: 400 }
-    );
-  }
+  // Local development only. `NODE_ENV` is inlined at build time, so in a production build
+  // this is a constant `false`, the branch below is dead code, and the dynamic import is
+  // dropped -- the demo data is not in the deployed bundle, whatever env vars are set.
+  const demo = process.env.NODE_ENV !== "production" && process.env.DEMO_CALENDAR === "victoria";
 
   const now = new Date();
   const todayStart = new Date(`${now.toISOString().slice(0, 10)}T00:00:00.000Z`);
@@ -53,12 +47,40 @@ export async function GET(request: NextRequest) {
     request.nextUrl.searchParams.get("timeMax") ??
     new Date(todayStart.getTime() + 14 * 24 * 60 * 60 * 1000).toISOString();
 
-  let googleEvents;
-  try {
-    googleEvents = await listCalendarEvents(accessToken, timeMin, timeMax);
-  } catch (err) {
-    console.error("calendar sync: listCalendarEvents failed:", err);
-    return NextResponse.json({ error: "Failed to fetch events from Google" }, { status: 502 });
+  let googleEvents: Awaited<ReturnType<typeof listCalendarEvents>> = [];
+  if (demo) {
+    // Demo mode replaces the Google leg only. The rows arrive fully labeled, so everything
+    // below (weather backfill, classification of any *other* unlabeled rows, the final
+    // read) runs unchanged and the response has the same shape.
+    try {
+      const { loadVictoriaCalendar } = await import("@/lib/demo/load-victoria");
+      await loadVictoriaCalendar(supabase, user.id);
+    } catch (err) {
+      console.error("calendar sync: demo load failed:", err);
+      return NextResponse.json({ error: "Failed to load the demo calendar" }, { status: 500 });
+    }
+  } else {
+    if (!(await hasScope(user.id, CALENDAR_SCOPE))) {
+      return NextResponse.json(
+        { error: "Calendar not connected. Visit /api/google/auth?scope=calendar first." },
+        { status: 400 }
+      );
+    }
+
+    const accessToken = await getAccessToken(user.id);
+    if (!accessToken) {
+      return NextResponse.json(
+        { error: "Calendar connection is invalid — reconnect via /api/google/auth?scope=calendar" },
+        { status: 400 }
+      );
+    }
+
+    try {
+      googleEvents = await listCalendarEvents(accessToken, timeMin, timeMax);
+    } catch (err) {
+      console.error("calendar sync: listCalendarEvents failed:", err);
+      return NextResponse.json({ error: "Failed to fetch events from Google" }, { status: 502 });
+    }
   }
 
   const descriptionByEventId = new Map(googleEvents.map((e) => [e.id, e.description ?? null]));
@@ -245,5 +267,5 @@ export async function GET(request: NextRequest) {
     description: descriptionByEventId.get(r.google_event_id) ?? null,
   }));
 
-  return NextResponse.json({ count: events.length, timeMin, timeMax, events });
+  return NextResponse.json({ count: events.length, timeMin, timeMax, events, ...(demo ? { demo: "victoria" } : {}) });
 }
