@@ -1,5 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:wght@400;500;600;700&display=swap');
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -7,6 +5,42 @@
 @layer base {
   body {
     @apply bg-surface-50 text-surface-900 antialiased;
+    /* EB Garamond's x-height is 0.40em against 0.52 for the Public Sans it replaced,
+       so at the same size it reads ~20% smaller. 0.46 renders it ~15% larger — enough
+       for the app's 11–13px text to stay readable without re-sizing every class. */
+    font-size-adjust: 0.46;
+  }
+  /* Alex Brush ships a single weight; without this, font-semibold on a heading
+     would synthesize a smeared faux-bold. */
+  h1,
+  h2,
+  h3 {
+    @apply font-heading;
+    font-synthesis: none;
+  }
+  /* Alex Brush's x-height is 0.32em against ~0.5 for the body face, so at the
+     same font-size it reads far smaller. Rather than bumping every heading's
+     size class, pin the x-height: 0.46 / 0.32 renders it ~1.44x larger while
+     each heading keeps the size it was already given. */
+  h1,
+  h2,
+  h3,
+  .font-heading,
+  .font-serif,
+  .font-display {
+    font-size-adjust: 0.46;
+    letter-spacing: 0.05em;
+  }
+}
+
+@layer components {
+  /* Opt a heading out of the script face. For titles that are data rather than
+     copy — segment labels like "Thursday, September 24 — all day" carry dates,
+     times and model-written text, and a connected script makes those hard to read. */
+  .heading-plain {
+    font-family: var(--font-body), Georgia, serif;
+    font-size-adjust: 0.46;
+    letter-spacing: normal;
   }
 }
 
