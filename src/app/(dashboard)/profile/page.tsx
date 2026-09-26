@@ -3,6 +3,9 @@ import { getConnectionStatus } from "@/lib/google/client";
 import { ProfileForm } from "./profile-form";
 import { GoogleConnections } from "./google-connections";
 import { StylistSharing } from "./stylist-sharing";
+import { ClosetAnalytics } from "./closet-analytics";
+import { ProfileTabs, type ProfileTab } from "./profile-tabs";
+import { SignOutButton } from "./sign-out-button";
 
 export default async function ProfilePage({
   searchParams,
@@ -25,18 +28,43 @@ export default async function ProfilePage({
 
   const calendarResult = params.google_calendar;
 
+  // Google's OAuth callback lands here with ?google_calendar=…, and that result is
+  // reported by the connected-accounts section, which lives on the privacy tab.
+  const requestedTab = params.tab;
+  const initialTab: ProfileTab =
+    calendarResult !== undefined || requestedTab === "privacy"
+      ? "privacy"
+      : requestedTab === "analytics"
+        ? "analytics"
+        : "profile";
+
   return (
-    <div className="space-y-6">
-      <ProfileForm profile={profile} />
-      <GoogleConnections
-        status={connectionStatus}
-        calendarResult={typeof calendarResult === "string" ? calendarResult : undefined}
-      />
-      <StylistSharing
-        userId={user.id}
-        accessExpiresAt={profile?.access_expires_at ?? null}
-        shareOccasions={Boolean(profile?.stylist_share_occasions)}
-      />
-    </div>
+    <ProfileTabs
+      initialTab={initialTab}
+      panels={{
+        profile: (
+          <div className="space-y-8">
+            <ProfileForm profile={profile} />
+            <div className="max-w-2xl border-t border-surface-200 pt-6">
+              <SignOutButton />
+            </div>
+          </div>
+        ),
+        analytics: <ClosetAnalytics userId={user.id} />,
+        privacy: (
+          <div className="space-y-6">
+            <GoogleConnections
+              status={connectionStatus}
+              calendarResult={typeof calendarResult === "string" ? calendarResult : undefined}
+            />
+            <StylistSharing
+              userId={user.id}
+              accessExpiresAt={profile?.access_expires_at ?? null}
+              shareOccasions={Boolean(profile?.stylist_share_occasions)}
+            />
+          </div>
+        ),
+      }}
+    />
   );
 }

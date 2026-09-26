@@ -70,7 +70,7 @@ export function GoogleConnections({
   }
 
   return (
-    <div className="max-w-2xl rounded-xl border border-surface-200 bg-white p-6">
+    <div className="max-w-2xl rounded-xl border border-surface-200 bg-white p-4 sm:p-6">
       <h2 className="text-sm font-semibold text-surface-900">Connected accounts</h2>
       <p className="mt-1 text-xs text-surface-400">
         Each connection is a separate permission you can grant or remove on its own.
@@ -148,7 +148,7 @@ export function GoogleConnections({
               </p>
             </div>
           </div>
-          <span className="rounded-full bg-surface-100 px-2.5 py-1 text-[10px] font-semibold text-surface-500">
+          <span className="rounded-full bg-surface-100 px-2.5 py-1 text-[11px] font-semibold text-surface-500">
             Not available yet
           </span>
         </div>

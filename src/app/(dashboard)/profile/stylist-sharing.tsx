@@ -87,7 +87,7 @@ export function StylistSharing({
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-surface-100 p-3">
           <div className="min-w-0">
             <p className="text-xs font-medium text-surface-800">Closet access</p>
-            <p className="mt-0.5 text-[11px] text-surface-500">
+            <p className="mt-0.5 text-[12px] text-surface-500">
               {windowOpen
                 ? `Your stylist can see your closet and saved Looks until ${new Date(
                     accessExpiresAt!
@@ -100,7 +100,7 @@ export function StylistSharing({
               type="button"
               onClick={endAccess}
               disabled={busy !== null}
-              className="flex shrink-0 items-center gap-1.5 rounded-lg border border-surface-200 px-3 py-1.5 text-[11px] font-medium text-surface-600 transition-colors hover:bg-surface-50 disabled:opacity-50"
+              className="flex shrink-0 items-center gap-1.5 rounded-lg border border-surface-200 px-3 py-1.5 text-[12px] font-medium text-surface-600 transition-colors hover:bg-surface-50 disabled:opacity-50"
             >
               {busy === "revoke" && <Loader2 size={12} className="animate-spin" />}
               End access now
@@ -114,11 +114,11 @@ export function StylistSharing({
               <CalendarRange size={13} className="text-surface-400" />
               Share what&apos;s coming up
             </p>
-            <p className="mt-0.5 max-w-lg text-[11px] leading-relaxed text-surface-500">
+            <p className="mt-0.5 max-w-lg text-[12px] leading-relaxed text-surface-500">
               Lets your stylist see the <em>kind</em> of occasion on each of the next seven days
               and how formal it is — &ldquo;dinner with friends&rdquo;, &ldquo;a formal meeting
               with colleagues&rdquo;. Never event titles, times, places or names. You can share a
-              specific event&apos;s details one at a time from This Week.
+              specific event&apos;s details one at a time from Plan.
             </p>
           </div>
           <button

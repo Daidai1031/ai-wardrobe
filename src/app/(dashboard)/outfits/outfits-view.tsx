@@ -29,6 +29,8 @@ import {
   readDragPayload,
   type CanvasItemLayout,
 } from "@/components/outfit/outfit-canvas";
+import { cn } from "@/lib/utils";
+import { StylistChat } from "./stylist-chat";
 
 type OutfitItemPreview = Pick<
   WardrobeItem,
@@ -84,6 +86,9 @@ export function OutfitsView({ outfits, wardrobeItems, userId }: OutfitsViewProps
   const searchParams = useSearchParams();
   const openHandledRef = useRef(false);
   const supabase = useMemo(() => createClient(), []);
+  const [tab, setTab] = useState<"looks" | "stylist">(
+    searchParams.get("tab") === "stylist" ? "stylist" : "looks"
+  );
   const [isCreating, setIsCreating] = useState(false);
   const [editingOutfitId, setEditingOutfitId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -407,14 +412,47 @@ export function OutfitsView({ outfits, wardrobeItems, userId }: OutfitsViewProps
   }
 
   return (
-    <OutfitLibrary
-      outfits={visibleOutfits}
-      wardrobeCount={wardrobeItems.length}
-      onCreate={startCreate}
-      onEdit={startEdit}
-      onDelete={deleteOutfit}
-      deletingOutfitId={deletingOutfitId}
-    />
+    <div>
+      <div className="mb-5 flex gap-1 border-b border-surface-200" role="tablist">
+        {(
+          [
+            ["looks", "Saved Looks", Layers3],
+            ["stylist", "AI Stylist", Sparkles],
+          ] as const
+        ).map(([id, label, Icon]) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={tab === id}
+            onClick={() => setTab(id)}
+            className={cn(
+              "-mb-px inline-flex items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors",
+              tab === id
+                ? "border-brand-600 text-brand-700"
+                : "border-transparent text-surface-500 hover:text-surface-800"
+            )}
+          >
+            <Icon size={15} /> {label}
+          </button>
+        ))}
+      </div>
+
+      <div hidden={tab !== "looks"}>
+        <OutfitLibrary
+          outfits={visibleOutfits}
+          wardrobeCount={wardrobeItems.length}
+          onCreate={startCreate}
+          onEdit={startEdit}
+          onDelete={deleteOutfit}
+          deletingOutfitId={deletingOutfitId}
+        />
+      </div>
+      {/* Stays mounted while hidden so switching tabs doesn't drop the conversation. */}
+      <div hidden={tab !== "stylist"}>
+        <StylistChat onOpenLooks={() => setTab("looks")} />
+      </div>
+    </div>
   );
 }
 
@@ -503,7 +541,7 @@ function OutfitDetails({
         <p className="mt-0.5 text-xs text-surface-400">Give this look a home.</p>
       </div>
       <label className="block">
-        <span className="text-[11px] font-semibold uppercase tracking-wide text-surface-500">Name</span>
+        <span className="text-[12px] font-semibold uppercase tracking-wide text-surface-500">Name</span>
         <input
           value={name}
           onChange={(event) => onName(event.target.value)}
@@ -513,7 +551,7 @@ function OutfitDetails({
         />
       </label>
       <label className="mt-4 block">
-        <span className="text-[11px] font-semibold uppercase tracking-wide text-surface-500">
+        <span className="text-[12px] font-semibold uppercase tracking-wide text-surface-500">
           Collection
         </span>
         <select
@@ -529,7 +567,7 @@ function OutfitDetails({
         </select>
       </label>
       <label className="mt-4 block">
-        <span className="text-[11px] font-semibold uppercase tracking-wide text-surface-500">Notes</span>
+        <span className="text-[12px] font-semibold uppercase tracking-wide text-surface-500">Notes</span>
         <textarea
           value={notes}
           onChange={(event) => onNotes(event.target.value)}
@@ -550,7 +588,7 @@ function OutfitDetails({
             style={{ width: `${Math.min((count / 5) * 100, 100)}%` }}
           />
         </div>
-        <p className="mt-2 text-[10px] leading-4 text-surface-400">
+        <p className="mt-2 text-[11px] leading-4 text-surface-400">
           Add at least 2 pieces. Drag pieces on the canvas to change their saved order.
         </p>
       </div>
@@ -586,7 +624,7 @@ function OutfitLibrary({
     <div>
       <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-brand-600">
+          <p className="mb-1 text-[12px] font-semibold uppercase tracking-[0.16em] text-brand-600">
             Lookbook
           </p>
           <h1 className="font-display text-3xl font-semibold text-surface-900">Your outfits</h1>
@@ -595,12 +633,6 @@ function OutfitLibrary({
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Link
-            href="/stylist"
-            className="inline-flex items-center gap-2 rounded-lg border border-surface-200 bg-white px-4 py-2.5 text-sm font-medium text-surface-700 transition-colors hover:bg-surface-100"
-          >
-            <Sparkles size={15} className="text-brand-600" /> Ask AI to style
-          </Link>
           <button
             type="button"
             onClick={onCreate}
@@ -688,7 +720,7 @@ function OutfitLibrary({
                       type="button"
                       onClick={() => onEdit(outfit)}
                       disabled={deletingOutfitId === outfit.id}
-                      className="flex items-center gap-1.5 rounded-full bg-white/90 px-3 py-1.5 text-[11px] font-semibold text-surface-600 shadow-sm transition-colors hover:bg-surface-900 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                      className="flex items-center gap-1.5 rounded-full bg-white/90 px-3 py-1.5 text-[12px] font-semibold text-surface-600 shadow-sm transition-colors hover:bg-surface-900 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <Pencil size={12} /> Edit
                     </button>
@@ -755,7 +787,7 @@ function OutfitLibrary({
                         {outfit.times_worn || 0}×
                       </p>
                     </div>
-                    <span className="shrink-0 rounded-full bg-brand-50 px-2.5 py-1 text-[10px] font-semibold text-brand-700">
+                    <span className="shrink-0 rounded-full bg-brand-50 px-2.5 py-1 text-[11px] font-semibold text-brand-700">
                       {outfit.folder || "Uncategorized"}
                     </span>
                   </div>

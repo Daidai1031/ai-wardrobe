@@ -166,7 +166,7 @@ export function ProfileForm({ profile }: { profile: Profile | null }) {
         {/* Body */}
         <section>
           <h2 className="text-sm font-semibold text-surface-700 mb-3">Body Profile</h2>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             <div>
               <label className={labelClass}>Height (cm)</label>
               <input type="number" value={form.height_cm} onChange={(e) => update("height_cm", e.target.value)} className={inputClass} />
@@ -185,7 +185,7 @@ export function ProfileForm({ profile }: { profile: Profile | null }) {
               </select>
             </div>
           </div>
-          <div className="grid grid-cols-3 gap-3 mt-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-3">
             <div>
               <label className={labelClass}>Bust (cm) <span className="text-surface-400">optional</span></label>
               <input type="number" value={form.bust_cm} onChange={(e) => update("bust_cm", e.target.value)} className={inputClass} />
@@ -206,7 +206,7 @@ export function ProfileForm({ profile }: { profile: Profile | null }) {
           <h2 className="text-sm font-semibold text-surface-700 mb-3">
             Appearance <span className="font-normal text-surface-400">(optional, for future avatar)</span>
           </h2>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             <div>
               <label className={labelClass}>Skin Tone</label>
               <input value={form.skin_tone} onChange={(e) => update("skin_tone", e.target.value)} className={inputClass} placeholder="e.g. fair, medium, dark" />
