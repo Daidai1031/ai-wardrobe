@@ -126,7 +126,7 @@ export function RotationSettings({
         .eq("id", user.id);
       if (error) throw error;
 
-      toast.success("Saved — this applies the next time you plan or redo a day.");
+      toast.success("Saved — this applies the next time you plan days or rebuild a look.");
       setOpen(false);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Couldn't save your repeat rules.");
@@ -191,7 +191,7 @@ export function RotationSettings({
                   )}
                 >
                   <p className="text-xs font-semibold text-surface-900">{preset.label}</p>
-                  <p className="mt-0.5 text-[10px] leading-relaxed text-surface-500">
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-surface-500">
                     {preset.hint}
                   </p>
                 </button>
@@ -215,7 +215,7 @@ export function RotationSettings({
                   >
                     <div className="min-w-0">
                       <p className="text-xs font-medium text-surface-800">{category}</p>
-                      <p className="text-[10px] text-surface-400">
+                      <p className="text-[11px] text-surface-400">
                         {owned} in your closet
                         {short && (
                           <span className="text-amber-600">
@@ -234,7 +234,7 @@ export function RotationSettings({
                       >
                         −
                       </button>
-                      <span className="w-24 text-center text-[11px] font-medium text-surface-700">
+                      <span className="w-24 text-center text-[12px] font-medium text-surface-700">
                         {describeDays(days)}
                       </span>
                       <button
@@ -251,8 +251,8 @@ export function RotationSettings({
               })}
             </div>
 
-            <p className="mt-3 text-[10px] leading-relaxed text-surface-400">
-              Changes apply the next time you plan the week or redo a day. Outfits already on
+            <p className="mt-3 text-[11px] leading-relaxed text-surface-400">
+              Changes apply the next time you plan days or rebuild a look. Outfits already on
               the calendar are left exactly as they are.
             </p>
 

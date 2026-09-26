@@ -102,7 +102,7 @@ export function ClosetView({
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
         <div>
           <h1 className="text-xl font-semibold text-surface-900">My Closet</h1>
           <p className="text-sm text-surface-500 mt-0.5">
@@ -161,14 +161,14 @@ export function ClosetView({
       )}
 
       {/* Category filter */}
-      <div className="flex gap-2 mb-4 overflow-x-auto scrollbar-hide pb-1">
+      <div className="flex gap-4 mb-4 overflow-x-auto scrollbar-hide border-b border-border max-lg:-mx-4 max-lg:px-4">
         <button
           onClick={() => setFilter("category", undefined)}
           className={cn(
-            "px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-colors",
+            "px-0.5 pb-2 border-b-2 text-xs font-medium whitespace-nowrap transition-colors -mb-px",
             !activeCategory
-              ? "bg-surface-900 text-white"
-              : "bg-surface-100 text-surface-600 hover:bg-surface-200"
+              ? "border-ink text-ink"
+              : "border-transparent text-surface-500 hover:text-ink"
           )}
         >
           All ({totalItems})
@@ -178,10 +178,10 @@ export function ClosetView({
             key={cat}
             onClick={() => setFilter("category", activeCategory === cat ? undefined : cat)}
             className={cn(
-              "px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-colors",
+              "px-0.5 pb-2 border-b-2 text-xs font-medium whitespace-nowrap transition-colors -mb-px",
               activeCategory === cat
-                ? "bg-surface-900 text-white"
-                : "bg-surface-100 text-surface-600 hover:bg-surface-200"
+                ? "border-ink text-ink"
+                : "border-transparent text-surface-500 hover:text-ink"
             )}
           >
             {cat} ({categoryCounts[cat] || 0})
@@ -190,7 +190,7 @@ export function ClosetView({
       </div>
 
       {/* Color + Season filters */}
-      <div className="flex gap-4 mb-6">
+      <div className="flex flex-wrap gap-x-4 gap-y-3 mb-6">
         {colors.length > 0 && (
           <div className="flex items-center gap-1.5">
             <span className="text-xs text-surface-400">Color:</span>
@@ -215,7 +215,7 @@ export function ClosetView({
               key={s}
               onClick={() => setFilter("season", activeSeason === s ? undefined : s)}
               className={cn(
-                "px-2 py-0.5 rounded text-[10px] font-medium capitalize transition-colors",
+                "px-2 py-0.5 rounded text-[11px] font-medium capitalize transition-colors",
                 activeSeason === s
                   ? "bg-brand-100 text-brand-700"
                   : "bg-surface-100 text-surface-500 hover:bg-surface-200"

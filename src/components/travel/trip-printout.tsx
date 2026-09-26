@@ -62,7 +62,7 @@ export function TripPrintout({
       <style>{PRINT_CSS}</style>
 
       <header className="mb-6 border-b border-surface-300 pb-4">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-surface-400">
+        <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-surface-400">
           {trip.tripType === "business" ? "Business trip" : "Trip"}
         </p>
         <h1 className="mt-1 font-display text-3xl font-semibold">{trip.destination}</h1>
@@ -87,12 +87,12 @@ export function TripPrintout({
                 <article key={card.key} className="trip-card rounded-2xl border border-surface-300 p-4">
                   <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2 border-b border-surface-200 pb-2">
                     <div>
-                      <p className="text-[11px] font-semibold uppercase tracking-wide text-surface-400">
+                      <p className="text-[12px] font-semibold uppercase tracking-wide text-surface-400">
                         Day {card.dayNumber}
                         {card.lookLabel ? ` · ${card.lookLabel}` : ""}
                         {card.confirmed ? " · confirmed" : ""}
                       </p>
-                      <h3 className="text-base font-semibold">{card.segment.label}</h3>
+                      <h3 className="heading-plain text-base font-semibold">{card.segment.label}</h3>
                       <p className="text-xs text-surface-500">{formatFullDate(card.date)}</p>
                     </div>
                     <div className="text-right text-xs text-surface-500">
@@ -138,7 +138,7 @@ export function TripPrintout({
                             decoding="sync"
                             className="mx-auto h-20 w-full rounded-lg bg-surface-50 object-contain"
                           />
-                          <p className="mt-1 text-[9px] leading-tight text-surface-600">
+                          <p className="mt-1 text-[10px] leading-tight text-surface-600">
                             {wardrobeItemLabel(item)}
                           </p>
                         </li>
@@ -153,7 +153,7 @@ export function TripPrintout({
 
                   {/* A ruled line, because a printed card gets written on. */}
                   <div className="mt-4 border-t border-dashed border-surface-300 pt-3">
-                    <p className="text-[9px] uppercase tracking-wide text-surface-300">Notes</p>
+                    <p className="text-[10px] uppercase tracking-wide text-surface-300">Notes</p>
                     <div className="mt-3 h-4 border-b border-surface-200" />
                   </div>
                 </article>
@@ -177,7 +177,7 @@ export function TripPrintout({
             <div className="mb-6 space-y-4">
               {categories.map((category) => (
                 <div key={category}>
-                  <h3 className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-surface-400">
+                  <h3 className="mb-1.5 text-[12px] font-semibold uppercase tracking-wide text-surface-400">
                     {category}
                   </h3>
                   <ul className="grid gap-x-6 gap-y-1 sm:grid-cols-2">
@@ -200,7 +200,7 @@ export function TripPrintout({
           )}
 
           <div>
-            <h3 className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-surface-400">
+            <h3 className="mb-1.5 text-[12px] font-semibold uppercase tracking-wide text-surface-400">
               Everything else
             </h3>
             <ul className="grid gap-x-6 gap-y-1 sm:grid-cols-2">

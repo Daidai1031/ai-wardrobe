@@ -63,7 +63,7 @@ export default async function TripPrintPage({
           <SectionLink id={id} value="packing" current={chosen} label="List only" />
         </div>
       </div>
-      <p className="no-print mx-auto max-w-3xl px-6 pt-3 text-[11px] text-surface-400">
+      <p className="no-print mx-auto max-w-3xl px-6 pt-3 text-[12px] text-surface-400">
         Use your browser&apos;s Print (⌘P / Ctrl+P) and choose “Save as PDF”.
       </p>
       <TripPrintout data={render} weatherByDate={weatherByDate} section={chosen} />

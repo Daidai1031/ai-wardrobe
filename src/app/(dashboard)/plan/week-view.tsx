@@ -1,12 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import { toast } from "sonner";
 import {
   AlertTriangle,
   CalendarDays,
-  Check,
   CloudSun,
   Layers3,
   Loader2,
@@ -64,7 +62,6 @@ export function WeekView({
   const [data, setData] = useState<WeeklyResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [planning, setPlanning] = useState(false);
-  const [regeneratingDate, setRegeneratingDate] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [regeneratingSegmentId, setRegeneratingSegmentId] = useState<string | null>(null);
   const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
@@ -103,9 +100,11 @@ export function WeekView({
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.error || "Couldn't reach your calendar.");
       toast.success(
-        payload.count > 0
-          ? `Synced ${payload.count} event${payload.count === 1 ? "" : "s"}.`
-          : "No events in the next two weeks."
+        payload.demo
+          ? `Loaded the demo calendar (${payload.count} events in the next two weeks).`
+          : payload.count > 0
+            ? `Synced ${payload.count} event${payload.count === 1 ? "" : "s"}.`
+            : "No events in the next two weeks."
       );
       await load();
     } catch (error) {
@@ -115,11 +114,19 @@ export function WeekView({
     }
   }
 
-  /** Plans the whole window in one call — the cross-day constraints only hold if every day is decided together. */
-  async function planWeek() {
+  /**
+   * Plans the window in one call — the cross-day constraints only hold if every day is
+   * decided together. There is deliberately no "replan" of days that already have
+   * outfits: the button only exists while some day is empty, and `keep` sends the planned
+   * days to the generator as context without letting it overwrite them (the same
+   * mechanism `/travel`'s "Plan the other N" uses).
+   */
+  async function planWeek(keep: string[] = []) {
     setPlanning(true);
     try {
-      const response = await fetch("/api/ai/weekly", { method: "POST" });
+      const response = await fetch(`/api/ai/weekly${keep.length > 0 ? `?keep=${keep.join(",")}` : ""}`, {
+        method: "POST",
+      });
       const next = (await response.json()) as WeeklyResponse;
       if (!response.ok || next.error) throw new Error(next.error || "Couldn't plan the week.");
 
@@ -127,8 +134,8 @@ export function WeekView({
       if (next.message) {
         toast.error(next.message);
       } else {
-        toast.success("Your week is planned");
-        if (next.skippedDates && next.skippedDates.length > 0) {
+        toast.success(keep.length > 0 ? "Planned the remaining days" : "Your week is planned");
+        if (next.skippedDates && next.skippedDates.length > 0 && keep.length === 0) {
           toast.info(
             `${next.skippedDates.length} day${next.skippedDates.length === 1 ? "" : "s"} left as-is — already confirmed worn.`
           );
@@ -138,40 +145,6 @@ export function WeekView({
       toast.error(error instanceof Error ? error.message : "Couldn't plan the week.");
     } finally {
       setPlanning(false);
-    }
-  }
-
-  /**
-   * One day only. This goes through the daily route rather than the weekly one, which
-   * also flips that date's `source` back to "daily" — once a day is redone on its own
-   * it is no longer bound by the week's cross-day constraints, and the badge on the
-   * cell says so rather than pretending the week is still intact.
-   */
-  async function regenerateDay(day: WeeklyDay) {
-    if (day.status === "worn") return;
-
-    setRegeneratingDate(day.date);
-    try {
-      const response = await fetch(`/api/ai/daily?date=${day.date}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          rejectedItemIds: [...new Set(day.segments.flatMap((s) => s.items.map((i) => i.id)))],
-        }),
-      });
-      const next = (await response.json()) as DailyResponse;
-      if (!response.ok || next.error) throw new Error(next.error || "Couldn't redo that day.");
-      if (next.message || next.segments.length === 0) {
-        toast.error(next.message || "Couldn't redo that day.");
-        return;
-      }
-
-      toast.success("Rebuilt that day");
-      await load();
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Couldn't redo that day.");
-    } finally {
-      setRegeneratingDate(null);
     }
   }
 
@@ -214,16 +187,25 @@ export function WeekView({
             ...current,
             days: current.days.map((day) => ({
               ...day,
-              segments: day.segments.map((segment) =>
-                segment.id === segmentId
-                  ? {
-                      ...segment,
-                      items: result.items,
-                      savedOutfitId: result.savedOutfitId,
-                      sourceOutfitId: result.sourceOutfitId,
-                    }
-                  : segment
-              ),
+              segments: day.segments.map((segment) => {
+                if (segment.id === segmentId) {
+                  return {
+                    ...segment,
+                    items: result.items,
+                    savedOutfitId: result.savedOutfitId,
+                    sourceOutfitId: result.sourceOutfitId,
+                    reasoning: result.reasoning,
+                    changeFromPrevious: result.changeFromPrevious ?? undefined,
+                  };
+                }
+                if (result.nextSegmentId && segment.id === result.nextSegmentId) {
+                  return {
+                    ...segment,
+                    changeFromPrevious: result.nextChangeFromPrevious ?? undefined,
+                  };
+                }
+                return segment;
+              }),
             })),
           }
         : current
@@ -299,14 +281,22 @@ export function WeekView({
             {syncing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
             {syncing ? "Syncing…" : "Sync calendar"}
           </button>
-          <button
-            onClick={() => void planWeek()}
-            disabled={planning}
-            className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
-          >
-            {planning ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
-            {planning ? "Planning…" : planned > 0 ? "Replan the week" : "Plan this week"}
-          </button>
+          {planned < data.days.length && (
+            <button
+              onClick={() =>
+                void planWeek(data.days.filter((day) => day.segments.length > 0).map((day) => day.date))
+              }
+              disabled={planning}
+              className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
+            >
+              {planning ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+              {planning
+                ? "Planning…"
+                : planned > 0
+                  ? `Plan the other ${data.days.length - planned} day${data.days.length - planned === 1 ? "" : "s"}`
+                  : "Plan this week"}
+            </button>
+          )}
         </div>
       </div>
 
@@ -320,7 +310,7 @@ export function WeekView({
           </p>
           <ul className="mt-1.5 space-y-0.5">
             {data.warnings.map((warning) => (
-              <li key={warning} className="text-[11px] leading-relaxed text-amber-700">
+              <li key={warning} className="text-[12px] leading-relaxed text-amber-700">
                 {warning}
               </li>
             ))}
@@ -330,7 +320,7 @@ export function WeekView({
 
       {/* Seven columns on wide screens, scrolling horizontally rather than reflowing —
           a week that wraps onto two rows stops reading as a week. */}
-      <div className="-mx-1 overflow-x-auto px-1 pb-1">
+      <div className="-mx-1 overflow-x-auto px-1 pb-1 max-lg:-mx-4 max-lg:px-4 max-lg:scrollbar-hide">
         <div className="grid min-w-[52rem] grid-cols-7 gap-2">
           {data.days.map((day) => {
             const isSelected = day.date === selectedDate;
@@ -352,7 +342,7 @@ export function WeekView({
                 )}
               >
                 <div className="flex items-baseline justify-between">
-                  <span className="text-[11px] font-semibold uppercase tracking-wide text-surface-500">
+                  <span className="text-[12px] font-semibold uppercase tracking-wide text-surface-500">
                     {weekdayShort(day.date)}
                   </span>
                   <span className="text-sm font-semibold text-surface-900">
@@ -365,7 +355,7 @@ export function WeekView({
                     {forecasts.map((forecast, index) => (
                       <p
                         key={`${forecast.city ?? "location"}-${index}`}
-                        className="flex items-center gap-1 text-[10px] text-surface-500"
+                        className="flex items-center gap-1 text-[11px] text-surface-500"
                       >
                         <CloudSun size={11} className="shrink-0" />
                         <span className="truncate">
@@ -385,7 +375,7 @@ export function WeekView({
                     ))}
                   </div>
                 ) : (
-                  <p className="text-[10px] text-surface-300">no forecast</p>
+                  <p className="text-[11px] text-surface-300">no forecast</p>
                 )}
 
                 {first ? (
@@ -397,23 +387,23 @@ export function WeekView({
                 )}
 
                 <div className="space-y-1">
-                  <p className="truncate text-[11px] font-medium text-surface-700">
+                  <p className="truncate text-[12px] font-medium text-surface-700">
                     {first ? first.label : "Not planned"}
                   </p>
                   <div className="flex flex-wrap gap-1">
                     {day.segments.length > 1 && (
-                      <span className="rounded-full bg-surface-100 px-1.5 py-0.5 text-[9px] font-semibold text-surface-500">
+                      <span className="rounded-full bg-surface-100 px-1.5 py-0.5 text-[10px] font-semibold text-surface-500">
                         +{day.segments.length - 1} more
                       </span>
                     )}
                     {day.status === "worn" && (
-                      <span className="rounded-full bg-brand-100 px-1.5 py-0.5 text-[9px] font-semibold text-brand-700">
+                      <span className="rounded-full bg-brand-100 px-1.5 py-0.5 text-[10px] font-semibold text-brand-700">
                         Worn
                       </span>
                     )}
                     {day.segments.length > 0 && day.source === "daily" && (
                       <span
-                        className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-semibold text-amber-700"
+                        className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700"
                         title="Redone on its own, so it isn't bound by the week's constraints"
                       >
                         Adjusted
@@ -430,12 +420,9 @@ export function WeekView({
       {selected && (
         <DayDetail
           day={selected}
-          isToday={selected.date === data.start}
           shareOccasions={Boolean(data.stylistShareOccasions)}
           onCalendarChanged={load}
-          regenerating={regeneratingDate === selected.date}
           regeneratingSegmentId={regeneratingSegmentId}
-          onRegenerate={() => void regenerateDay(selected)}
           onRegenerateSegment={(segment) => void regenerateSegment(selected.date, segment)}
           onEditSegment={(segment, reuseSaved) => {
             setReusingSegmentId(reuseSaved ? segment.id : null);
@@ -470,23 +457,17 @@ export function WeekView({
 
 function DayDetail({
   day,
-  isToday,
   shareOccasions,
   onCalendarChanged,
-  regenerating,
   regeneratingSegmentId,
-  onRegenerate,
   onRegenerateSegment,
   onEditSegment,
   onSavedSegment,
 }: {
   day: WeeklyDay;
-  isToday: boolean;
   shareOccasions: boolean;
   onCalendarChanged: () => Promise<void>;
-  regenerating: boolean;
   regeneratingSegmentId: string | null;
-  onRegenerate: () => void;
   onRegenerateSegment: (segment: DailySegmentResponse) => void;
   onEditSegment: (segment: DailySegmentResponse, reuseSaved: boolean) => void;
   onSavedSegment: (segment: DailySegmentResponse, outfitId: string) => void;
@@ -499,7 +480,7 @@ function DayDetail({
   }).format(new Date(`${day.date}T12:00:00Z`));
 
   return (
-    <div className="rounded-xl border border-surface-200 bg-white p-6">
+    <div className="rounded-xl border border-surface-200 bg-white p-4 sm:p-6">
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-sm font-semibold text-surface-900">{fullDate}</h2>
@@ -518,43 +499,11 @@ function DayDetail({
             <p className="mt-1 text-xs text-surface-400">Nothing on the calendar</p>
           )}
         </div>
-
-        <div className="flex items-center gap-2">
-          {/* Only for today — /home shows today and nothing else, so offering it on a
-              Thursday sent the user somewhere that couldn't edit what they clicked. */}
-          {isToday && (
-            <Link
-              href="/home"
-              className="rounded-lg border border-surface-200 px-3 py-2 text-xs font-medium text-surface-600 hover:bg-surface-50"
-            >
-              Open on Home
-            </Link>
-          )}
-          <button
-            onClick={onRegenerate}
-            disabled={regenerating || day.status === "worn"}
-            title={
-              day.status === "worn"
-                ? "Already confirmed worn — this day is history now"
-                : "Redo just this day"
-            }
-            className="flex items-center gap-1.5 rounded-lg border border-surface-200 px-3 py-2 text-xs font-medium text-surface-600 hover:bg-surface-50 disabled:opacity-40"
-          >
-            {regenerating ? (
-              <Loader2 size={13} className="animate-spin" />
-            ) : day.status === "worn" ? (
-              <Check size={13} />
-            ) : (
-              <RotateCcw size={13} />
-            )}
-            {regenerating ? "Redoing…" : "Redo this day"}
-          </button>
-        </div>
       </div>
 
       {day.segments.length === 0 ? (
         <p className="text-sm text-surface-400">
-          Nothing planned yet. Use “Plan this week” above to fill the whole window at once.
+          Nothing planned yet. Use the plan button above to fill the empty days at once.
         </p>
       ) : (
         <div className="space-y-5">
@@ -564,10 +513,10 @@ function DayDetail({
               <div className="space-y-2">
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div>
-                    <p className="text-[11px] uppercase tracking-wide text-surface-400">
+                    <p className="text-[12px] uppercase tracking-wide text-surface-400">
                       Segment {index + 1}
                     </p>
-                    <h3 className="text-sm font-semibold text-surface-900">{segment.label}</h3>
+                    <h3 className="heading-plain text-sm font-semibold text-surface-900">{segment.label}</h3>
                   </div>
                   {day.status !== "worn" && (
                     <div className="flex flex-wrap items-center justify-end gap-1.5">
@@ -617,7 +566,7 @@ function DayDetail({
                 <p className="text-sm leading-relaxed text-surface-700">{segment.reasoning}</p>
                 <ul className="space-y-1 border-t border-surface-100 pt-2">
                   {segment.items.map((item) => (
-                    <li key={item.id} className="text-[11px] leading-relaxed text-surface-500">
+                    <li key={item.id} className="text-[12px] leading-relaxed text-surface-500">
                       {wardrobeItemLabel(item)}
                     </li>
                   ))}
@@ -693,7 +642,7 @@ function OccasionChip({
       setEditingLocation(false);
       toast.success(
         location.trim()
-          ? "Event weather location updated. Replan to apply it to outfits."
+          ? "Event weather location updated. Rebuild a look to apply it to outfits."
           : "Using the location from Google Calendar again."
       );
       await onLocationSaved();
@@ -707,7 +656,7 @@ function OccasionChip({
   return (
     <div
       className={cn(
-        "min-w-0 rounded-lg px-2.5 py-1.5 text-[10px] font-medium",
+        "min-w-0 rounded-lg px-2.5 py-1.5 text-[11px] font-medium",
         shared ? "bg-brand-50 text-brand-700" : "bg-surface-100 text-surface-600"
       )}
     >
@@ -723,7 +672,7 @@ function OccasionChip({
                 ? "Your stylist can see this event's time and title. Tap to hide them again."
                 : "Show this event's time and title to your stylist. They currently see only the kind of occasion."
             }
-            className="text-[10px] underline decoration-dotted underline-offset-2 disabled:opacity-50"
+            className="text-[11px] underline decoration-dotted underline-offset-2 disabled:opacity-50"
           >
             {shared ? "shared" : "share details"}
           </button>
@@ -746,7 +695,7 @@ function OccasionChip({
             maxLength={160}
             placeholder="City or region, e.g. Boston, MA"
             aria-label={`Weather location for ${occasion.title}`}
-            className="min-w-[13rem] flex-1 rounded-md border border-surface-300 bg-white px-2 py-1 text-[11px] font-normal text-surface-800 outline-none focus:border-brand-400"
+            className="min-w-[13rem] flex-1 rounded-md border border-surface-300 bg-white px-2 py-1 text-[12px] font-normal text-surface-800 outline-none focus:border-brand-400"
           />
           <button
             type="submit"
@@ -787,7 +736,7 @@ function OccasionChip({
           <MapPin size={10} className="shrink-0" />
           <span className="truncate">{occasion.location || "Add city or region"}</span>
           {occasion.locationOverridden && (
-            <span className="shrink-0 rounded bg-white/70 px-1 text-[9px] font-medium text-brand-700">
+            <span className="shrink-0 rounded bg-white/70 px-1 text-[10px] font-medium text-brand-700">
               edited
             </span>
           )}

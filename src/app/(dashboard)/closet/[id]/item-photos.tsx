@@ -233,7 +233,7 @@ export function ItemPhotos({
           <ItemEnhancer item={item} className="bottom-3 right-3" onApplied={setPrimaryUrl} />
         )}
         {selected && (
-          <span className="absolute top-3 left-3 px-2 py-1 rounded-md bg-surface-900/70 text-white text-[11px]">
+          <span className="absolute top-3 left-3 px-2 py-1 rounded-md bg-surface-900/70 text-white text-[12px]">
             Reference photo
           </span>
         )}
@@ -295,7 +295,7 @@ export function ItemPhotos({
           ) : (
             <>
               <Plus size={16} />
-              <span className="text-[10px] leading-none">Angle</span>
+              <span className="text-[11px] leading-none">Angle</span>
             </>
           )}
         </button>

@@ -274,7 +274,7 @@ export function ItemEnhancer({ item, className, onApplied }: ItemEnhancerProps) 
       {processing && (
         <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden bg-white/20">
           <div className="wardrobe-enhance-sweep absolute -inset-y-1/4 w-2/3" />
-          <div className="absolute inset-x-2 bottom-2 rounded-lg bg-surface-950/70 px-2 py-1.5 text-center text-[10px] font-medium text-white backdrop-blur-sm">
+          <div className="absolute inset-x-2 bottom-2 rounded-lg bg-surface-950/70 px-2 py-1.5 text-center text-[11px] font-medium text-white backdrop-blur-sm">
             <div>{STAGES[stage]}</div>
             <div className="mt-0.5 font-normal text-white/75">
               {formatElapsed(elapsedSeconds)} ·{" "}
@@ -304,7 +304,7 @@ export function ItemEnhancer({ item, className, onApplied }: ItemEnhancerProps) 
 function Preview({ label, url }: { label: string; url: string }) {
   return (
     <div>
-      <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-surface-400">
+      <p className="mb-1.5 text-[12px] font-semibold uppercase tracking-wide text-surface-400">
         {label}
       </p>
       <div className="relative aspect-square overflow-hidden rounded-xl border border-surface-200 bg-surface-50">

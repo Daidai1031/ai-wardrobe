@@ -134,7 +134,7 @@ export function PackingPanel({
           <div className="space-y-5">
             {categories.map((category) => (
               <section key={category}>
-                <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-surface-400">
+                <h3 className="mb-2 text-[12px] font-semibold uppercase tracking-wide text-surface-400">
                   {category}
                   <span className="ml-1.5 font-normal text-surface-300">
                     {byCategory.get(category)!.length}
@@ -163,7 +163,7 @@ export function PackingPanel({
                           <span className="block truncate text-xs font-medium text-surface-800">
                             {wardrobeItemLabel(garment.item)}
                           </span>
-                          <span className="block truncate text-[10px] text-surface-400">
+                          <span className="block truncate text-[11px] text-surface-400">
                             {garment.dates.map(shortDate).join(", ")}
                           </span>
                         </span>

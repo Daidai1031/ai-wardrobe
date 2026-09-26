@@ -82,9 +82,11 @@ export function TripList() {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.error || "Couldn't reach your calendar.");
       toast.success(
-        payload.count > 0
-          ? `Synced ${payload.count} event${payload.count === 1 ? "" : "s"}.`
-          : "No events found in the next six weeks."
+        payload.demo
+          ? `Loaded the demo calendar (${payload.count} events in the next six weeks).`
+          : payload.count > 0
+            ? `Synced ${payload.count} event${payload.count === 1 ? "" : "s"}.`
+            : "No events found in the next six weeks."
       );
       await load();
     } catch (error) {
@@ -260,7 +262,7 @@ function TripCard({
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-surface-400">
+          <div className="flex items-center gap-1.5 text-[12px] font-semibold uppercase tracking-wide text-surface-400">
             <MapPin size={11} className="shrink-0" />
             <span className="truncate">{trip.cities.join(" · ")}</span>
           </div>
@@ -271,7 +273,7 @@ function TripCard({
         <span
           title={`Classified from your calendar: ${trip.typeReason}`}
           className={cn(
-            "flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-semibold",
+            "flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold",
             business ? "bg-surface-900 text-white" : "bg-brand-100 text-brand-700"
           )}
         >
@@ -290,7 +292,7 @@ function TripCard({
       {trip.highlights.length > 0 && (
         <ul className="space-y-0.5">
           {trip.highlights.map((highlight) => (
-            <li key={highlight} className="truncate text-[11px] text-surface-500">
+            <li key={highlight} className="truncate text-[12px] text-surface-500">
               {highlight}
             </li>
           ))}
@@ -300,7 +302,7 @@ function TripCard({
       <div className="mt-auto flex flex-wrap items-center gap-1.5 border-t border-surface-100 pt-3">
         <span
           className={cn(
-            "rounded-full px-2 py-0.5 text-[10px] font-semibold",
+            "rounded-full px-2 py-0.5 text-[11px] font-semibold",
             allPlanned ? "bg-brand-100 text-brand-700" : "bg-surface-100 text-surface-500"
           )}
         >
@@ -309,13 +311,13 @@ function TripCard({
             : `${trip.plannedDays}/${trip.dates.length} days planned`}
         </span>
         {trip.confirmedDays > 0 && (
-          <span className="flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+          <span className="flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
             <Check size={10} />
             {allConfirmed ? "Confirmed" : `${trip.confirmedDays} confirmed`}
           </span>
         )}
         {trip.shared && (
-          <span className="flex items-center gap-1 rounded-full bg-surface-100 px-2 py-0.5 text-[10px] font-semibold text-surface-500">
+          <span className="flex items-center gap-1 rounded-full bg-surface-100 px-2 py-0.5 text-[11px] font-semibold text-surface-500">
             <Share2 size={10} />
             Shared
           </span>
@@ -323,7 +325,7 @@ function TripCard({
         {trip.userShaped && (
           <span
             title="You told us how this trip is grouped, so detection leaves it alone."
-            className="flex items-center gap-1 rounded-full bg-surface-100 px-2 py-0.5 text-[10px] font-semibold text-surface-500"
+            className="flex items-center gap-1 rounded-full bg-surface-100 px-2 py-0.5 text-[11px] font-semibold text-surface-500"
           >
             <Check size={10} />
             Your grouping
@@ -339,7 +341,7 @@ function TripCard({
           <button
             onClick={() => onDecide(trip.suggestion!.kind, trip.suggestion!.boundaryDate)}
             disabled={deciding}
-            className="flex items-center gap-1 rounded-lg bg-surface-900 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-surface-800 disabled:opacity-50"
+            className="flex items-center gap-1 rounded-lg bg-surface-900 px-2.5 py-1.5 text-[12px] font-semibold text-white hover:bg-surface-800 disabled:opacity-50"
           >
             {deciding ? <Loader2 size={11} className="animate-spin" /> : <Scissors size={11} />}
             {trip.suggestion.actionLabel}
@@ -347,7 +349,7 @@ function TripCard({
           <button
             onClick={() => onDecide("keep")}
             disabled={deciding}
-            className="rounded-lg border border-amber-300 px-2.5 py-1.5 text-[11px] font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+            className="rounded-lg border border-amber-300 px-2.5 py-1.5 text-[12px] font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50"
           >
             No, it&apos;s right
           </button>
@@ -358,7 +360,7 @@ function TripCard({
         <button
           onClick={onUndo}
           disabled={deciding}
-          className="mt-1 self-start text-[11px] font-medium text-surface-400 underline-offset-2 hover:text-surface-600 hover:underline disabled:opacity-50"
+          className="mt-1 self-start text-[12px] font-medium text-surface-400 underline-offset-2 hover:text-surface-600 hover:underline disabled:opacity-50"
         >
           Undo my grouping
         </button>

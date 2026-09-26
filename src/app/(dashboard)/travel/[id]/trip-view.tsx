@@ -376,7 +376,7 @@ export function TripView({
                     aria-label="Trip name"
                     className="w-56 rounded-lg border border-surface-300 px-2 py-1 font-display text-2xl font-semibold text-surface-900 focus:border-brand-400 focus:outline-none"
                   />
-                  <span className="text-[11px] text-surface-400">Enter to save · empty to reset</span>
+                  <span className="text-[12px] text-surface-400">Enter to save · empty to reset</span>
                 </form>
               ) : (
                 <h1 className="font-display text-2xl font-semibold text-surface-900">
@@ -402,7 +402,7 @@ export function TripView({
                 disabled={savingTrip}
                 title={`Classified from your calendar: ${trip.typeReason}. Click to switch — it changes what the packing list suggests.`}
                 className={cn(
-                  "flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-semibold transition-opacity disabled:opacity-50",
+                  "flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition-opacity disabled:opacity-50",
                   business ? "bg-surface-900 text-white" : "bg-brand-100 text-brand-700"
                 )}
               >
@@ -450,7 +450,7 @@ export function TripView({
 
         {trip.shareToken && (
           <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg bg-surface-50 px-3 py-2">
-            <code className="min-w-0 flex-1 truncate text-[11px] text-surface-600">
+            <code className="min-w-0 flex-1 truncate text-[12px] text-surface-600">
               {typeof window === "undefined"
                 ? `/trip/${trip.shareToken}`
                 : `${window.location.origin}/trip/${trip.shareToken}`}
@@ -461,7 +461,7 @@ export function TripView({
                   ?.writeText(`${window.location.origin}/trip/${trip.shareToken}`)
                   .then(() => toast.success("Link copied"));
               }}
-              className="rounded-md border border-surface-200 bg-white px-2 py-1 text-[11px] font-medium text-surface-600"
+              className="rounded-md border border-surface-200 bg-white px-2 py-1 text-[12px] font-medium text-surface-600"
             >
               Copy
             </button>
@@ -489,7 +489,7 @@ export function TripView({
             {id === "packing" && garments.length > 0 && (
               <span
                 className={cn(
-                  "rounded-full px-1.5 text-[10px]",
+                  "rounded-full px-1.5 text-[11px]",
                   tab === id ? "bg-white/20" : "bg-surface-100"
                 )}
               >
@@ -569,7 +569,7 @@ export function TripView({
           </div>
 
           {truncated && (
-            <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-[11px] leading-relaxed text-amber-700">
+            <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-[12px] leading-relaxed text-amber-700">
               This trip runs {trip.dates.length} days. One generation covers {trip.planDays} of them,
               so the days from {trip.dates[trip.planDays]} onward aren&apos;t shown here — plan those
               from <Link href="/plan" className="underline">This week</Link> once they come closer.
@@ -583,7 +583,7 @@ export function TripView({
               </p>
               <ul className="mt-1.5 space-y-0.5">
                 {week.warnings.map((warning) => (
-                  <li key={warning} className="text-[11px] leading-relaxed text-amber-700">
+                  <li key={warning} className="text-[12px] leading-relaxed text-amber-700">
                     {warning}
                   </li>
                 ))}
@@ -591,7 +591,7 @@ export function TripView({
             </div>
           )}
 
-          <div className="-mx-1 overflow-x-auto px-1 pb-1">
+          <div className="-mx-1 overflow-x-auto px-1 pb-1 max-lg:-mx-4 max-lg:px-4 max-lg:scrollbar-hide">
             <div
               className="grid gap-2"
               style={{
@@ -660,10 +660,10 @@ function TripDayCell({
       )}
     >
       <div className="flex items-baseline justify-between">
-        <span className="text-[10px] font-semibold uppercase tracking-wide text-surface-400">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-surface-400">
           Day {index + 1}
         </span>
-        <span className="text-[11px] font-semibold text-surface-700">
+        <span className="text-[12px] font-semibold text-surface-700">
           {weekdayShort(day.date)} {dayNumber(day.date)}
         </span>
       </div>
@@ -673,7 +673,7 @@ function TripDayCell({
           {forecasts.map((forecast, forecastIndex) => (
             <p
               key={`${forecast.city ?? "location"}-${forecastIndex}`}
-              className="flex items-center gap-1 text-[10px] text-surface-500"
+              className="flex items-center gap-1 text-[11px] text-surface-500"
             >
               <CloudSun size={11} className="shrink-0" />
               <span className="truncate">
@@ -691,7 +691,7 @@ function TripDayCell({
           ))}
         </div>
       ) : (
-        <p className="text-[10px] text-surface-300">no forecast</p>
+        <p className="text-[11px] text-surface-300">no forecast</p>
       )}
 
       {first ? (
@@ -703,17 +703,17 @@ function TripDayCell({
       )}
 
       <div className="space-y-1">
-        <p className="truncate text-[11px] font-medium text-surface-700">
+        <p className="truncate text-[12px] font-medium text-surface-700">
           {first ? first.label : "Not planned"}
         </p>
         <div className="flex flex-wrap gap-1">
           {day.segments.length > 1 && (
-            <span className="rounded-full bg-surface-100 px-1.5 py-0.5 text-[9px] font-semibold text-surface-500">
+            <span className="rounded-full bg-surface-100 px-1.5 py-0.5 text-[10px] font-semibold text-surface-500">
               +{day.segments.length - 1} more
             </span>
           )}
           {confirmed && (
-            <span className="flex items-center gap-0.5 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-700">
+            <span className="flex items-center gap-0.5 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
               <Check size={9} /> Confirmed
             </span>
           )}
@@ -747,17 +747,17 @@ function TripDayPanel({
   onEditSegment: (segment: DailySegmentResponse, reuseSaved: boolean) => void;
 }) {
   return (
-    <div className="rounded-xl border border-surface-200 bg-white p-6">
+    <div className="rounded-xl border border-surface-200 bg-white p-4 sm:p-6">
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-[11px] uppercase tracking-wide text-surface-400">Day {dayIndex + 1}</p>
+          <p className="text-[12px] uppercase tracking-wide text-surface-400">Day {dayIndex + 1}</p>
           <h2 className="text-sm font-semibold text-surface-900">{fullDateLabel(day.date)}</h2>
           {day.occasions.length > 0 ? (
             <div className="mt-2 flex flex-wrap gap-1.5">
               {day.occasions.map((occasion) => (
                 <span
                   key={occasion.id}
-                  className="rounded-lg bg-surface-100 px-2.5 py-1.5 text-[10px] font-medium text-surface-600"
+                  className="rounded-lg bg-surface-100 px-2.5 py-1.5 text-[11px] font-medium text-surface-600"
                 >
                   {occasion.time} · {occasion.title}
                   {occasion.location ? ` · ${occasion.location}` : ""}
@@ -827,10 +827,10 @@ function TripDayPanel({
               <div className="space-y-2">
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div>
-                    <p className="text-[11px] uppercase tracking-wide text-surface-400">
+                    <p className="text-[12px] uppercase tracking-wide text-surface-400">
                       Look {index + 1}
                     </p>
-                    <h3 className="text-sm font-semibold text-surface-900">{segment.label}</h3>
+                    <h3 className="heading-plain text-sm font-semibold text-surface-900">{segment.label}</h3>
                   </div>
                   <div className="flex flex-wrap items-center justify-end gap-1.5">
                     <button
@@ -874,7 +874,7 @@ function TripDayPanel({
                 <p className="text-sm leading-relaxed text-surface-700">{segment.reasoning}</p>
                 <ul className="space-y-1 border-t border-surface-100 pt-2">
                   {segment.items.map((item) => (
-                    <li key={item.id} className="text-[11px] leading-relaxed text-surface-500">
+                    <li key={item.id} className="text-[12px] leading-relaxed text-surface-500">
                       {wardrobeItemLabel(item)}
                     </li>
                   ))}

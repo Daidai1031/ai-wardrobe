@@ -120,7 +120,7 @@ export function ItemOutfits({
                       {outfit.name || "Untitled Look"}
                     </h3>
                     {outfit.ai_generated && (
-                      <span className="shrink-0 rounded-full bg-brand-50 px-2 py-1 text-[10px] font-semibold text-brand-700">
+                      <span className="shrink-0 rounded-full bg-brand-50 px-2 py-1 text-[11px] font-semibold text-brand-700">
                         AI
                       </span>
                     )}

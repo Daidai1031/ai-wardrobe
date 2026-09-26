@@ -66,7 +66,7 @@ export default async function SharedTripPage({
         data={render}
         weatherByDate={weatherByDate}
         intro={
-          <p className="mt-3 rounded-lg bg-surface-100 px-3 py-2 text-[11px] text-surface-500 print:hidden">
+          <p className="mt-3 rounded-lg bg-surface-100 px-3 py-2 text-[12px] text-surface-500 print:hidden">
             You&apos;re looking at a shared, read-only copy of this trip. The person who shared it
             can revoke this link at any time.
           </p>

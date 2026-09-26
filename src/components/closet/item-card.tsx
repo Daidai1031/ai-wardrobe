@@ -102,7 +102,7 @@ export function ItemCard({
               style={{ backgroundColor: item.color.toLowerCase() }}
             />
           )}
-          <span className="text-[11px] text-surface-500 capitalize truncate">
+          <span className="text-[12px] text-surface-500 capitalize truncate">
             {item.color}
             {item.brand ? ` · ${item.brand}` : ""}
           </span>
