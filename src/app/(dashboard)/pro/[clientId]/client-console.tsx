@@ -53,6 +53,7 @@ import {
   type CanvasItemLayout,
 } from "@/components/outfit/outfit-canvas";
 import type { StylistClientOverview } from "@/lib/stylist/client-overview";
+import { MessagesSection } from "./messages-section";
 import type { StylistOccasionProjection } from "@/lib/stylist/occasion-projection";
 import { wardrobeItemLabel, wardrobeItemName } from "@/lib/wardrobe/item-label";
 import { wardrobeItemImage } from "@/lib/wardrobe/item-image";
@@ -60,6 +61,7 @@ import { cn } from "@/lib/utils";
 import {
   ITEM_CATEGORIES,
   type ItemCategory,
+  type StylistMessage,
   type StylistReviewStatus,
   type StylistReviewTargetKind,
   type WardrobeItem,
@@ -151,6 +153,7 @@ export function ClientConsole({
   reviews,
   occasions,
   overview,
+  messages,
   accessExpiresAt,
   shareOccasions,
 }: {
@@ -161,6 +164,7 @@ export function ClientConsole({
   reviews: ConsoleReview[];
   occasions: StylistOccasionProjection;
   overview: StylistClientOverview;
+  messages: StylistMessage[];
   accessExpiresAt: string;
   shareOccasions: boolean;
 }) {
@@ -513,7 +517,7 @@ export function ClientConsole({
                   placeholder="Monday client meeting"
                   className="mt-2 w-full rounded-lg border border-surface-200 bg-surface-50 px-3 py-2 text-xs text-surface-800 outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100"
                 />
-                <p className="mt-1 text-[11px] text-surface-400">
+                <p className="mt-1 text-[12px] text-surface-400">
                   Required — this is how it will be titled in their Looks.
                 </p>
               </div>
@@ -540,7 +544,7 @@ export function ClientConsole({
                     </button>
                   ))}
                 </div>
-                <p className="mt-1 text-[11px] text-surface-400">Optional. Tap again to clear.</p>
+                <p className="mt-1 text-[12px] text-surface-400">Optional. Tap again to clear.</p>
               </div>
             )}
 
@@ -560,7 +564,7 @@ export function ClientConsole({
                 placeholder="Why this works, what to swap, how to wear it…"
                 className="mt-2 w-full resize-none rounded-lg border border-surface-200 bg-surface-50 p-3 text-xs text-surface-800 outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100"
               />
-              <p className="mt-1 text-[11px] text-surface-400">
+              <p className="mt-1 text-[12px] text-surface-400">
                 {target.kind === "new_outfit"
                   ? "Required. It becomes the note saved with the Look."
                   : hasProposal
@@ -569,7 +573,7 @@ export function ClientConsole({
               </p>
             </div>
 
-            <p className="rounded-lg bg-surface-50 p-3 text-[11px] leading-relaxed text-surface-500">
+            <p className="rounded-lg bg-surface-50 p-3 text-[12px] leading-relaxed text-surface-500">
               {target.kind === "new_outfit"
                 ? `Sending offers this look to ${clientName}. It only appears in their Looks if they accept, and they can undo that afterwards.`
                 : `Sending creates a suggestion. Nothing in ${clientName}'s closet changes until they accept it, and they can undo an accept afterwards.`}
@@ -600,7 +604,7 @@ export function ClientConsole({
               <Icon size={13} strokeWidth={tab === id ? 2 : 1.5} />
               {label}
               {count !== null && (
-                <span className={cn("text-[10px]", tab === id ? "text-white/60" : "text-surface-400")}>
+                <span className={cn("text-[11px]", tab === id ? "text-white/60" : "text-surface-400")}>
                   {count}
                 </span>
               )}
@@ -611,7 +615,10 @@ export function ClientConsole({
 
       {tab === "overview" && (
         <OverviewPanel
+          clientId={clientId}
+          clientName={clientName}
           overview={overview}
+          messages={messages}
           reviews={reviews}
           accessExpiresAt={accessExpiresAt}
           shareOccasions={shareOccasions}
@@ -697,19 +704,19 @@ export function ClientConsole({
                         <p className="truncate text-xs font-semibold text-surface-900">
                           {outfit.name || "Untitled Look"}
                         </p>
-                        <p className="text-[11px] text-surface-400">
+                        <p className="text-[12px] text-surface-400">
                           {items.length} pieces · worn {outfit.times_worn ?? 0}×
                         </p>
                       </div>
                       {outfit.ai_generated && (
-                        <span className="shrink-0 rounded-full bg-surface-100 px-2 py-0.5 text-[10px] font-medium text-surface-500">
+                        <span className="shrink-0 rounded-full bg-surface-100 px-2 py-0.5 text-[11px] font-medium text-surface-500">
                           AI
                         </span>
                       )}
                     </div>
 
                     {existing.length > 0 && (
-                      <p className="text-[10px] text-surface-400">
+                      <p className="text-[11px] text-surface-400">
                         {existing.length} suggestion{existing.length > 1 ? "s" : ""} sent ·{" "}
                         {STATUS_LABEL[existing[0].status]}
                       </p>
@@ -718,7 +725,7 @@ export function ClientConsole({
                     <button
                       type="button"
                       onClick={() => openOutfit(outfit)}
-                      className="w-full rounded-lg border border-surface-200 px-3 py-1.5 text-[11px] font-medium text-surface-700 transition-colors hover:bg-surface-50"
+                      className="w-full rounded-lg border border-surface-200 px-3 py-1.5 text-[12px] font-medium text-surface-700 transition-colors hover:bg-surface-50"
                     >
                       {sent ? "Send another suggestion" : "Review this Look"}
                     </button>
@@ -787,12 +794,12 @@ function OccasionsPanel({
                     <li key={occasion.id} className="flex flex-wrap items-center gap-2 text-xs text-surface-600">
                       <span>{occasion.description}</span>
                       {occasion.formality !== null && (
-                        <span className="rounded-full bg-surface-100 px-2 py-0.5 text-[10px] font-medium text-surface-500">
+                        <span className="rounded-full bg-surface-100 px-2 py-0.5 text-[11px] font-medium text-surface-500">
                           formality {occasion.formality}/5
                         </span>
                       )}
                       {occasion.detail && (
-                        <span className="rounded-full bg-brand-50 px-2 py-0.5 text-[10px] font-medium text-brand-700">
+                        <span className="rounded-full bg-brand-50 px-2 py-0.5 text-[11px] font-medium text-brand-700">
                           {occasion.detail.timeLabel}
                           {occasion.detail.title ? ` · ${occasion.detail.title}` : ""}
                         </span>
@@ -819,13 +826,13 @@ function OccasionsPanel({
                               .map((item) => ({ id: item.itemId, ...item }))
                           )}
                         />
-                        <p className="mt-2 truncate text-[11px] font-medium text-surface-700">
+                        <p className="mt-2 truncate text-[12px] font-medium text-surface-700">
                           {segment.name}
                         </p>
                         <button
                           type="button"
                           onClick={() => onOpenSegment(segment.id, segment.name, segment.items)}
-                          className="mt-1.5 w-full rounded-lg border border-surface-200 px-2 py-1 text-[10px] font-medium text-surface-700 transition-colors hover:bg-surface-50"
+                          className="mt-1.5 w-full rounded-lg border border-surface-200 px-2 py-1 text-[11px] font-medium text-surface-700 transition-colors hover:bg-surface-50"
                         >
                           Review this look
                         </button>
@@ -865,20 +872,26 @@ function formatSession(startsAt: string, endsAt: string) {
  * Who this client is, where the service stands, and what has already passed between
  * them. Read-only: the one tab that isn't a review surface.
  *
- * "Past communication" is deliberately only what the product actually records —
- * booked consultations and the suggestions she has sent. There is no message store or
- * CRM sync in this repo yet (ROADMAP: Folk integration), and inventing a section that
- * is always empty would read as a bug rather than as an unbuilt feature.
+ * "Past communication" is what the product actually records — booked consultations,
+ * the suggestions she has sent, and the free-text thread with the client (schema 23,
+ * the other end of the client's mailbox on /home). There is no CRM sync in this repo
+ * yet (ROADMAP: Folk integration).
  */
 function OverviewPanel({
+  clientId,
+  clientName,
   overview,
+  messages,
   reviews,
   accessExpiresAt,
   shareOccasions,
   itemCount,
   lookCount,
 }: {
+  clientId: string;
+  clientName: string;
   overview: StylistClientOverview;
+  messages: StylistMessage[];
   reviews: ConsoleReview[];
   accessExpiresAt: string;
   shareOccasions: boolean;
@@ -939,7 +952,7 @@ function OverviewPanel({
 
           {knownMeasurements.length > 0 ? (
             <>
-              <p className="mt-4 text-[11px] font-semibold uppercase tracking-wide text-surface-400">
+              <p className="mt-4 text-[12px] font-semibold uppercase tracking-wide text-surface-400">
                 Fit
               </p>
               <dl className="mt-2 space-y-1.5 text-xs">
@@ -952,7 +965,7 @@ function OverviewPanel({
               </dl>
             </>
           ) : (
-            <p className="mt-4 rounded-lg bg-surface-50 p-3 text-[11px] text-surface-500">
+            <p className="mt-4 rounded-lg bg-surface-50 p-3 text-[12px] text-surface-500">
               They haven&apos;t filled in measurements or colouring yet.
             </p>
           )}
@@ -1002,7 +1015,7 @@ function OverviewPanel({
               <div className="mt-3 space-y-3">
                 {upcoming.length > 0 && (
                   <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-surface-400">
+                    <p className="text-[12px] font-semibold uppercase tracking-wide text-surface-400">
                       Upcoming
                     </p>
                     <ul className="mt-1.5 space-y-1.5">
@@ -1011,7 +1024,7 @@ function OverviewPanel({
                           <Video size={13} className="mt-0.5 shrink-0 text-brand-600" />
                           <span className="text-surface-700">
                             {formatSession(session.startsAt, session.endsAt)}
-                            <span className="block text-[11px] text-surface-400">
+                            <span className="block text-[12px] text-surface-400">
                               {SERVICE_LABEL[session.serviceType] || session.serviceType}
                             </span>
                           </span>
@@ -1022,7 +1035,7 @@ function OverviewPanel({
                 )}
                 {past.length > 0 && (
                   <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-surface-400">
+                    <p className="text-[12px] font-semibold uppercase tracking-wide text-surface-400">
                       Past
                     </p>
                     <ul className="mt-1.5 space-y-1.5">
@@ -1031,7 +1044,7 @@ function OverviewPanel({
                           <Video size={13} className="mt-0.5 shrink-0 text-surface-300" />
                           <span className="text-surface-500">
                             {formatSession(session.startsAt, session.endsAt)}
-                            <span className="block text-[11px] text-surface-400">
+                            <span className="block text-[12px] text-surface-400">
                               {SERVICE_LABEL[session.serviceType] || session.serviceType}
                               {session.status === "cancelled" ? " · cancelled" : ""}
                             </span>
@@ -1046,6 +1059,8 @@ function OverviewPanel({
           </div>
         </div>
       </section>
+
+      <MessagesSection clientId={clientId} clientName={clientName} messages={messages} />
 
       <section className="rounded-2xl border border-surface-200 bg-white p-4">
         <h2 className="text-sm font-semibold text-surface-900">What you&apos;ve sent</h2>
@@ -1150,11 +1165,11 @@ function BuildPanel({
                   <p className="truncate text-xs font-semibold text-surface-900">
                     {review.proposed_name || "Unnamed look"}
                   </p>
-                  <p className="text-[11px] text-surface-400">
+                  <p className="text-[12px] text-surface-400">
                     {items.length} pieces · {STATUS_LABEL[review.status]}
                   </p>
                   {review.note && (
-                    <p className="line-clamp-3 text-[11px] leading-relaxed text-surface-500">
+                    <p className="line-clamp-3 text-[12px] leading-relaxed text-surface-500">
                       {review.note}
                     </p>
                   )}
@@ -1222,7 +1237,7 @@ function ClosetPanel({
               type="button"
               onClick={() => setCategory(value)}
               className={cn(
-                "rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors",
+                "rounded-full px-2.5 py-1 text-[12px] font-medium transition-colors",
                 category === value
                   ? "bg-surface-900 text-white"
                   : "bg-surface-100 text-surface-600 hover:bg-surface-200"
@@ -1266,10 +1281,10 @@ function ClosetPanel({
                     )}
                   </div>
                   <div className="border-t border-surface-100 p-2">
-                    <p className="truncate text-[11px] font-medium text-surface-800">
+                    <p className="truncate text-[12px] font-medium text-surface-800">
                       {wardrobeItemName(item)}
                     </p>
-                    <p className="truncate text-[10px] text-surface-400">
+                    <p className="truncate text-[11px] text-surface-400">
                       {existing.length > 0
                         ? `${existing.length} sent · ${STATUS_LABEL[existing[0].status]}`
                         : [item.color, item.brand].filter(Boolean).join(" · ") || item.category}
@@ -1346,7 +1361,7 @@ function ItemReviewPanel({
                 className="h-full w-full object-contain"
               />
             </div>
-            <dl className="mt-3 space-y-1 text-[11px] text-surface-500">
+            <dl className="mt-3 space-y-1 text-[12px] text-surface-500">
               <div className="flex justify-between gap-2">
                 <dt>Category</dt>
                 <dd className="text-surface-800">{item.subcategory || item.category}</dd>
@@ -1376,7 +1391,7 @@ function ItemReviewPanel({
                 {existing.map((review) => (
                   <li
                     key={review.id}
-                    className="rounded-lg border border-surface-100 bg-surface-50 p-3 text-[11px] text-surface-600"
+                    className="rounded-lg border border-surface-100 bg-surface-50 p-3 text-[12px] text-surface-600"
                   >
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-medium text-surface-700">
@@ -1427,7 +1442,7 @@ function ItemReviewPanel({
                   </button>
                 ))}
               </div>
-              <p className="mt-1 text-[11px] text-surface-400">Tap again to clear.</p>
+              <p className="mt-1 text-[12px] text-surface-400">Tap again to clear.</p>
             </div>
 
             <div>
@@ -1442,7 +1457,7 @@ function ItemReviewPanel({
                 placeholder="What it works with, when to reach for it, what to replace it with…"
                 className="mt-2 w-full resize-none rounded-lg border border-surface-200 bg-surface-50 p-3 text-xs text-surface-800 outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100"
               />
-              <p className="mt-1 text-[11px] text-surface-400">
+              <p className="mt-1 text-[12px] text-surface-400">
                 A rating or a comment — either on its own is enough to send.
               </p>
             </div>

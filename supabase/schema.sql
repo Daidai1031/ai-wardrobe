@@ -2747,3 +2747,35 @@ drop policy if exists "travel_trip_decisions_delete_own" on public.travel_trip_d
 create policy "travel_trip_decisions_delete_own" on public.travel_trip_decisions for delete using (auth.uid() = user_id);
 
 notify pgrst, 'reload schema';
+
+-- ============================================================
+-- 23. STYLIST MESSAGES (the client's mailbox on /home)
+-- Re-runnable against an existing database.
+--
+-- Free-text messages between a client and the human stylist. With one stylist, a row needs no `stylist_id`: the pair is always (`client_id`, the stylist), and `sender` says which side wrote it. `read_at` is when the RECIPIENT first saw it -- it is what drives the orange dot on the client's mailbox and the unread count on the console.
+--
+-- Read policy only, like `stylist_reviews`: both sides write through /api/stylist/messages (service role), because a stylist's message spans two users and must be gated by the access window in one place rather than in an RLS predicate. A client can read only their own thread; a stylist reads through the server route, never directly, so `stylist_can_view()` is deliberately NOT attached here.
+-- ============================================================
+create table if not exists public.stylist_messages (
+  id uuid primary key default gen_random_uuid(),
+  client_id uuid not null references public.profiles(id) on delete cascade,
+  sender text not null,
+  body text not null,
+  created_at timestamptz not null default now(),
+  read_at timestamptz
+);
+
+alter table public.stylist_messages drop constraint if exists stylist_messages_sender_check;
+alter table public.stylist_messages add constraint stylist_messages_sender_check check (sender in ('client','stylist'));
+
+alter table public.stylist_messages drop constraint if exists stylist_messages_body_check;
+alter table public.stylist_messages add constraint stylist_messages_body_check check (char_length(btrim(body)) between 1 and 2000);
+
+create index if not exists stylist_messages_client_idx on public.stylist_messages (client_id, created_at desc);
+
+alter table public.stylist_messages enable row level security;
+
+drop policy if exists "stylist_messages_select_own" on public.stylist_messages;
+create policy "stylist_messages_select_own" on public.stylist_messages for select using (auth.uid() = client_id);
+
+notify pgrst, 'reload schema';

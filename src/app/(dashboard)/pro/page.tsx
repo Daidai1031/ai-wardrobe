@@ -31,7 +31,7 @@ export default async function ProPage() {
         <h1 className="text-lg font-semibold text-surface-900">Stylist console</h1>
         <p className="mt-2 text-sm text-surface-500">
           This area is for our styling team. Looking for outfit help?{" "}
-          <Link href="/stylist" className="font-medium text-brand-600 hover:underline">
+          <Link href="/outfits?tab=stylist" className="font-medium text-brand-600 hover:underline">
             Open the AI Stylist
           </Link>
           .
@@ -78,14 +78,14 @@ export default async function ProPage() {
                       {client.city || "No city set"}
                     </p>
                     <div className="mt-2 flex flex-wrap gap-1.5">
-                      <span className="rounded-full bg-surface-100 px-2 py-0.5 text-[10px] font-medium text-surface-500">
+                      <span className="rounded-full bg-surface-100 px-2 py-0.5 text-[11px] font-medium text-surface-500">
                         {remaining} {remaining === 1 ? "day" : "days"} left
                       </span>
                       <span
                         className={
                           client.shareOccasions
-                            ? "rounded-full bg-brand-50 px-2 py-0.5 text-[10px] font-medium text-brand-700"
-                            : "rounded-full bg-surface-100 px-2 py-0.5 text-[10px] font-medium text-surface-400"
+                            ? "rounded-full bg-brand-50 px-2 py-0.5 text-[11px] font-medium text-brand-700"
+                            : "rounded-full bg-surface-100 px-2 py-0.5 text-[11px] font-medium text-surface-400"
                         }
                       >
                         {client.shareOccasions ? "Occasions shared" : "Occasions private"}

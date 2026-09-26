@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { createServerSupabase } from "@/lib/supabase/server";
 import { getAccessibleClient, logWardrobeAccess } from "@/lib/stylist/access";
 import { readClientOverview } from "@/lib/stylist/client-overview";
+import { readMessagesForStylist } from "@/lib/stylist/messages";
 import { projectOccasionsForStylist } from "@/lib/stylist/occasion-projection";
 import type { WardrobeItem } from "@/types/database";
 import { ClientConsole, type ConsoleOutfit, type ConsoleReview } from "./client-console";
@@ -35,7 +36,7 @@ export default async function ProClientPage({
   const client = await getAccessibleClient(user.id, clientId);
   if (!client) notFound();
 
-  const [{ data: wardrobeItems }, { data: outfits }, { data: reviews }, occasions, overview] =
+  const [{ data: wardrobeItems }, { data: outfits }, { data: reviews }, occasions, overview, messages] =
     await Promise.all([
       supabase
         .from("wardrobe_items")
@@ -62,6 +63,7 @@ export default async function ProClientPage({
         .order("created_at", { ascending: false }),
       projectOccasionsForStylist(clientId),
       readClientOverview(clientId),
+      readMessagesForStylist(clientId),
     ]);
 
   await logWardrobeAccess(user.id, clientId, "console:view");
@@ -81,7 +83,7 @@ export default async function ProClientPage({
             {client.city ? ` · ${client.city}` : ""}
           </p>
         </div>
-        <p className="rounded-full bg-surface-100 px-3 py-1 text-[11px] font-medium text-surface-500">
+        <p className="rounded-full bg-surface-100 px-3 py-1 text-[12px] font-medium text-surface-500">
           Access until {new Date(client.accessExpiresAt).toLocaleDateString()}
         </p>
       </header>
@@ -94,6 +96,7 @@ export default async function ProClientPage({
         reviews={(reviews || []) as ConsoleReview[]}
         occasions={occasions}
         overview={overview}
+        messages={messages}
         accessExpiresAt={client.accessExpiresAt}
         shareOccasions={client.shareOccasions}
       />

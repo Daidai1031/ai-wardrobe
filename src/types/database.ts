@@ -408,3 +408,16 @@ export interface AIClassification {
   style_tags: string[];
   confidence: number;
 }
+
+/** A free-text message between a client and the human stylist (schema 23). */
+export type StylistMessageSender = "client" | "stylist";
+
+export interface StylistMessage {
+  id: string;
+  client_id: string;
+  sender: StylistMessageSender;
+  body: string;
+  created_at: string;
+  /** When the recipient first saw it; null while unread. */
+  read_at: string | null;
+}
