@@ -2779,3 +2779,65 @@ drop policy if exists "stylist_messages_select_own" on public.stylist_messages;
 create policy "stylist_messages_select_own" on public.stylist_messages for select using (auth.uid() = client_id);
 
 notify pgrst, 'reload schema';
+
+-- ============================================================
+-- 24. UNDO A WORN CONFIRMATION
+-- Re-runnable against an existing database.
+--
+-- `mark_outfit_plan_worn` is all-or-nothing for the day, and every RPC that edits a segment refuses a plan whose status is 'worn'. /home now lets a confirmed segment be adjusted, swapped for a saved Look or regenerated, so the day has to be able to go back to unconfirmed first. This reverses exactly what the confirmation wrote: the journal rows tied to the plan's segments are deleted, each distinct item they counted loses one `times_worn`, `last_worn_at` is recomputed from the journal that remains (the journal is the only writer of both columns), and the plan returns to 'suggested'. A plan that isn't worn is a no-op.
+-- ============================================================
+create or replace function public.unmark_outfit_plan_worn(p_plan_id uuid)
+returns void
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_plan public.outfit_plans%rowtype;
+  v_item_ids uuid[];
+begin
+  if v_user_id is null then
+    raise exception 'Unauthorized';
+  end if;
+
+  select * into v_plan from public.outfit_plans where id = p_plan_id and user_id = v_user_id for update;
+
+  if not found then
+    raise exception 'Plan not found';
+  end if;
+
+  if v_plan.status <> 'worn' then
+    return;
+  end if;
+
+  select array_agg(distinct item_id) into v_item_ids
+  from public.outfit_journal journal
+  cross join lateral unnest(journal.item_ids) item_id
+  where journal.user_id = v_user_id
+    and journal.plan_segment_id in (select id from public.outfit_plan_segments where outfit_plan_id = p_plan_id);
+
+  delete from public.outfit_journal
+  where user_id = v_user_id
+    and plan_segment_id in (select id from public.outfit_plan_segments where outfit_plan_id = p_plan_id);
+
+  update public.wardrobe_items item
+  set
+    times_worn = greatest(coalesce(item.times_worn, 0) - 1, 0),
+    last_worn_at = (
+      select max(journal.worn_date)::timestamptz
+      from public.outfit_journal journal
+      where journal.user_id = v_user_id and item.id = any(journal.item_ids)
+    ),
+    updated_at = now()
+  where item.user_id = v_user_id
+    and item.id = any(v_item_ids);
+
+  update public.outfit_plans set status = 'suggested', updated_at = now() where id = p_plan_id;
+end;
+$$;
+
+revoke execute on function public.unmark_outfit_plan_worn(uuid) from public, anon;
+grant execute on function public.unmark_outfit_plan_worn(uuid) to authenticated;
+
+notify pgrst, 'reload schema';
