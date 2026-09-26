@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { Check, CopyPlus, ListPlus, Loader2, RefreshCw, X } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
+import { cn } from "@/lib/utils";
 import type { DailySegmentResponse } from "@/types/daily";
 
 export function SegmentSaveButton({
@@ -76,7 +77,12 @@ export function SegmentSaveButton({
       <button
         onClick={beginSave}
         disabled={disabled || Boolean(saving) || Boolean(segment.savedOutfitId)}
-        className="flex items-center gap-1.5 rounded-lg bg-surface-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-surface-800 disabled:opacity-50"
+        className={cn(
+          "flex items-center gap-1.5 rounded-full px-3 py-1.5 text-button disabled:opacity-50",
+          segment.savedOutfitId
+            ? "border border-ink text-ink"
+            : "bg-ink text-ink-inverse hover:opacity-90"
+        )}
       >
         {saving ? (
           <Loader2 size={13} className="animate-spin" />
@@ -90,7 +96,7 @@ export function SegmentSaveButton({
 
       {choosing && (
         <div
-          className="fixed inset-0 z-50 flex items-end justify-center bg-surface-950/40 p-0 backdrop-blur-sm sm:items-center sm:p-6"
+          className="fixed inset-0 z-50 flex items-end justify-center bg-ink/40 p-0 backdrop-blur-sm sm:items-center sm:p-6"
           role="dialog"
           aria-modal="true"
           aria-labelledby={`save-outfit-title-${segment.id}`}
@@ -98,16 +104,16 @@ export function SegmentSaveButton({
             if (event.target === event.currentTarget && !saving) setChoosing(false);
           }}
         >
-          <div className="w-full max-w-md rounded-t-2xl bg-white p-5 shadow-xl sm:rounded-2xl">
+          <div className="w-full max-w-md rounded-t-lg bg-surface-100 p-5 shadow-xl sm:rounded-lg">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2
                   id={`save-outfit-title-${segment.id}`}
-                  className="text-base font-semibold text-surface-900"
+                  className="text-subheading text-ink"
                 >
                   Save your changes
                 </h2>
-                <p className="mt-1 text-sm leading-relaxed text-surface-500">
+                <p className="mt-1 text-body text-ink-muted leading-relaxed">
                   This look started from a saved outfit. Keep the original and make a copy, or
                   update the original saved outfit.
                 </p>
@@ -116,7 +122,7 @@ export function SegmentSaveButton({
                 onClick={() => setChoosing(false)}
                 disabled={Boolean(saving)}
                 aria-label="Cancel saving"
-                className="rounded-lg p-1.5 text-surface-400 hover:bg-surface-50 hover:text-surface-700 disabled:opacity-50"
+                className="rounded-none p-1.5 text-ink-muted hover:text-ink disabled:opacity-50"
               >
                 <X size={17} />
               </button>
@@ -126,7 +132,7 @@ export function SegmentSaveButton({
               <button
                 onClick={() => void save("update")}
                 disabled={Boolean(saving)}
-                className="flex items-center justify-center gap-2 rounded-xl border border-surface-200 px-4 py-3 text-sm font-semibold text-surface-700 hover:bg-surface-50 disabled:opacity-50"
+                className="flex items-center justify-center gap-2 rounded-md border border-border px-4 py-3 text-button text-ink-muted hover:text-ink disabled:opacity-50"
               >
                 {saving === "update" ? (
                   <Loader2 size={15} className="animate-spin" />
@@ -138,7 +144,7 @@ export function SegmentSaveButton({
               <button
                 onClick={() => void save("new")}
                 disabled={Boolean(saving)}
-                className="flex items-center justify-center gap-2 rounded-xl bg-brand-600 px-4 py-3 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
+                className="flex items-center justify-center gap-2 rounded-md bg-ink px-4 py-3 text-button text-ink-inverse hover:opacity-90 disabled:opacity-50"
               >
                 {saving === "new" ? (
                   <Loader2 size={15} className="animate-spin" />

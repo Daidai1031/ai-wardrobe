@@ -16,6 +16,7 @@ import { useCallback, useEffect, useMemo, useState, type DragEvent } from "react
 import { toast } from "sonner";
 import { Check, Layers3, Loader2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { cn } from "@/lib/utils";
 import {
   ClosetPicker,
   OutfitCanvas,
@@ -47,6 +48,10 @@ export interface SegmentCanvasSaveResult {
   items: DailySegmentItem[];
   savedOutfitId: string | null;
   sourceOutfitId: string | null;
+  reasoning: string;
+  changeFromPrevious: string | null;
+  nextSegmentId: string | null;
+  nextChangeFromPrevious: string | null;
 }
 
 export function SegmentCanvasEditor({
@@ -258,33 +263,41 @@ export function SegmentCanvasEditor({
     const saved = (result || {}) as {
       savedOutfitId?: string | null;
       sourceOutfitId?: string | null;
+      reasoning?: string | null;
+      changeFromPrevious?: string | null;
+      nextSegmentId?: string | null;
+      nextChangeFromPrevious?: string | null;
     };
     onSaved({
       items,
       savedOutfitId: saved.savedOutfitId ?? null,
       sourceOutfitId: saved.sourceOutfitId ?? sourceOutfitId,
+      reasoning: saved.reasoning ?? segment.reasoning,
+      changeFromPrevious: saved.changeFromPrevious ?? null,
+      nextSegmentId: saved.nextSegmentId ?? null,
+      nextChangeFromPrevious: saved.nextChangeFromPrevious ?? null,
     });
   }
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-surface-200 bg-white px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-surface-200 px-4 py-3">
         <div>
-          <p className="text-[11px] uppercase tracking-wide text-surface-400">Adjusting segment</p>
-          <h2 className="text-sm font-semibold text-surface-900">{segment.label}</h2>
+          <p className="text-label uppercase text-ink-muted">Adjusting segment</p>
+          <h2 className="heading-plain text-subheading text-ink">{segment.label}</h2>
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={onCancel}
             disabled={saving}
-            className="px-3 py-2 rounded-lg border border-surface-200 text-xs font-medium text-surface-600 hover:bg-surface-50 disabled:opacity-50"
+            className="px-3 py-2 rounded-none border border-border text-button text-ink-muted hover:text-ink disabled:opacity-50"
           >
             Cancel
           </button>
           <button
             onClick={() => void save()}
             disabled={saving || selectedIds.length === 0}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-brand-600 text-white text-xs font-semibold hover:bg-brand-700 disabled:opacity-50"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-full bg-ink text-ink-inverse text-button hover:opacity-90 disabled:opacity-50"
           >
             {saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
             {saving ? "Saving…" : "Done"}
@@ -292,31 +305,31 @@ export function SegmentCanvasEditor({
         </div>
       </div>
 
-      <div className="rounded-xl border border-surface-200 bg-white p-3">
+      <div className="rounded-md bg-surface-200 p-3">
         <button
           type="button"
           onClick={() => setShowSavedLooks((current) => !current)}
-          className="flex w-full items-center justify-between gap-3 rounded-lg px-1 py-1 text-left"
+          className="flex w-full items-center justify-between gap-3 rounded-none px-1 py-1 text-left"
         >
-          <span className="flex items-center gap-2 text-sm font-semibold text-surface-800">
-            <Layers3 size={15} className="text-brand-500" />
+          <span className="flex items-center gap-2 text-subheading text-ink">
+            <Layers3 size={15} className="text-ink-muted" />
             Reuse a saved outfit
           </span>
-          <span className="text-xs font-medium text-brand-600">
+          <span className="text-button text-ink-muted">
             {showSavedLooks ? "Hide" : sourceOutfitId ? "Choose another" : "Choose"}
           </span>
         </button>
 
         {sourceOutfitId && !showSavedLooks && (
-          <p className="mt-1 px-1 text-xs text-surface-500">
+          <p className="mt-1 px-1 text-body text-ink-muted">
             This segment is based on a saved outfit. You can keep editing it on the Canvas.
           </p>
         )}
 
         {showSavedLooks && (
-          <div className="mt-3 border-t border-surface-100 pt-3">
+          <div className="mt-3 border-t border-border pt-3">
             {loadingSavedLooks ? (
-              <div className="flex items-center justify-center gap-2 py-6 text-xs text-surface-400">
+              <div className="flex items-center justify-center gap-2 py-6 text-body text-ink-muted">
                 <Loader2 size={14} className="animate-spin" /> Loading saved outfits…
               </div>
             ) : savedLooks && savedLooks.length > 0 ? (
@@ -339,21 +352,22 @@ export function SegmentCanvasEditor({
                       type="button"
                       onClick={() => selectSavedLook(look)}
                       disabled={rows.length === 0}
-                      className={`rounded-xl border p-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                      className={cn(
+                        "rounded-md border p-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-40",
                         isActive
-                          ? "border-brand-300 bg-brand-50"
-                          : "border-surface-200 hover:border-brand-200 hover:bg-surface-50"
-                      }`}
+                          ? "border-ink bg-surface-100"
+                          : "border-border hover:border-ink bg-surface-100"
+                      )}
                     >
                       <OutfitCollage
                         items={lookItems}
                         layouts={layoutsFromRows(lookItems)}
-                        className="rounded-lg"
+                        className="rounded-sm"
                       />
-                      <p className="mt-2 truncate text-xs font-semibold text-surface-800">
+                      <p className="mt-2 truncate text-body-small font-semibold text-ink">
                         {look.name || "Untitled outfit"}
                       </p>
-                      <p className="truncate text-[10px] text-surface-400">
+                      <p className="truncate text-body-small text-ink-muted">
                         {look.folder || "Uncategorized"} · {rows.length} items
                       </p>
                     </button>
@@ -361,7 +375,7 @@ export function SegmentCanvasEditor({
                 })}
               </div>
             ) : (
-              <p className="py-5 text-center text-xs text-surface-500">
+              <p className="py-5 text-center text-body text-ink-muted">
                 No saved outfits yet. Save a plan or create one in Your outfits first.
               </p>
             )}

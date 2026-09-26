@@ -2198,6 +2198,12 @@ declare
   v_user_id uuid := auth.uid();
   v_plan public.outfit_plans%rowtype;
   v_saved_outfit_id uuid;
+  v_old_item_ids uuid[];
+  v_new_item_ids uuid[];
+  v_items_changed boolean;
+  v_reasoning text;
+  v_source_outfit_name text;
+  v_next_segment_id uuid;
 begin
   if v_user_id is null then
     raise exception 'Unauthorized';
@@ -2230,16 +2236,26 @@ begin
     raise exception 'Saved outfit not found';
   end if;
 
+  select array_agg(item_id order by item_id)
+  into v_old_item_ids
+  from public.outfit_plan_segment_items
+  where segment_id = p_segment_id;
+
   perform public.apply_plan_segment_items(p_segment_id, p_items, v_user_id, true);
+
+  select array_agg(item_id order by item_id)
+  into v_new_item_ids
+  from public.outfit_plan_segment_items
+  where segment_id = p_segment_id;
+
+  -- Set equality: a reorder or a layout-only change (drag/resize) isn't a
+  -- change of outfit, so it must not overwrite the model's own reasoning.
+  v_items_changed := v_old_item_ids is distinct from v_new_item_ids;
 
   v_saved_outfit_id := case
     when coalesce(p_source_matches, false)
       and p_source_outfit_id is not null
-      and (
-        select array_agg(item_id order by item_id)
-        from public.outfit_plan_segment_items
-        where segment_id = p_segment_id
-      ) = (
+      and v_new_item_ids = (
         select array_agg(item_id order by item_id)
         from public.outfit_items
         where outfit_id = p_source_outfit_id
@@ -2248,11 +2264,54 @@ begin
     else null
   end;
 
-  update public.outfit_plan_segments
-  set saved_outfit_id = v_saved_outfit_id,
-      source_outfit_id = p_source_outfit_id,
-      updated_at = now()
-  where id = p_segment_id;
+  if v_items_changed then
+    -- The model's reasoning describes an outfit that no longer exists past
+    -- this point; leaving it in place is what read as "text explanation
+    -- didn't change" after picking a saved Look here.
+    if p_source_outfit_id is not null then
+      select name into v_source_outfit_name
+      from public.outfits
+      where id = p_source_outfit_id;
+
+      v_reasoning := 'Reused from your saved outfit “' ||
+        coalesce(nullif(v_source_outfit_name, ''), 'Untitled outfit') || '.”';
+    else
+      v_reasoning := 'Manually edited on the Canvas.';
+    end if;
+
+    select id
+    into v_next_segment_id
+    from public.outfit_plan_segments
+    where outfit_plan_id = v_plan.id
+      and position = (
+        select position + 1
+        from public.outfit_plan_segments
+        where id = p_segment_id
+      );
+
+    update public.outfit_plan_segments
+    set saved_outfit_id = v_saved_outfit_id,
+        source_outfit_id = p_source_outfit_id,
+        reasoning = v_reasoning,
+        change_from_previous = null,
+        updated_at = now()
+    where id = p_segment_id;
+
+    -- That segment's own transition line described stepping from the outfit
+    -- that just got replaced, so it's equally stale.
+    if v_next_segment_id is not null then
+      update public.outfit_plan_segments
+      set change_from_previous = null,
+          updated_at = now()
+      where id = v_next_segment_id;
+    end if;
+  else
+    update public.outfit_plan_segments
+    set saved_outfit_id = v_saved_outfit_id,
+        source_outfit_id = p_source_outfit_id,
+        updated_at = now()
+    where id = p_segment_id;
+  end if;
 
   update public.outfit_plans
   set updated_at = now()
@@ -2260,7 +2319,15 @@ begin
 
   return jsonb_build_object(
     'savedOutfitId', v_saved_outfit_id,
-    'sourceOutfitId', p_source_outfit_id
+    'sourceOutfitId', p_source_outfit_id,
+    'reasoning', (select reasoning from public.outfit_plan_segments where id = p_segment_id),
+    'changeFromPrevious', (select change_from_previous from public.outfit_plan_segments where id = p_segment_id),
+    'nextSegmentId', v_next_segment_id,
+    'nextChangeFromPrevious', case
+      when v_next_segment_id is not null then
+        (select change_from_previous from public.outfit_plan_segments where id = v_next_segment_id)
+      else null
+    end
   );
 end;
 $$;

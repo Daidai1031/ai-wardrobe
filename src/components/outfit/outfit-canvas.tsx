@@ -101,6 +101,38 @@ export function layoutsFromRows(
   return layouts;
 }
 
+/**
+ * The pointer maths shared by every surface where a garment can be dragged or resized:
+ * the /outfits Canvas and the /home plan card. Pure, so both clamp identically — a
+ * garment can never leave the frame, and width stays within 15%–60%.
+ */
+export function moveLayout(
+  start: CanvasItemLayout,
+  deltaX: number,
+  deltaY: number,
+  rect: { width: number; height: number }
+): CanvasItemLayout {
+  const itemHeight = (start.width * rect.width) / rect.height;
+  return {
+    ...start,
+    x: Math.max(0, Math.min(100 - start.width, start.x + (deltaX / rect.width) * 100)),
+    y: Math.max(0, Math.min(100 - itemHeight, start.y + (deltaY / rect.height) * 100)),
+  };
+}
+
+export function resizeLayout(
+  start: CanvasItemLayout,
+  deltaX: number,
+  deltaY: number,
+  rect: { width: number; height: number }
+): CanvasItemLayout {
+  const resizeDelta = (Math.max(deltaX, deltaY) / rect.width) * 100;
+  const maxWidthFromRight = 100 - start.x;
+  const maxWidthFromBottom = ((100 - start.y) * rect.height) / rect.width;
+  const maxWidth = Math.min(60, maxWidthFromRight, maxWidthFromBottom);
+  return { ...start, width: Math.max(15, Math.min(maxWidth, start.width + resizeDelta)) };
+}
+
 export function OutfitCanvas({
   items,
   layouts,
@@ -158,33 +190,12 @@ export function OutfitCanvas({
     const deltaX = event.clientX - gesture.startClientX;
     const deltaY = event.clientY - gesture.startClientY;
 
-    if (gesture.mode === "move") {
-      const itemHeight = (gesture.startLayout.width * rect.width) / rect.height;
-      onLayoutChange(gesture.itemId, {
-        ...gesture.startLayout,
-        x: Math.max(
-          0,
-          Math.min(
-            100 - gesture.startLayout.width,
-            gesture.startLayout.x + (deltaX / rect.width) * 100
-          )
-        ),
-        y: Math.max(
-          0,
-          Math.min(100 - itemHeight, gesture.startLayout.y + (deltaY / rect.height) * 100)
-        ),
-      });
-      return;
-    }
-
-    const resizeDelta = (Math.max(deltaX, deltaY) / rect.width) * 100;
-    const maxWidthFromRight = 100 - gesture.startLayout.x;
-    const maxWidthFromBottom = ((100 - gesture.startLayout.y) * rect.height) / rect.width;
-    const maxWidth = Math.min(60, maxWidthFromRight, maxWidthFromBottom);
-    onLayoutChange(gesture.itemId, {
-      ...gesture.startLayout,
-      width: Math.max(15, Math.min(maxWidth, gesture.startLayout.width + resizeDelta)),
-    });
+    onLayoutChange(
+      gesture.itemId,
+      gesture.mode === "move"
+        ? moveLayout(gesture.startLayout, deltaX, deltaY, rect)
+        : resizeLayout(gesture.startLayout, deltaX, deltaY, rect)
+    );
   }
 
   function endGesture(event: ReactPointerEvent<HTMLElement>) {
@@ -196,16 +207,16 @@ export function OutfitCanvas({
   }
 
   return (
-    <section className="rounded-2xl border border-surface-200 bg-[#f1eee9] p-3 sm:p-5">
+    <section className="rounded-md bg-surface-200 p-3 sm:p-5">
       <div className="mb-3 flex items-center justify-between">
-        <div className="flex items-center gap-2 text-xs font-semibold text-surface-600">
+        <div className="flex items-center gap-2 text-button text-ink-muted">
           <Layers3 size={15} /> Outfit canvas
         </div>
         <div className="text-right">
-          <span className="block text-[10px] font-medium text-surface-500">
+          <span className="block text-body-small font-medium text-ink-muted">
             {items.length} {items.length === 1 ? "piece" : "pieces"}
           </span>
-          <span className="block text-[9px] text-surface-400">Drag to move · corner to resize</span>
+          <span className="block text-body-small text-ink-muted">Drag to move · corner to resize</span>
         </div>
       </div>
       <div
@@ -223,20 +234,20 @@ export function OutfitCanvas({
         }}
         onDrop={onDrop}
         className={cn(
-          "relative aspect-square overflow-hidden rounded-xl border-2 bg-white transition-all",
+          "relative aspect-square overflow-hidden rounded-sm border-2 bg-surface-100 transition-all",
           isOver
-            ? "scale-[1.01] border-brand-400 bg-brand-50 shadow-lg shadow-brand-900/5"
-            : "border-dashed border-surface-300"
+            ? "scale-[1.01] border-ink bg-accent-soft shadow-lg"
+            : "border-dashed border-border"
         )}
       >
-        <div className="pointer-events-none absolute inset-0 opacity-[0.035] [background-image:linear-gradient(to_right,#292524_1px,transparent_1px),linear-gradient(to_bottom,#292524_1px,transparent_1px)] [background-size:32px_32px]" />
+        <div className="pointer-events-none absolute inset-0 opacity-[0.035] [background-image:linear-gradient(to_right,#0A0A0A_1px,transparent_1px),linear-gradient(to_bottom,#0A0A0A_1px,transparent_1px)] [background-size:32px_32px]" />
         {items.length === 0 ? (
           <div className="absolute inset-0 z-10 flex flex-col items-center justify-center p-8 text-center">
-            <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-surface-100 text-surface-400">
+            <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-surface-200 text-ink-muted">
               <Shirt size={28} strokeWidth={1.5} />
             </div>
-            <h3 className="text-sm font-semibold text-surface-700">Start building your look</h3>
-            <p className="mt-1 max-w-56 text-xs leading-5 text-surface-400">
+            <h3 className="text-subheading text-ink">Start building your look</h3>
+            <p className="mt-1 max-w-56 text-body-small text-ink-muted">
               Drag pieces here from your closet, or tap the + button on any item.
             </p>
           </div>
@@ -338,7 +349,7 @@ export function ClosetPicker({
             <h2 className="text-sm font-semibold text-surface-900">Your closet</h2>
             <p className="mt-0.5 text-xs text-surface-400">Drag or tap to add</p>
           </div>
-          <span className="rounded-full bg-surface-100 px-2 py-1 text-[10px] font-semibold text-surface-500">
+          <span className="rounded-full bg-surface-100 px-2 py-1 text-[11px] font-semibold text-surface-500">
             {items.length} items
           </span>
         </div>
@@ -358,7 +369,7 @@ export function ClosetPicker({
               key={category}
               onClick={() => onCategory(category as ItemCategory | "All")}
               className={cn(
-                "whitespace-nowrap rounded-full px-2.5 py-1 text-[10px] font-medium transition-colors",
+                "whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors",
                 activeCategory === category
                   ? "bg-surface-900 text-white"
                   : "bg-surface-100 text-surface-500 hover:bg-surface-200"
@@ -400,7 +411,7 @@ export function ClosetPicker({
               />
             </div>
             <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-white via-white/90 to-transparent px-2 pb-1.5 pt-5">
-              <p className="truncate text-[10px] font-medium text-surface-700">{itemName(item)}</p>
+              <p className="truncate text-[11px] font-medium text-surface-700">{itemName(item)}</p>
             </div>
             <span className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-white/90 text-surface-500 shadow-sm transition-colors group-hover:bg-surface-900 group-hover:text-white">
               <Plus size={13} />
@@ -462,6 +473,167 @@ export function OutfitCollage({
               sizes="180px"
               unoptimized
             />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * An arranged collage the user can rearrange in place: drag a garment to move it, drag
+ * its bottom-right handle to resize it, and whatever is grabbed comes to the front.
+ *
+ * This is the light counterpart to `OutfitCanvas` for surfaces that show a look and
+ * only need to nudge it — no closet picker, no add/remove, no frame. It owns the live
+ * gesture (so dragging is smooth without a round trip per pixel) and reports **once, on
+ * release**, with the final stacking order and layouts; the caller persists. While a
+ * gesture is in flight the collage draws its own copy, and drops it the moment the
+ * caller has the result.
+ *
+ * `disabled` renders exactly the read-only `OutfitCollage`, so a day that is already
+ * confirmed as worn cannot be edited by accident.
+ */
+export function EditableCollage({
+  items,
+  layouts,
+  disabled = false,
+  onCommit,
+  className,
+}: {
+  items: CanvasItem[];
+  layouts: Record<string, CanvasItemLayout>;
+  disabled?: boolean;
+  onCommit: (orderedIds: string[], layouts: Record<string, CanvasItemLayout>) => void;
+  className?: string;
+}) {
+  const frameRef = useRef<HTMLDivElement>(null);
+  const [live, setLive] = useState<{
+    order: string[];
+    layouts: Record<string, CanvasItemLayout>;
+  } | null>(null);
+  const [gesture, setGesture] = useState<{
+    itemId: string;
+    mode: "move" | "resize";
+    startClientX: number;
+    startClientY: number;
+    startLayout: CanvasItemLayout;
+  } | null>(null);
+
+  if (disabled) return <OutfitCollage items={items} layouts={layouts} className={className} />;
+
+  const order = live?.order ?? items.map((item) => item.id);
+  const currentLayouts = live?.layouts ?? layouts;
+  const itemById = new Map(items.map((item) => [item.id, item]));
+
+  function startGesture(
+    event: ReactPointerEvent<HTMLElement>,
+    itemId: string,
+    mode: "move" | "resize"
+  ) {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    const layout = currentLayouts[itemId] ?? defaultLayoutFor(order.indexOf(itemId));
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setGesture({
+      itemId,
+      mode,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startLayout: layout,
+    });
+    setLive({
+      order: [...order.filter((id) => id !== itemId), itemId],
+      layouts: { ...currentLayouts, [itemId]: layout },
+    });
+  }
+
+  function updateGesture(event: ReactPointerEvent<HTMLElement>) {
+    if (!gesture || !frameRef.current) return;
+    event.preventDefault();
+    const rect = frameRef.current.getBoundingClientRect();
+    const deltaX = event.clientX - gesture.startClientX;
+    const deltaY = event.clientY - gesture.startClientY;
+    const next =
+      gesture.mode === "move"
+        ? moveLayout(gesture.startLayout, deltaX, deltaY, rect)
+        : resizeLayout(gesture.startLayout, deltaX, deltaY, rect);
+    setLive((current) =>
+      current ? { ...current, layouts: { ...current.layouts, [gesture.itemId]: next } } : current
+    );
+  }
+
+  function endGesture(event: ReactPointerEvent<HTMLElement>) {
+    if (!gesture) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const finished = live;
+    setGesture(null);
+    setLive(null);
+    if (!finished) return;
+    const moved = gesture.mode === "resize" || finished.layouts[gesture.itemId] !== gesture.startLayout;
+    // A click that never moved still raised the item, which is worth saving only if
+    // the order actually changed; a bare press on the front item is a no-op.
+    const orderChanged = finished.order.some((id, index) => id !== items[index]?.id);
+    if (moved || orderChanged) onCommit(finished.order, finished.layouts);
+  }
+
+  return (
+    <div
+      ref={frameRef}
+      className={cn("relative aspect-square w-full bg-transparent", className)}
+    >
+      {order.map((id, index) => {
+        const item = itemById.get(id);
+        if (!item) return null;
+        const layout = currentLayouts[id] ?? defaultLayoutFor(index);
+        const active = gesture?.itemId === id;
+        return (
+          <div
+            key={id}
+            onPointerDown={(event) => startGesture(event, id, "move")}
+            onPointerMove={updateGesture}
+            onPointerUp={endGesture}
+            onPointerCancel={endGesture}
+            className={cn(
+              "group absolute touch-none select-none",
+              active ? "cursor-grabbing drop-shadow-xl" : "cursor-grab hover:drop-shadow-lg"
+            )}
+            style={{
+              left: `${layout.x}%`,
+              top: `${layout.y}%`,
+              width: `${layout.width}%`,
+              aspectRatio: "1 / 1",
+              zIndex: index + 10,
+            }}
+          >
+            <div className="relative h-full w-full">
+              <Image
+                src={imageUrl(item)}
+                alt={`${item.color || ""} ${itemName(item)}`}
+                fill
+                className="pointer-events-none object-contain"
+                sizes="180px"
+                unoptimized
+                draggable={false}
+              />
+            </div>
+            <button
+              type="button"
+              onPointerDown={(event) => startGesture(event, id, "resize")}
+              onPointerMove={updateGesture}
+              onPointerUp={endGesture}
+              onPointerCancel={endGesture}
+              className={cn(
+                "absolute bottom-0 right-0 z-20 flex h-6 w-6 cursor-nwse-resize touch-none items-center justify-center rounded-full bg-white text-ink-muted shadow-md transition-opacity hover:text-ink",
+                active ? "opacity-100" : "opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+              )}
+              aria-label={`Resize ${itemName(item)}`}
+            >
+              <Maximize2 size={12} />
+            </button>
           </div>
         );
       })}
