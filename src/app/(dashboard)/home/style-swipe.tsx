@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { ChevronDown, ChevronUp, Sparkles } from "lucide-react";
+import { useMemo } from "react";
+import { SwipeMark } from "@/components/icons/section-marks";
 import { layoutsFromRows, type CanvasItem } from "@/components/outfit/outfit-canvas";
 import { SwipeDeck, type SwipeCard } from "@/components/swipe/swipe-deck";
 
@@ -32,8 +32,6 @@ export interface SwipeOutfitRow {
  * exists — which is the order the plan's §4 argues for.
  */
 export function StyleSwipe({ outfits }: { outfits: SwipeOutfitRow[] }) {
-  const [open, setOpen] = useState(true);
-
   const cards = useMemo<SwipeCard[]>(() => {
     return outfits
       .map((outfit) => {
@@ -63,35 +61,14 @@ export function StyleSwipe({ outfits }: { outfits: SwipeOutfitRow[] }) {
   }, [outfits]);
 
   return (
-    <section className="mt-6 rounded-xl border border-surface-200 bg-white p-6">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h2 className="flex items-center gap-2 text-sm font-semibold text-surface-800">
-            <Sparkles size={16} className="text-brand-500" /> Style swipe
-            <span className="rounded-full bg-surface-100 px-2 py-0.5 text-[10px] font-medium text-surface-500">
-              Prototype · nothing is saved
-            </span>
-          </h2>
-          <p className="mt-1 text-xs text-surface-400">
-            Right to like · left to skip (with a reason) · up if you&apos;re wearing it · down for
-            not now.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => setOpen((previous) => !previous)}
-          className="flex shrink-0 items-center gap-1 rounded-lg border border-surface-200 px-2.5 py-1.5 text-xs font-medium text-surface-600 hover:bg-surface-50"
-        >
-          {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-          {open ? "Hide" : "Show"}
-        </button>
-      </div>
+    <section className="flex flex-1 flex-col rounded-md bg-surface-100 p-4 sm:p-6 shadow-[0_1px_2px_rgba(10,10,10,0.05),0_8px_20px_rgba(10,10,10,0.08)] lg:border lg:border-border lg:shadow-none">
+      <h2 className="flex items-center gap-2 font-serif text-heading text-ink">
+        <SwipeMark size={16} className="text-ink-muted" /> Style swipe
+      </h2>
 
-      {open && (
-        <div className="mt-5">
-          <SwipeDeck cards={cards} surface="daily_feed" candidateSource="rule" />
-        </div>
-      )}
+      <div className="mt-5 flex flex-1 flex-col justify-center">
+        <SwipeDeck cards={cards} surface="daily_feed" candidateSource="rule" />
+      </div>
     </section>
   );
 }

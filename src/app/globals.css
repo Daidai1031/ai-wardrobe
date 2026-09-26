@@ -87,3 +87,36 @@
     opacity: 0.65;
   }
 }
+
+/* Phone-only opening greeting on /home: opaque from the first paint, then fades out. */
+@keyframes home-splash-overlay {
+  0%,
+  78% {
+    opacity: 1;
+    visibility: visible;
+  }
+  100% {
+    opacity: 0;
+    visibility: hidden;
+  }
+}
+
+@keyframes home-splash-text {
+  0% {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  32%,
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.home-splash {
+  animation: home-splash-overlay 2600ms ease-in-out forwards;
+}
+
+.home-splash-text {
+  animation: home-splash-text 2000ms ease-out both;
+}

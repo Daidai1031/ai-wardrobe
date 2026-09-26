@@ -1,9 +1,12 @@
+import Link from "next/link";
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { createServerSupabase } from "@/lib/supabase/server";
 import { STYLIST_ROLE } from "@/lib/stylist/access";
-import { readStylistReviewsForClient } from "@/lib/stylist/reviews";
-import { StylistReviewInbox } from "@/components/stylist/review-inbox";
 import { DailyRecommendation } from "./daily-recommendation";
+import { HOME_WEATHER_SLOT_ID } from "./weather-slot";
+import { HomeSplash, PhoneGreeting } from "./home-greeting";
+import { SPLASH_COOKIE } from "./splash-cookie";
 import { StyleSwipe, type SwipeOutfitRow } from "./style-swipe";
 
 /** Enough to swipe through without paying for the user's whole Look library. */
@@ -14,9 +17,8 @@ export default async function HomePage() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return null;
 
-  const [{ data: profile }, stylistReviews, { data: swipeOutfits }] = await Promise.all([
+  const [{ data: profile }, { data: swipeOutfits }] = await Promise.all([
     supabase.from("profiles").select("name, roles").eq("id", user.id).single(),
-    readStylistReviewsForClient(supabase, user.id),
     supabase
       .from("outfits")
       .select(
@@ -37,23 +39,40 @@ export default async function HomePage() {
 
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
 
+  const firstName = profile?.name ? profile.name.split(" ")[0] : undefined;
+  const splashSeen = (await cookies()).has(SPLASH_COOKIE);
+
   return (
     <div>
-      <h1 className="text-xl font-semibold text-surface-900 mb-1">
-        {profile?.name ? `Good morning, ${profile.name.split(" ")[0]}` : "Good morning"}
+      {/* Phone: a full-screen greeting once per session, then a small one-line greeting here.
+          Desktop keeps the large heading. */}
+      {!splashSeen && <HomeSplash firstName={firstName} />}
+      <PhoneGreeting firstName={firstName} />
+      <h1 className="hidden font-serif text-display text-ink mb-1 lg:block">
+        {firstName ? `Good morning, ${firstName}` : "Good morning"}
       </h1>
-      <p className="text-sm text-surface-500 mb-6">{today}</p>
+      <div className="mb-6 flex flex-col gap-1 text-body text-ink-muted max-lg:mt-1">
+        <p>{today}</p>
+        {/* The forecast is portalled in here by DailyRecommendation, once the plan loads. */}
+        <div id={HOME_WEATHER_SLOT_ID} />
+      </div>
 
-      {/* Above the daily plan on purpose: a human suggestion is rarer and more
-          personal than the generated one, and burying it under the plan means it
-          gets seen after the decision it was meant to inform. */}
-      <StylistReviewInbox reviews={stylistReviews} />
-
-      <DailyRecommendation userId={user.id} />
-
-      {/* Below the plan on purpose: the plan is what the user came for, and the
-          deck is a prototype that collects signal rather than answering a question. */}
-      <StyleSwipe outfits={(swipeOutfits || []) as unknown as SwipeOutfitRow[]} />
+      {/* Side by side on wide screens so the plan (what the user came for) and the
+          swipe prototype (secondary, signal-collecting) are both visible at once
+          without either reading as equal in importance — the plan gets the bulk
+          of the width, swipe is a narrow strip beside it, and both stretch to the
+          taller card's height so the two panels read as one balanced row rather
+          than a tall card next to a short one. Stacks back to a single column
+          below xl, where there isn't room to keep both legible. */}
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_320px] xl:items-stretch">
+        <DailyRecommendation />
+        <div className="flex flex-col gap-3">
+          <StyleSwipe outfits={(swipeOutfits || []) as unknown as SwipeOutfitRow[]} />
+          <Link href="/outfits?tab=stylist" className="text-button text-ink-muted hover:text-ink">
+            Want something else? Ask the AI Stylist →
+          </Link>
+        </div>
+      </div>
     </div>
   );
 }

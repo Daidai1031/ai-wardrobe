@@ -9,7 +9,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { ArrowDown, ArrowUp, Check, Loader2, RotateCcw, ThumbsDown, ThumbsUp } from "lucide-react";
+import { Check, Clock, Loader2, RotateCcw, Shirt, ThumbsDown, ThumbsUp } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { wardrobeItemLabel } from "@/lib/wardrobe/item-label";
 import {
@@ -97,6 +97,7 @@ export function SwipeDeck({
   const [reasons, setReasons] = useState<DislikeReason[]>([]);
   const [reasonItemId, setReasonItemId] = useState<string | null>(null);
   const [events, setEvents] = useState<SwipeEventDraft[]>([]);
+  const [hovered, setHovered] = useState(false);
 
   const startRef = useRef<{ x: number; y: number } | null>(null);
   const shownAtRef = useRef<number>(Date.now());
@@ -239,35 +240,38 @@ export function SwipeDeck({
       ? { transform: `translate(${dx}px, ${dy}px) rotate(${dx / 22}deg)` }
       : { transform: "translate(0px, 0px) rotate(0deg)", transition: "transform 180ms ease-out" };
 
+  const fanned = hovered && !drag && !exiting;
+
   const badgeOpacity = hint
     ? Math.min(1, Math.max(Math.abs(dx), Math.abs(dy)) / COMMIT_DISTANCE)
     : 0;
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between text-[11px] text-surface-400">
-        <span>
-          {index + 1} / {cards.length}
-        </span>
-        <span>Drag the card, use the buttons, or press the arrow keys</span>
-      </div>
-      <div className="h-1 overflow-hidden rounded-full bg-surface-100">
-        <div
-          className="h-full rounded-full bg-brand-500 transition-all duration-200"
-          style={{ width: `${(index / cards.length) * 100}%` }}
-        />
-      </div>
-
-      <div className="relative mx-auto w-full max-w-sm" style={{ perspective: 1000 }}>
-        {/* Two cards peek from underneath so the deck reads as a stack with depth. */}
+    <div>
+      {/* The two cards under the front one hang about 26px below it (48px fanned out on
+          hover, once their tilt is counted), so the gap to the buttons has to be measured
+          from their bottom edge, not the front card's. The old 32px left only a few pixels. */}
+      <div className="relative mx-auto mb-14 w-full max-w-sm" style={{ perspective: 1000 }}>
+        {/* Two cards sit under the front one, each dropped a little lower and turned
+            a hair off-square, so the bottom edges show and the deck reads as a physical
+            stack. The earlier version scaled them about their centre, which pulled each
+            card's bottom edge back up by about as much as it was dropped — the peek
+            came out at a pixel or two and disappeared against the white panel. Width
+            narrows by scaleX only, and they take the card colour so the edge has
+            contrast to show against. */}
         {[2, 1].map((offset) =>
           cards[index + offset] ? (
             <div
               key={cards[index + offset].id}
               aria-hidden
-              className="absolute inset-x-0 top-0 rounded-2xl border border-surface-200 bg-white shadow-sm"
+              className="absolute inset-x-0 top-0 rounded-2xl border border-border bg-surface-200 shadow-sm"
               style={{
-                transform: `translateY(${offset * 8}px) scale(${1 - offset * 0.035})`,
+                // Hovering the front card eases the two beneath it a little further apart,
+                // in opposite directions, so the stack seems to loosen with it.
+                transform: `translateY(${offset * (fanned ? 12 : 10)}px) rotate(${
+                  (offset === 1 ? -1.6 : 1.8) * (fanned ? 1.5 : 1)
+                }deg) scaleX(${1 - offset * 0.03})`,
+                transition: "transform 600ms cubic-bezier(0.22, 1, 0.36, 1)",
                 height: "100%",
               }}
             />
@@ -279,10 +283,14 @@ export function SwipeDeck({
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp}
+          onPointerEnter={() => setHovered(true)}
+          onPointerLeave={() => setHovered(false)}
           style={style}
           className={cn(
             "relative touch-none select-none rounded-2xl border border-surface-200 bg-white p-4 shadow-md",
-            drag ? "cursor-grabbing" : "cursor-grab"
+            drag ? "cursor-grabbing" : "cursor-grab",
+            // Wiggle on hover, but never while a drag or exit is driving the transform.
+            !drag && !exiting && "hover:animate-card-wiggle motion-reduce:hover:animate-none"
           )}
         >
           {hint && (
@@ -302,7 +310,7 @@ export function SwipeDeck({
           <div className="mt-3 border-t border-surface-100 pt-3">
             <p className="truncate text-sm font-semibold text-surface-900">{card.title}</p>
             {card.subtitle && (
-              <p className="mt-0.5 truncate text-[11px] text-surface-400">{card.subtitle}</p>
+              <p className="mt-0.5 truncate text-[12px] text-surface-400">{card.subtitle}</p>
             )}
           </div>
         </div>
@@ -330,32 +338,16 @@ export function SwipeDeck({
         />
       ) : (
         <div className="flex items-center justify-center gap-3">
-          <GestureButton
-            gesture="dislike"
-            onClick={() => request("left")}
-            className="border-red-200 text-red-500 hover:bg-red-50"
-          >
+          <GestureButton gesture="dislike" onClick={() => request("left")}>
             <ThumbsDown size={18} />
           </GestureButton>
-          <GestureButton
-            gesture="later"
-            onClick={() => request("down")}
-            className="border-surface-200 text-surface-400 hover:bg-surface-50"
-          >
-            <ArrowDown size={18} />
+          <GestureButton gesture="later" onClick={() => request("down")}>
+            <Clock size={18} />
           </GestureButton>
-          <GestureButton
-            gesture="wear_now"
-            onClick={() => request("up")}
-            className="border-brand-300 bg-brand-50 text-brand-600 hover:bg-brand-100"
-          >
-            <ArrowUp size={18} />
+          <GestureButton gesture="wear_now" onClick={() => request("up")}>
+            <Shirt size={18} />
           </GestureButton>
-          <GestureButton
-            gesture="like"
-            onClick={() => request("right")}
-            className="border-emerald-200 text-emerald-600 hover:bg-emerald-50"
-          >
+          <GestureButton gesture="like" onClick={() => request("right")} emphasize>
             <ThumbsUp size={18} />
           </GestureButton>
         </div>
@@ -367,12 +359,12 @@ export function SwipeDeck({
 function GestureButton({
   gesture,
   onClick,
-  className,
+  emphasize = false,
   children,
 }: {
   gesture: SwipeGesture;
   onClick: () => void;
-  className?: string;
+  emphasize?: boolean;
   children: ReactNode;
 }) {
   const copy = GESTURE_COPY[gesture];
@@ -383,8 +375,10 @@ function GestureButton({
       title={`${copy.verb} — ${copy.hint}`}
       aria-label={copy.verb}
       className={cn(
-        "flex h-12 w-12 items-center justify-center rounded-full border-2 bg-white transition-colors",
-        className
+        "flex h-12 w-12 items-center justify-center rounded-full border transition-colors",
+        emphasize
+          ? "border-ink bg-ink text-ink-inverse hover:opacity-90"
+          : "border-border bg-surface-100 text-ink-muted hover:border-ink hover:text-ink"
       )}
     >
       {children}
@@ -418,9 +412,9 @@ function ReasonSheet({
   const ready = reasons.length > 0 && (!needsItem || Boolean(reasonItemId));
 
   return (
-    <div className="mx-auto w-full max-w-sm rounded-xl border border-surface-200 bg-white p-4">
-      <p className="text-xs font-semibold text-surface-800">Why not? Pick at least one.</p>
-      <p className="mt-0.5 text-[11px] text-surface-400">
+    <div className="mx-auto w-full max-w-sm rounded-md bg-surface-200 p-4">
+      <p className="text-body font-semibold text-ink">Why not? Pick at least one.</p>
+      <p className="mt-0.5 text-body-small text-ink-muted">
         A left swipe with no reason can&apos;t be learned from.
       </p>
 
@@ -433,10 +427,10 @@ function ReasonSheet({
               type="button"
               onClick={() => onToggleReason(reason.id)}
               className={cn(
-                "rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
+                "rounded-none border px-2.5 py-1 text-body-small font-medium transition-colors",
                 selected
-                  ? "border-brand-400 bg-brand-50 text-brand-700"
-                  : "border-surface-200 text-surface-500 hover:bg-surface-50"
+                  ? "border-ink bg-ink text-ink-inverse"
+                  : "border-border text-ink-muted hover:text-ink"
               )}
             >
               {reason.label}
@@ -446,8 +440,8 @@ function ReasonSheet({
       </div>
 
       {needsItem && (
-        <div className="mt-3 border-t border-surface-100 pt-3">
-          <p className="mb-1.5 text-[11px] font-medium text-surface-600">Which piece?</p>
+        <div className="mt-3 border-t border-border pt-3">
+          <p className="mb-1.5 text-body-small font-medium text-ink-muted">Which piece?</p>
           <div className="flex flex-wrap gap-1.5">
             {items.map((item) => (
               <button
@@ -455,10 +449,10 @@ function ReasonSheet({
                 type="button"
                 onClick={() => onPickItem(item.id)}
                 className={cn(
-                  "rounded-lg border px-2 py-1 text-[11px] transition-colors",
+                  "rounded-none border px-2 py-1 text-body-small transition-colors",
                   reasonItemId === item.id
-                    ? "border-brand-400 bg-brand-50 text-brand-700"
-                    : "border-surface-200 text-surface-500 hover:bg-surface-50"
+                    ? "border-ink bg-ink text-ink-inverse"
+                    : "border-border text-ink-muted hover:text-ink"
                 )}
               >
                 {wardrobeItemLabel(item)}
@@ -472,7 +466,7 @@ function ReasonSheet({
         <button
           type="button"
           onClick={onCancel}
-          className="rounded-lg px-3 py-1.5 text-xs font-medium text-surface-500 hover:bg-surface-50"
+          className="rounded-none px-3 py-1.5 text-button text-ink-muted hover:text-ink"
         >
           Cancel
         </button>
@@ -480,7 +474,7 @@ function ReasonSheet({
           type="button"
           onClick={onConfirm}
           disabled={!ready}
-          className="rounded-lg bg-surface-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-surface-800 disabled:opacity-40"
+          className="rounded-full bg-ink px-4 py-1.5 text-button text-ink-inverse hover:opacity-90 disabled:opacity-40"
         >
           Skip this look
         </button>
@@ -505,25 +499,25 @@ function DeckSummary({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2 text-sm font-semibold text-surface-800">
-        <Check size={16} className="text-emerald-500" /> {total} looks rated
+      <div className="flex items-center gap-2 text-subheading text-ink">
+        <Check size={16} className="text-ink-muted" /> {total} looks rated
       </div>
 
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         {(Object.keys(GESTURE_COPY) as SwipeGesture[]).map((gesture) => (
-          <div key={gesture} className="rounded-xl border border-surface-200 bg-white px-3 py-2.5">
-            <p className="text-lg font-semibold text-surface-900">{counts[gesture] ?? 0}</p>
-            <p className="text-[11px] text-surface-400">{GESTURE_COPY[gesture].verb}</p>
+          <div key={gesture} className="rounded-md bg-surface-200 px-3 py-2.5">
+            <p className="text-subheading text-ink">{counts[gesture] ?? 0}</p>
+            <p className="text-body-small text-ink-muted">{GESTURE_COPY[gesture].verb}</p>
           </div>
         ))}
       </div>
 
-      <div className="rounded-xl border border-surface-200 bg-surface-50 p-3">
-        <p className="mb-2 text-[11px] font-medium text-surface-600">
-          What a real <code className="text-surface-800">swipe_event</code> insert would have
+      <div className="rounded-md bg-surface-200 p-3">
+        <p className="mb-2 text-body-small font-medium text-ink-muted">
+          What a real <code className="text-ink">swipe_event</code> insert would have
           written — nothing was saved.
         </p>
-        <pre className="max-h-64 overflow-auto rounded-lg bg-white p-3 text-[10px] leading-4 text-surface-600">
+        <pre className="max-h-64 overflow-auto rounded-sm bg-surface-100 p-3 text-body-small leading-4 text-ink-muted">
           {JSON.stringify(events.slice(-3), null, 2)}
         </pre>
       </div>
@@ -531,7 +525,7 @@ function DeckSummary({
       <button
         type="button"
         onClick={onReset}
-        className="flex items-center gap-1.5 rounded-lg border border-surface-200 px-3 py-1.5 text-xs font-medium text-surface-600 hover:bg-surface-50"
+        className="flex items-center gap-1.5 rounded-none border border-border px-3 py-1.5 text-button text-ink-muted hover:text-ink"
       >
         <RotateCcw size={13} /> Swipe again
       </button>

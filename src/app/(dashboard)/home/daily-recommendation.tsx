@@ -1,50 +1,101 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { toast } from "sonner";
 import {
-  Check,
+  ChevronDown,
   Cloud,
+  Ellipsis,
   Layers3,
   Loader2,
   Pencil,
   RotateCcw,
   Shirt,
-  Sparkles,
-  ThumbsDown,
-  ThumbsUp,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
-import { wardrobeItemLabel } from "@/lib/wardrobe/item-label";
-import { OutfitCollage, layoutsFromRows } from "@/components/outfit/outfit-canvas";
+import { HandCheck } from "@/components/icons/hand-check";
+import { PlanMark } from "@/components/icons/section-marks";
+import {
+  EditableCollage,
+  OutfitCollage,
+  layoutsFromRows,
+  type CanvasItemLayout,
+} from "@/components/outfit/outfit-canvas";
 import {
   SegmentCanvasEditor,
   type SegmentCanvasSaveResult,
 } from "@/components/outfit/segment-canvas-editor";
-import { SegmentSaveButton } from "@/components/outfit/segment-save-button";
-import type {
-  DailyResponse,
-  DailySegmentResponse,
-  DailyWardrobeItem,
-} from "@/types/daily";
+import type { DailyResponse, DailySegmentItem, DailySegmentResponse } from "@/types/daily";
+import { wardrobeItemLabel } from "@/lib/wardrobe/item-label";
+import { HOME_WEATHER_SLOT_ID } from "./weather-slot";
 
-type Feedback = "liked" | null;
+/**
+ * The "what changed" line under a segment. Pieces that differ from the previous
+ * segment are bolded wherever the note names them; matching is by label, so a note
+ * the model worded loosely simply gets no bold rather than a wrong one.
+ */
+function ChangeNote({
+  text,
+  changedLabels,
+  className,
+}: {
+  text: string;
+  changedLabels: string[];
+  className?: string;
+}) {
+  const labels = Array.from(new Set(changedLabels.filter(Boolean))).sort(
+    (a, b) => b.length - a.length
+  );
+  const escaped = labels.map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const parts = escaped.length > 0 ? text.split(new RegExp(`(${escaped.join("|")})`, "i")) : [text];
 
-function itemLabel(item: DailyWardrobeItem): string {
-  return wardrobeItemLabel(item);
+  return (
+    <p className={cn("text-body-small text-ink-muted text-justify hyphens-auto", className)}>
+      <span className="text-label font-bold uppercase text-ink lg:text-ink-muted">[CHANGE]</span>{" "}
+      {parts.map((part, index) =>
+        index % 2 === 1 ? (
+          <strong key={index} className="font-semibold text-ink">
+            {part}
+          </strong>
+        ) : (
+          part
+        )
+      )}
+    </p>
+  );
 }
 
-export function DailyRecommendation({ userId }: { userId: string }) {
+/** Pieces present in exactly one of the two segments: what was taken off and what was put on. */
+function changedItemLabels(previous: DailySegmentItem[], current: DailySegmentItem[]): string[] {
+  const before = new Set(previous.map((item) => item.id));
+  const after = new Set(current.map((item) => item.id));
+  return [
+    ...previous.filter((item) => !after.has(item.id)),
+    ...current.filter((item) => !before.has(item.id)),
+  ].map(wardrobeItemLabel);
+}
+
+export function DailyRecommendation() {
   const supabase = useMemo(() => createClient(), []);
   const [data, setData] = useState<DailyResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [feedback, setFeedback] = useState<Feedback>(null);
   const [regeneratingSegmentId, setRegeneratingSegmentId] = useState<string | null>(null);
   const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
   const [reusingSegmentId, setReusingSegmentId] = useState<string | null>(null);
   const [markingWorn, setMarkingWorn] = useState(false);
+  // Phone timeline only: which segment's "···" menu is open, and which segments are showing
+  // their full-size collage / full reasoning instead of the compact row.
+  const [menuSegmentId, setMenuSegmentId] = useState<string | null>(null);
+  const [openCollageIds, setOpenCollageIds] = useState<string[]>([]);
+  const [openReasonIds, setOpenReasonIds] = useState<string[]>([]);
+  // Segments the user has confirmed but that aren't written yet. `mark_outfit_plan_worn` takes the
+  // whole day atomically (every segment exactly once, one +1 per distinct item), so the write
+  // happens when the last segment is confirmed; until then a confirmed segment is only locked.
+  const [confirmedSegmentIds, setConfirmedSegmentIds] = useState<string[]>([]);
+  const layoutSaves = useRef<Promise<void>>(Promise.resolve());
 
   const loadPlan = useCallback(async () => {
     setLoading(true);
@@ -55,7 +106,6 @@ export function DailyRecommendation({ userId }: { userId: string }) {
         throw new Error(next.error || "Something went wrong loading today's plan.");
       }
       setData(next);
-      setFeedback(next.status === "accepted" ? "liked" : null);
     } catch (error) {
       setData({
         planId: null,
@@ -79,67 +129,21 @@ export function DailyRecommendation({ userId }: { userId: string }) {
     void loadPlan();
   }, [loadPlan]);
 
-  async function like() {
-    if (!data?.planId || data.status === "worn") return;
-
-    const { error } = await supabase
-      .from("outfit_plans")
-      .update({ status: "accepted", updated_at: new Date().toISOString() })
-      .eq("id", data.planId)
-      .eq("user_id", userId);
-
-    if (error) {
-      toast.error(error.message || "Couldn't save your feedback");
-      return;
-    }
-
-    setFeedback("liked");
-    setData((current) => (current ? { ...current, status: "accepted" } : current));
-  }
-
-  /** Whole-day Dislike: every segment is thrown away and rebuilt. */
-  async function dislike() {
-    if (!data || data.status === "worn") return;
-
-    const rejectedItemIds = [
-      ...new Set(data.segments.flatMap((segment) => segment.items.map((item) => item.id))),
-    ];
-
-    setLoading(true);
-    try {
-      const response = await fetch("/api/ai/daily", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rejectedItemIds }),
-      });
-      const next = (await response.json()) as DailyResponse;
-
-      if (!response.ok || next.error) {
-        throw new Error(next.error || "Couldn't generate another plan.");
-      }
-      if (next.message || next.segments.length === 0) {
-        toast.error(next.message || "Couldn't generate another plan.");
-        return;
-      }
-
-      setData(next);
-      setFeedback(null);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Couldn't generate another plan.");
-    } finally {
-      setLoading(false);
-    }
-  }
+  const [weatherSlot, setWeatherSlot] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setWeatherSlot(document.getElementById(HOME_WEATHER_SLOT_ID));
+  }, []);
 
   /**
    * Per-segment Dislike. Only this segment is rebuilt, so a day where one look
    * lands and another misses doesn't cost the user the good one.
    */
   async function dislikeSegment(segment: DailySegmentResponse) {
-    if (!data || data.status === "worn") return;
+    if (!data) return;
 
     setRegeneratingSegmentId(segment.id);
     try {
+      if (!(await reopenSegment(segment))) return;
       const response = await fetch("/api/ai/daily", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -159,7 +163,6 @@ export function DailyRecommendation({ userId }: { userId: string }) {
       }
 
       setData(next);
-      setFeedback(null);
       toast.success(`Rebuilt “${segment.label}”`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Couldn't rebuild that segment.");
@@ -168,31 +171,158 @@ export function DailyRecommendation({ userId }: { userId: string }) {
     }
   }
 
+  /**
+   * Confirming doesn't freeze a segment: changing one is allowed, and it takes the
+   * confirmation back — what was confirmed is no longer what's on the card. If the
+   * whole day was already written, `unmark_outfit_plan_worn` reverses that first
+   * (every segment-editing RPC refuses a worn plan); the other segments stay confirmed
+   * and the day is written again when the last one is. Returns false when it couldn't.
+   */
+  async function reopenSegment(segment: DailySegmentResponse): Promise<boolean> {
+    if (!data?.planId) return false;
+
+    if (data.status === "worn") {
+      setMarkingWorn(true);
+      const { error } = await supabase.rpc("unmark_outfit_plan_worn", { p_plan_id: data.planId });
+      setMarkingWorn(false);
+      if (error) {
+        toast.error(error.message || "Couldn't reopen today's plan");
+        return false;
+      }
+      setConfirmedSegmentIds(data.segments.map((s) => s.id).filter((id) => id !== segment.id));
+      setData((current) => (current ? { ...current, status: "suggested" } : current));
+      return true;
+    }
+
+    setConfirmedSegmentIds((ids) => ids.filter((id) => id !== segment.id));
+    return true;
+  }
+
   function applyEditedSegment(segmentId: string, result: SegmentCanvasSaveResult) {
     setData((current) =>
       current
         ? {
             ...current,
-            segments: current.segments.map((segment) =>
-              segment.id === segmentId
-                ? {
-                    ...segment,
-                    items: result.items,
-                    savedOutfitId: result.savedOutfitId,
-                    sourceOutfitId: result.sourceOutfitId,
-                  }
-                : segment
-            ),
+            segments: current.segments.map((segment) => {
+              if (segment.id === segmentId) {
+                return {
+                  ...segment,
+                  items: result.items,
+                  savedOutfitId: result.savedOutfitId,
+                  sourceOutfitId: result.sourceOutfitId,
+                  reasoning: result.reasoning,
+                  changeFromPrevious: result.changeFromPrevious ?? undefined,
+                };
+              }
+              if (result.nextSegmentId && segment.id === result.nextSegmentId) {
+                return {
+                  ...segment,
+                  changeFromPrevious: result.nextChangeFromPrevious ?? undefined,
+                };
+              }
+              return segment;
+            }),
           }
         : current
     );
   }
 
-  async function markWornToday() {
-    if (!data?.planId || data.status === "worn") return;
+  /**
+   * Direct manipulation on the card: a garment was dragged or resized without changing
+   * which garments the segment holds. The card updates at once; the same RPC the Canvas
+   * editor saves through persists it, and a failure puts the previous arrangement back.
+   *
+   * Saves are chained rather than fired together, because each carries the whole
+   * arrangement and two in flight could land out of order and leave the older one.
+   * `p_source_matches` is false: a moved garment is no longer an exact copy of a saved
+   * Look, so the exact link is dropped while the "started from" link is kept — the
+   * same outcome as editing the layout on the Canvas. The RPC leaves the model's
+   * reasoning alone for a layout-only change.
+   */
+  function commitSegmentLayout(
+    segment: DailySegmentResponse,
+    orderedIds: string[],
+    layouts: Record<string, CanvasItemLayout>
+  ) {
+    const byId = new Map(segment.items.map((item) => [item.id, item]));
+    const nextItems: DailySegmentItem[] = orderedIds
+      .map((id) => byId.get(id))
+      .filter((item): item is DailySegmentItem => Boolean(item))
+      .map((item) => ({
+        ...item,
+        x: layouts[item.id]?.x ?? item.x,
+        y: layouts[item.id]?.y ?? item.y,
+        width: layouts[item.id]?.width ?? item.width,
+      }));
+    const previous = segment;
+
+    const patch = (segmentId: string, apply: (s: DailySegmentResponse) => DailySegmentResponse) =>
+      setData((current) =>
+        current
+          ? {
+              ...current,
+              segments: current.segments.map((s) => (s.id === segmentId ? apply(s) : s)),
+            }
+          : current
+      );
+
+    patch(segment.id, (s) => ({ ...s, items: nextItems, savedOutfitId: null }));
+
+    layoutSaves.current = layoutSaves.current.then(async () => {
+      if (!(await reopenSegment(segment))) {
+        patch(segment.id, () => previous);
+        return;
+      }
+      const { error } = await supabase.rpc("update_outfit_plan_segment_from_canvas", {
+        p_segment_id: segment.id,
+        p_items: nextItems.map((item) => ({
+          itemId: item.id,
+          x: item.x,
+          y: item.y,
+          width: item.width,
+        })),
+        p_source_outfit_id: segment.sourceOutfitId ?? segment.savedOutfitId ?? null,
+        p_source_matches: false,
+      });
+      if (error) {
+        toast.error(error.message || "Couldn't save that arrangement");
+        patch(segment.id, () => previous);
+      }
+    });
+  }
+
+  const toggleId = (list: string[], id: string) =>
+    list.includes(id) ? list.filter((value) => value !== id) : [...list, id];
+
+  /** Same as the Adjust / Use saved buttons on the wider layout. */
+  async function openEditor(segment: DailySegmentResponse, reuse: boolean) {
+    setMenuSegmentId(null);
+    if (!(await reopenSegment(segment))) return;
+    setReusingSegmentId(reuse ? segment.id : null);
+    setEditingSegmentId(segment.id);
+  }
+
+  async function confirmSegment(segment: DailySegmentResponse) {
+    if (!data?.planId || markingWorn) return;
+
+    if (data.status === "worn" || confirmedSegmentIds.includes(segment.id)) {
+      await reopenSegment(segment);
+      return;
+    }
+
+    const next = [...confirmedSegmentIds, segment.id];
+    setConfirmedSegmentIds(next);
+    if (data.segments.every((s) => next.includes(s.id))) {
+      const saved = await markWornToday();
+      if (!saved) setConfirmedSegmentIds((ids) => ids.filter((id) => id !== segment.id));
+    }
+  }
+
+  async function markWornToday(): Promise<boolean> {
+    if (!data?.planId || data.status === "worn") return false;
     if (data.segments.some((segment) => segment.items.length === 0)) {
       toast.error("Every segment needs at least one item before confirming");
-      return;
+      return false;
     }
 
     setMarkingWorn(true);
@@ -204,40 +334,41 @@ export function DailyRecommendation({ userId }: { userId: string }) {
       })),
     });
 
+    setMarkingWorn(false);
     if (error) {
       toast.error(error.message || "Couldn't mark today's plan as worn");
-    } else {
-      setData((current) => (current ? { ...current, status: "worn" } : current));
-      toast.success("Today's actual outfits were added to your journal");
+      return false;
     }
-    setMarkingWorn(false);
+    setData((current) => (current ? { ...current, status: "worn" } : current));
+    toast.success("Today's actual outfits were added to your journal");
+    return true;
   }
 
   if (loading) {
     return (
-      <div className="bg-white rounded-xl border border-surface-200 p-10 flex flex-col items-center justify-center gap-3 text-surface-400">
-        <Loader2 size={24} className="animate-spin text-brand-500" />
-        <p className="text-sm">Putting together today&apos;s outfit plan…</p>
+      <div className="bg-surface-200 rounded-md p-10 flex flex-col items-center justify-center gap-3 text-ink-muted lg:border lg:border-border lg:bg-white">
+        <Loader2 size={24} className="animate-spin text-ink" />
+        <p className="text-body">Putting together today&apos;s outfit plan…</p>
       </div>
     );
   }
 
   if (!data || data.error || data.message || data.segments.length === 0) {
     return (
-      <div className="bg-white rounded-xl border border-surface-200 p-8 text-center">
-        <p className="text-sm text-surface-500 mb-4">
+      <div className="bg-surface-200 rounded-md p-8 text-center lg:border lg:border-border lg:bg-white">
+        <p className="text-body text-ink-muted mb-4">
           {data?.error || data?.message || "No recommendation available."}
         </p>
         <div className="flex justify-center gap-2">
           <Link
             href="/closet"
-            className="px-4 py-2 rounded-lg bg-surface-900 text-white text-xs font-medium hover:bg-surface-800"
+            className="px-4 py-2 rounded-none bg-ink text-ink-inverse text-button hover:opacity-90"
           >
             Go to closet
           </Link>
           <button
             onClick={() => void loadPlan()}
-            className="px-4 py-2 rounded-lg border border-surface-200 text-xs font-medium text-surface-600 hover:bg-surface-50"
+            className="px-4 py-2 rounded-none border border-border text-button text-ink-muted hover:text-ink"
           >
             Try again
           </button>
@@ -254,234 +385,305 @@ export function DailyRecommendation({ userId }: { userId: string }) {
       ? [data.weather]
       : [];
 
+  // The forecast belongs to the page header, beside the date, not inside the card — but
+  // it is fetched with the plan, so it is portalled into the slot `page.tsx` leaves there.
+  const weatherPortal =
+    weatherSlot && weatherLocations.length > 0
+      ? createPortal(
+          <div className="flex items-center gap-1.5">
+            <Cloud size={16} className="shrink-0 text-ink-muted" />
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
+              {weatherLocations.map((weather, index) => (
+                <span key={`${weather.city}-${index}`} className="whitespace-nowrap">
+                  <span className="font-medium text-ink">{weather.city}</span>{" "}
+                  {weather.temp}°C · <span className="capitalize">{weather.description}</span>
+                </span>
+              ))}
+            </div>
+          </div>,
+          weatherSlot
+        )
+      : null;
+
   if (editingSegment) {
     return (
-      <SegmentCanvasEditor
-        segment={editingSegment}
-        availableItems={data.availableItems}
-        showSavedLooksInitially={reusingSegmentId === editingSegment.id}
-        onCancel={() => {
-          setEditingSegmentId(null);
-          setReusingSegmentId(null);
-        }}
-        onSaved={(result) => {
-          applyEditedSegment(editingSegment.id, result);
-          setEditingSegmentId(null);
-          setReusingSegmentId(null);
-        }}
-      />
+      <>
+        {weatherPortal}
+        <SegmentCanvasEditor
+          segment={editingSegment}
+          availableItems={data.availableItems}
+          showSavedLooksInitially={reusingSegmentId === editingSegment.id}
+          onCancel={() => {
+            setEditingSegmentId(null);
+            setReusingSegmentId(null);
+          }}
+          onSaved={(result) => {
+            applyEditedSegment(editingSegment.id, result);
+            setEditingSegmentId(null);
+            setReusingSegmentId(null);
+          }}
+        />
+      </>
     );
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        {weatherLocations.length > 0 ? (
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-surface-600 bg-white rounded-xl border border-surface-200 px-4 py-3 w-fit">
-            <Cloud size={16} className="text-brand-500" />
-            {weatherLocations.map((weather, index) => (
-              <span key={`${weather.city}-${index}`} className="whitespace-nowrap">
-                <span className="font-medium text-surface-900">{weather.city}</span>{" "}
-                {weather.temp}°C · <span className="capitalize">{weather.description}</span>
-              </span>
-            ))}
-          </div>
-        ) : (
-          <div />
-        )}
+    <div className="flex h-full flex-col bg-surface-200 rounded-md p-4 sm:p-6 shadow-[0_1px_2px_rgba(10,10,10,0.05),0_8px_20px_rgba(10,10,10,0.08)] lg:border lg:border-border lg:bg-white lg:shadow-none">
+      {weatherPortal}
 
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={() => void like()}
-            disabled={worn}
-            title="Like"
-            className={cn(
-              "p-2 rounded-lg border transition-colors disabled:opacity-40",
-              feedback === "liked"
-                ? "border-brand-300 bg-brand-50 text-brand-600"
-                : "border-surface-200 text-surface-400 hover:text-surface-700"
-            )}
-          >
-            <ThumbsUp size={15} />
-          </button>
-          <button
-            onClick={() => void dislike()}
-            disabled={worn}
-            title="Dislike the whole day — avoid every item above and rebuild all segments"
-            className="p-2 rounded-lg border border-surface-200 text-surface-400 hover:text-surface-700 transition-colors disabled:opacity-40"
-          >
-            <ThumbsDown size={15} />
-          </button>
-        </div>
+      <div className="flex items-center justify-between gap-3 mb-5">
+        <h2 className="font-serif text-heading text-ink flex items-center gap-2">
+          <PlanMark size={16} className="text-ink-muted" /> Today&apos;s plan
+        </h2>
       </div>
 
-      <div className="bg-white rounded-xl border border-surface-200 p-6">
-        <div className="flex items-center justify-between gap-3 mb-5">
-          <h2 className="text-sm font-semibold text-surface-800 flex items-center gap-2">
-            <Sparkles size={16} className="text-brand-500" /> Today&apos;s plan
-          </h2>
-          <div className="flex items-center gap-2">
-            {/* A date has one plan; this says where today's came from, so a look the
-                user recognises from /plan doesn't read as an unrelated suggestion. */}
-            {data.source === "weekly" && (
-              <Link
-                href="/plan"
-                className="rounded-full bg-brand-50 px-2.5 py-1 text-[10px] font-semibold text-brand-700 hover:bg-brand-100"
-              >
-                From your week plan
-              </Link>
-            )}
-            {data.cached && <span className="text-[11px] text-surface-400">Saved daily plan</span>}
-          </div>
-        </div>
+      {/* The day as a timeline, on every screen size. Each stop is a row: a collage, the
+          reasoning and Confirm; the editing tools are behind "···", and tapping the collage
+          opens the full-size, editable version. On a phone the collage is small and the
+          reasoning is clamped (a chevron expands it); from sm up there is room for both in full. */}
+      <div className="relative pl-6 before:absolute before:bottom-2 before:left-[5px] before:top-2 before:w-px before:bg-border">
+        {data.segments.map((segment, segmentIndex) => {
+          const regenerating = regeneratingSegmentId === segment.id;
+          const confirmed = worn || confirmedSegmentIds.includes(segment.id);
+          const time = data.occasions.find((occasion) => segment.eventIds.includes(occasion.id))?.time;
+          const collageOpen = openCollageIds.includes(segment.id);
+          const reasonOpen = openReasonIds.includes(segment.id);
+          const menuOpen = menuSegmentId === segment.id;
+          const busy = markingWorn || Boolean(regeneratingSegmentId);
 
-        <div className="space-y-5">
-          {data.segments.map((segment, segmentIndex) => {
-            const regenerating = regeneratingSegmentId === segment.id;
+          const toolItems = [
+            {
+              label: "Rebuild this segment",
+              Icon: RotateCcw,
+              run: () => {
+                setMenuSegmentId(null);
+                void dislikeSegment(segment);
+              },
+            },
+            { label: "Use saved outfit", Icon: Layers3, run: () => void openEditor(segment, true) },
+            { label: "Adjust on canvas", Icon: Pencil, run: () => void openEditor(segment, false) },
+          ];
 
-            return (
-              <section
-                key={segment.id}
-                className="rounded-xl border border-surface-200 overflow-hidden"
-              >
-                <div className="px-4 py-3 bg-surface-50 border-b border-surface-100 flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-[11px] uppercase tracking-wide text-surface-400 mb-0.5">
-                      Segment {segmentIndex + 1}
-                    </p>
-                    <h3 className="text-sm font-semibold text-surface-900">{segment.label}</h3>
-                  </div>
-                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+          const moreMenu = (
+          <div className="relative shrink-0">
+            <button
+              type="button"
+              onClick={() => setMenuSegmentId(menuOpen ? null : segment.id)}
+              aria-label="Edit this segment"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              className="flex h-8 w-8 items-center justify-center text-ink-muted transition-colors hover:text-ink"
+            >
+              {regenerating ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : (
+                <Ellipsis size={18} />
+              )}
+            </button>
+            {menuOpen && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setMenuSegmentId(null)} />
+                <div
+                  role="menu"
+                  className="absolute bottom-full right-0 z-20 mb-1 min-w-[11rem] overflow-hidden rounded-sm border border-border bg-white py-1 shadow-[0_1px_2px_rgba(10,10,10,0.05),0_8px_20px_rgba(10,10,10,0.12)]"
+                >
+                  {toolItems.map((item) => (
                     <button
-                      onClick={() => void dislikeSegment(segment)}
-                      disabled={worn || regenerating || Boolean(regeneratingSegmentId)}
-                      title="Rebuild only this segment — the other segments stay as they are"
-                      className="p-1.5 rounded-lg border border-surface-200 text-surface-400 hover:text-surface-700 transition-colors disabled:opacity-40"
+                      key={item.label}
+                      type="button"
+                      role="menuitem"
+                      disabled={busy}
+                      onClick={item.run}
+                      className="flex w-full items-center gap-2.5 px-4 py-3 text-left text-[14px] leading-none text-ink-muted transition-colors hover:bg-surface-200 hover:text-ink disabled:opacity-40"
                     >
-                      {regenerating ? (
-                        <Loader2 size={13} className="animate-spin" />
-                      ) : (
-                        <RotateCcw size={13} />
-                      )}
+                      <item.Icon size={14} />
+                      {item.label}
                     </button>
-                    <button
-                      onClick={() => {
-                        setReusingSegmentId(segment.id);
-                        setEditingSegmentId(segment.id);
-                      }}
-                      disabled={worn || Boolean(regeneratingSegmentId)}
-                      title="Replace this segment with one of your saved outfits"
-                      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-surface-200 text-surface-600 text-xs font-medium hover:bg-surface-50 disabled:opacity-40"
-                    >
-                      <Layers3 size={13} />
-                      Use saved
-                    </button>
-                    <button
-                      onClick={() => {
-                        setReusingSegmentId(null);
-                        setEditingSegmentId(segment.id);
-                      }}
-                      disabled={worn || Boolean(regeneratingSegmentId)}
-                      title="Adjust this segment on the canvas"
-                      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-surface-200 text-surface-600 text-xs font-medium hover:bg-surface-50 disabled:opacity-40"
-                    >
-                      <Pencil size={13} />
-                      Adjust
-                    </button>
-                    <SegmentSaveButton
-                      segment={segment}
-                      date={data.date}
-                      disabled={worn}
-                      onSaved={(outfitId) =>
-                        setData((current) =>
-                          current
-                            ? {
-                                ...current,
-                                segments: current.segments.map((currentSegment) =>
-                                  currentSegment.id === segment.id
-                                    ? {
-                                        ...currentSegment,
-                                        savedOutfitId: outfitId,
-                                        sourceOutfitId: outfitId,
-                                      }
-                                    : currentSegment
-                                ),
-                              }
-                            : current
-                        )
-                      }
-                    />
-                  </div>
+                  ))}
                 </div>
+              </>
+            )}
+          </div>
+          );
 
-                {/* Collage left, copy right: a square collage stacked above full-width
-                    text left a lot of dead space beside it on wide screens. Collapses
-                    to a single column below sm. */}
-                <div className="p-4 grid gap-4 sm:grid-cols-[minmax(0,15rem)_1fr] sm:items-start">
-                  {segment.items.length > 0 ? (
+          const text = (
+            <div className="flex min-w-0 flex-1 flex-col">
+              {segment.changeFromPrevious && (
+                <ChangeNote
+                  text={segment.changeFromPrevious}
+                  changedLabels={changedItemLabels(
+                    data.segments[segmentIndex - 1]?.items ?? [],
+                    segment.items
+                  )}
+                  className={cn(
+                    "lg:order-2 lg:mt-3 lg:border-t lg:border-border lg:pt-2 lg:text-[13px] lg:leading-[19px]",
+                    !reasonOpen && !collageOpen && "line-clamp-2 sm:line-clamp-none"
+                  )}
+                />
+              )}
+              <p
+                className={cn(
+                  "text-justify hyphens-auto text-[13px] leading-[19px] text-ink-muted sm:text-[14px] sm:leading-[22px] lg:order-1 lg:text-[15px] lg:leading-6 lg:text-ink",
+                  segment.changeFromPrevious && "mt-1 lg:mt-0",
+                  !reasonOpen && !collageOpen && "line-clamp-3 sm:line-clamp-none"
+                )}
+              >
+                {segment.reasoning}
+              </p>
+              {segment.reasoning.length > 110 && !collageOpen && (
+                <button
+                  type="button"
+                  onClick={() => setOpenReasonIds((ids) => toggleId(ids, segment.id))}
+                  aria-label={reasonOpen ? "Show less" : "Show the full description"}
+                  aria-expanded={reasonOpen}
+                  className="-ml-1 mt-0.5 flex h-7 w-7 items-center justify-center text-ink-muted transition-colors hover:text-ink sm:hidden"
+                >
+                  <ChevronDown
+                    size={18}
+                    className={cn("transition-transform duration-200", reasonOpen && "rotate-180")}
+                  />
+                </button>
+              )}
+              <div className="mt-3 flex items-center gap-1 lg:hidden">
+              <button
+                type="button"
+                onClick={() => void confirmSegment(segment)}
+                disabled={busy || segment.items.length === 0}
+                title={confirmed ? "Click to take the confirmation back" : undefined}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-button disabled:opacity-70",
+                  confirmed
+                    ? "border-border bg-surface-100 text-ink"
+                    : "border-transparent bg-accent text-ink-inverse"
+                )}
+              >
+                {markingWorn && !worn ? (
+                  <Loader2 size={13} className="animate-spin" />
+                ) : (
+                  <HandCheck size={13} />
+                )}
+                {confirmed ? "Confirmed" : "Confirm"}
+              </button>
+              {moreMenu}
+              </div>
+            </div>
+          );
+
+          const rail = (
+            <div className="hidden w-[176px] shrink-0 flex-col gap-2 lg:flex">
+              {toolItems.map((item) => (
+                <button
+                  key={item.label}
+                  type="button"
+                  disabled={busy}
+                  onClick={item.run}
+                  className="flex w-full items-center justify-center gap-2 px-2.5 py-1.5 text-[13.5px] font-medium leading-5 text-ink-muted transition-colors hover:text-ink disabled:opacity-40"
+                >
+                  {item.Icon === RotateCcw && regenerating ? (
+                    <Loader2 size={15} className="animate-spin" />
+                  ) : (
+                    <item.Icon size={15} />
+                  )}
+                  {item.label}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => void confirmSegment(segment)}
+                disabled={busy || segment.items.length === 0}
+                title={confirmed ? "Click to take the confirmation back" : undefined}
+                className={cn(
+                  "mt-1.5 flex items-center justify-center gap-1.5 self-center rounded-full border px-[18px] py-2 text-[15px] font-semibold leading-5 disabled:opacity-70",
+                  confirmed
+                    ? "border-border bg-white text-ink"
+                    : "border-transparent bg-accent text-ink-inverse"
+                )}
+              >
+                {markingWorn && !worn ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <HandCheck size={14} />
+                )}
+                {confirmed ? "Confirmed" : "Confirm"}
+              </button>
+            </div>
+          );
+
+          return (
+            <div key={segment.id} className="relative pb-6 last:pb-0">
+              <span
+                aria-hidden
+                className={cn(
+                  "absolute -left-6 top-1 h-[11px] w-[11px] rounded-full border-2 border-ink",
+                  confirmed ? "bg-ink" : "bg-surface-200 lg:bg-white"
+                )}
+              />
+
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-label uppercase text-ink-muted">
+                    {time ?? `Segment ${segmentIndex + 1}`}
+                  </p>
+                  <h3 className="heading-plain text-subheading text-ink lg:text-[18px] lg:leading-6">{segment.label}</h3>
+                </div>
+              </div>
+
+              {segment.items.length === 0 ? (
+                <div className="mt-2 flex items-center gap-2 rounded-sm bg-surface-100 p-4 text-body text-ink-muted lg:bg-surface-200">
+                  <Shirt size={15} /> Add at least one item
+                </div>
+              ) : collageOpen ? (
+                <div className="mt-2 sm:flex sm:items-start sm:gap-6">
+                  <div className="sm:w-[18rem] sm:shrink-0">
+                    <EditableCollage
+                      items={segment.items}
+                      layouts={layoutsFromRows(segment.items)}
+                      disabled={markingWorn || regenerating}
+                      onCommit={(orderedIds, layouts) =>
+                        commitSegmentLayout(segment, orderedIds, layouts)
+                      }
+                      className="mx-auto w-full max-w-[18rem] rounded-none bg-transparent"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setOpenCollageIds((ids) => toggleId(ids, segment.id))}
+                      className="mx-auto mt-1 block text-body-small text-ink-muted hover:text-ink"
+                    >
+                      Show smaller
+                    </button>
+                  </div>
+                  <div className="mt-2 flex sm:mt-0 sm:flex-1">{text}</div>
+                  {rail}
+                </div>
+              ) : (
+                <div className="mt-2 flex gap-3 sm:gap-6">
+                  <button
+                    type="button"
+                    onClick={() => setOpenCollageIds((ids) => toggleId(ids, segment.id))}
+                    aria-label="Show the full-size outfit"
+                    className="h-[104px] w-[104px] shrink-0 overflow-hidden rounded-sm bg-surface-100 sm:h-[168px] sm:w-[168px] lg:bg-surface-200"
+                  >
                     <OutfitCollage
                       items={segment.items}
                       layouts={layoutsFromRows(segment.items)}
+                      className="rounded-none bg-transparent"
                     />
-                  ) : (
-                    <div className="flex aspect-square items-center justify-center gap-2 rounded-xl bg-surface-50 p-5 text-xs text-amber-700">
-                      <Shirt size={15} /> Add at least one item
-                    </div>
-                  )}
-
-                  <div className="space-y-3">
-                    {segment.changeFromPrevious && (
-                      <p className="text-xs text-brand-700 bg-brand-50 rounded-lg px-3 py-2">
-                        Change: {segment.changeFromPrevious}
-                      </p>
-                    )}
-
-                    <p className="text-sm text-surface-700 leading-relaxed">{segment.reasoning}</p>
-
-                    {segment.items.length > 0 && (
-                      <ul className="space-y-1 border-t border-surface-100 pt-3">
-                        {segment.items.map((item) => (
-                          <li key={item.id} className="text-[11px] text-surface-500 leading-relaxed">
-                            {itemLabel(item)}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
+                  </button>
+                  {text}
+                  {rail}
                 </div>
-              </section>
-            );
-          })}
-        </div>
-
-        {data.gap && (
-          <p className="text-xs text-surface-400 mt-5 pt-4 border-t border-surface-100">
-            Wardrobe gap: {data.gap}
-          </p>
-        )}
-
-        <div className="mt-5 pt-4 border-t border-surface-100 flex flex-wrap items-center justify-between gap-3">
-          <Link href="/stylist" className="text-xs font-medium text-brand-600 hover:text-brand-700">
-            Want something else? Ask the AI Stylist →
-          </Link>
-          <button
-            onClick={() => void markWornToday()}
-            disabled={
-              worn || markingWorn || data.segments.some((segment) => segment.items.length === 0)
-            }
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-brand-600 text-white text-xs font-semibold hover:bg-brand-700 disabled:opacity-50"
-          >
-            {worn ? (
-              <Check size={14} />
-            ) : markingWorn ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : (
-              <Shirt size={14} />
-            )}
-            {worn ? "Worn today" : markingWorn ? "Confirming…" : "Confirm worn today"}
-          </button>
-        </div>
+              )}
+            </div>
+          );
+        })}
       </div>
+
+      {data.gap && (
+        <p className="text-body-small text-ink-muted text-justify hyphens-auto mt-5 pt-4 border-t border-border">
+          Wardrobe gap: {data.gap}
+        </p>
+      )}
+
     </div>
   );
 }
