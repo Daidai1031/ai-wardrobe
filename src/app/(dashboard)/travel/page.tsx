@@ -1,8 +1,10 @@
+import { PlanTravelSwitch } from "@/components/layout/plan-travel-switch";
 import { TripList } from "./trip-list";
 
 export default function TravelPage() {
   return (
     <div className="space-y-6">
+      <PlanTravelSwitch />
       <div>
         <h1 className="font-display text-2xl font-semibold text-surface-900">Trips</h1>
         <p className="mt-1 text-sm text-surface-500">

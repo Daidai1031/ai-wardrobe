@@ -120,3 +120,15 @@
 .home-splash-text {
   animation: home-splash-text 2000ms ease-out both;
 }
+
+/* Desktop dashboard: no page scrollbar, so the right-edge Mailbox tab sits against the screen
+   edge instead of against a 15px scrollbar track. Wheel, trackpad and keyboard scrolling are
+   unchanged; inner scrollers (panels, strips) keep theirs. */
+@media (min-width: 1024px) {
+  html:has(.dashboard-shell) {
+    scrollbar-width: none;
+  }
+  html:has(.dashboard-shell)::-webkit-scrollbar {
+    display: none;
+  }
+}
