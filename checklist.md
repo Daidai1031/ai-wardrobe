@@ -72,6 +72,7 @@
 | 22 | 运动场景（Morning Golf）里还是出现休闲连衣裙、黑色西裤和白色高跟鞋 | 三层原因：① Comfort 只有 `too_casual`（运动装**不能进**正式场合），**没有反向那条**——从来没有规则说"运动段**必须是**运动装"；② 就算加了规则也无从修：`selectCandidates()` 把这周的 formality 映射成 occasion 标签，一场被日历分类器按"客户 + 私人俱乐部 + 工作日"打成 formality 4 的高尔夫映射到 work/formal/party，**把所有 `sport` 标签的单品全过滤掉了**，候选池里根本没有运动服可换；③ 连衣裙即使被判违规也换不掉——1:1 替换只会找「另一条裙子」，大部分衣橱没有高尔夫裙 | ① Comfort 加第四个 reason `not_sport`：athletic 段里贴身穿的品类（包/配饰豁免）必须 `isSportSuitable()`。它是 `isActivewear()` 的镜像——**分类器的 `sport` 标签单独就够**（这条规则决定什么能**留下**，用户的原话就是"运动场景一定要穿打标了是运动的服饰"），另加 polo/golf/tennis/trainer/sneaker/performance/jersey 等俱乐部装关键词；② `selectCandidates()` 新增 `pinnedIds`，窗口里只要有 athletic 场合，weekly 就把所有运动单品**绕过 occasion 过滤和排序**钉进候选集——过滤器能饿死的规则不算规则；③ `enforceComfort()` 增加第二轮：1:1 换不掉时试着**摘掉它再用 `fillMissingSlots()`（与 `enforceCoverage` 共用）补回 torso+legs**，补不齐才回滚。裙子于是能被 polo + 球裙替代。真的无解时（唯一一双鞋、衣橱完全没有运动服、同一天第二场运动而 sweat 规则禁止复用）仍然保留 + warning |
 | 23 | 同一天两段推荐出来的穿搭基本一样（同一件外套/裤子/衬衫），只换了鞋和包，却被拆成两个 segment；而且文字对不上 canvas——"Retained the brown wedge sandals"配的图里是白色高跟鞋，第一段还带着一句 `changeFromPrevious` | 两个独立问题。① `mergeAdjacentEquivalentSegments()` 只在**完整 itemId 集合完全相同**时才合并，模型换一只鞋就绕过了它，于是"一套衣服 + 一个鞋柜"被展示成三套穿搭；② 所有规则都在模型写完 reasoning **之后**才跑，模型描述的是它自己那一版，规则换掉的单品它不知道；第一段那句 `changeFromPrevious` 则是 repair call 留下的——它描述的是"和上一版计划的差异"，不是"和同一天上一段的差异" | ① 合并判据改成**只比对核心品类**（Tops/Bottoms/Dresses/Outerwear）：核心一致就是同一套穿搭，换鞋换包不构成第二个 segment；真正的换装（正装→鸡尾酒裙、上班→运动）必然动核心件，所以永远不会被误合。存活的那段保留**第一段**的单品和 reasoning（第二段的 reasoning 存在的意义就是解释一个已经不发生的变化）。不同 `kind` 不合并，athletic 段不与任何段合并；② 新增 `src/lib/planning/segment-text.ts`：生成前给每段盖上 `originalItemIds`（各 `enforce*` 都是展开对象，字段自然透传），最后 `alignSegmentText()` 把提到"已经不在这段里的单品"的**整句**删掉（按两个显著词匹配，模型很少逐字照抄标签），`changeFromPrevious` 一律由**真实 item diff** 重算（整套换掉时输出"A complete change of clothes: …"），每天第一段直接删除该字段；只有两边都没被规则动过时才保留模型原话（它说的是**为什么**，diff 说不出来）。合并会改变"从哪一套过渡过来"，所以顺序是 enforce → merge → align。单段重生成路径共用 `scrubReasoning()` / `describeTransition()` |
 | 24 | `/travel` 把日历上**两趟**行程（8/14–8/16 汉普顿度假、8/17–8/21 伦敦出差）识别成了**一趟** `Hamptons 08-14 → 08-21`。伦敦那半程于是按汉普顿的天气排搭配，两趟共用一张打包清单 | `detectTrips()` 合并 run 时**只看日期相邻，从不比较目的地**（`detect-trips.ts` 的 `daysBetween(current.end, away.first) <= MAX_GAP_DAYS + 1`）。汉普顿最后一天 8/16 和伦敦第一天 8/17 首尾相接，正好落进「中间空一天仍算同一趟」那条桥接规则里。`chooseDestination()` 事后从合并结果里挑标签，`cities` 数组其实**两个城市都在**（`["Hamptons","London"]`），只是没人拿它去切分。合成断言当初没覆盖「两趟紧挨着」这一种排列，7 组用例里两趟行程那组是相隔两周的 | 新增 `sameDestination()` 作为合并的第二个判据：**先比名字、坐标只作兜底**，这个顺序两个方向上都在救命——同一份真实日历里 "Hamptons" 在一个事件上被地理编码到 East Hampton NY、在另一个上被编码到 Auburndale, Florida（相距 1500km），坐标优先会把一个周末劈成两趟；反过来 "London" 和 "Westminster" 是同一周的两个词，靠 `AWAY_RADIUS_KM`(120km) 吸收。两个不同名字又没有坐标可对照时判为不同——那正是这个函数存在的理由。每个 run 与它**最先学到**的目的地（anchor）比较，而不是与前一个事件比，否则会逐城漂移。另修了同一处的**日期争夺**：两趟紧挨着时，中间那班晚班机既是前一趟的返程腿又是后一趟的出发腿，加边后两边会同时认领同一天——而「一个日期只有一条计划」(6.2) 下两趟会各排各的。改成**先给所有 run 统一加边、再成对解冲突**，统一按「离开的那天属于要去的地方」判给后一趟。7 组新断言覆盖：相邻双城、同城空档、同名不同坐标、异名近距离、容器重叠、中间航班归属、全程在家 |
+| 26 | `/home`（以及 `/plan`）里对某个 segment 点 “Use saved” 换成保存过的 Look、存盘后返回主页，正文的文字解释还是原来 AI 生成时写的那段，和换上去的新单品对不上（用户原话：“use saved 选择了 outfit 之后回到 homepage 文字原因解释没有随之改变”） | `update_outfit_plan_segment_from_canvas`（section 20，Canvas 手动编辑 segment 的唯一写入口）只更新了 `saved_outfit_id`/`source_outfit_id`，从没碰过 `reasoning`/`change_from_previous`——这两列是模型生成计划时写的，手动换装完全绕过了它们。不是客户端状态没刷新：数据库那一行本身就没变，哪怕重新 `GET /api/ai/daily` 也读回旧文案 | RPC 里先比对新旧 item_id 集合（顺序无关，只挪动位置/缩放不算换装），**真的换了单品才**覆盖文案：换成保存的 Look 写 “Reused from your saved outfit “<name>.””，手动加减单品写 “Manually edited on the Canvas.”，同时清空这一段和下一段的 `change_from_previous`（下一段那句描述的是“从被换掉的旧搭配过渡”，同样过期了）。RPC 把新文案连同 `nextSegmentId`/`nextChangeFromPrevious` 一起塞进返回值，`SegmentCanvasSaveResult` 相应加字段，`/home`、`/plan` 的 `applyEditedSegment` 都改成用返回值更新本地 state，不再只更新 items/savedOutfitId |
 
 ---
 
@@ -274,6 +275,7 @@
 - `Done` 只保存计划 segment。未修改的复用保留 `saved_outfit_id`；修改后清掉精确快照链接，但用 section 20 新增的 `source_outfit_id` 记住来源，刷新后也不会丢。
 - 修改后再次点 `Save` 会打开明确的选择弹窗：`Update original` 只覆盖原 Look 的 items/layout、保留名称/folder/notes；`Save as new` 新建一套；也可取消。共享的 `SegmentSaveButton` 让 `/home` 与 `/plan` 行为一致。
 - section 20 新增 `update_outfit_plan_segment_from_canvas()` 与 `save_outfit_plan_segment_choice()`，两个 RPC 都校验当前用户对 plan、source Look 和 wardrobe items 的归属，并在一个事务中完成计划落库和 Look 新建/覆盖。更新原 Look 时，其它仍指向旧快照的 segment 会降级为“based on”而不是错误显示 Saved。
+- `update_outfit_plan_segment_from_canvas()` 现在也在单品集合真的变化时改写 `reasoning`/`change_from_previous`（Debug Log #26）——原先只更新 `saved_outfit_id`/`source_outfit_id`，换成保存的 Look 后正文说明停留在旧文案，回到 `/home`/`/plan` 也读不到新的；`create or replace` 可重复执行，不需要新的 section 号。
 - 单段 AI 重生成会清空 `source_outfit_id`，避免把模型全新结果误当作用户对旧 Look 的修改。
 - **已验证**：`npx tsc --noEmit`、`npm run build` 通过。
 - **未验证**：需先在 Supabase SQL Editor 执行 `schema.sql` section 20，再用真实账号分别走 `/home` 与 `/plan` 的“原样复用 / 修改后另存 / 修改后更新原 Look / 刷新后来源仍在”四条路径。
@@ -394,6 +396,19 @@
 
 **已验证**：`tsc --noEmit` / `npm run lint` / `npm run build` 全过。
 **未验证**：浏览器里的一切——拖拽手感、理由面板、卡片图片是否真的渲染出来（`/home` 新增了一条 `outfits` + `outfit_items` + `wardrobe_items` 的联表查询，limit 20）。
+
+---
+
+### 任务 6: `/home` 视觉重设计（`docs/design-tokens.md`） — ✅ 代码完成，⚠️ 未真实验证（2026-09-24）
+
+按已确认的设计稿（`docs/design-tokens.md`，源自 thestylethatbindsus.com 品牌网站）把 `/home` 改到新的 token 体系：新增 `surface-100`(白)/`surface-200`(暖灰)/`ink`/`ink-muted`/`ink-inverse`/`accent`/`accent-soft`/`border` 色板、Ibarra Real Nova + Public Sans 两字重字体（`next/font/google`，暴露 `--font-serif`/`--font-sans`）、`display`/`heading`/`subheading`/`body`/`body-small`/`label`/`button` 字号阶梯、`space-1..5` 间距阶梯、按角色分层的圆角体系（`radius-full` 只留给 Save/Saved 药丸和 Confirm CTA 两处）。
+
+**两处命名冲突，问过用户后按其选择落地，而不是自己猜**：① `tailwind.config.ts` 原有的 `colors.surface`（`surface-0..900` 灰阶）和新 token 的 `surface-100`/`surface-200` 撞名且颜色不同——用户选择让新 token **覆盖**这两档（写在 `theme.extend.colors` 里 `surface:{...}` 之后，靠 JS 对象字面量顺序让 Tailwind 的颜色拍平逻辑用新值覆盖旧值），`surface-0/50/300-900` 未动。② 字体是根 `layout.tsx` 唯一一份、结构上没法只对 `/home` 生效——用户选择立即全局生效（`font-sans` 从 Inter 换成 Public Sans，影响全部 39 个引用 `surface-*` 的文件和全部 39 个引用 `font-sans`/`font-display` 的文件，不只是 `/home`）。`borderRadius` 覆盖 Tailwind 默认的 `sm/md/lg/none/full` 键同理是全局的（`rounded-*` 在 34 个文件里出现），未单独确认但和前两处是同一类「唯一共享配置文件、没法按路由拆分」的情况，已在当时的回复里说明。
+
+**改动范围**：`tailwind.config.ts`、`src/app/layout.tsx`、`src/app/globals.css`（去掉不再用的 Inter `@import`）、`src/app/(dashboard)/layout.tsx`（`bg-surface-50`→`bg-surface-100`，页面背景，影响全部 dashboard 路由）、`src/app/(dashboard)/home/page.tsx`、`daily-recommendation.tsx`、`style-swipe.tsx`，以及三个被 `/home` 复用的共享组件——`src/components/outfit/segment-save-button.tsx`（Save/Saved 药丸，被 12 个文件引用）、`segment-canvas-editor.tsx`（Adjust 编辑器，`/plan` 同款复用）、`outfit-canvas.tsx` 里 `OutfitCanvas` 的画框 chrome（`/outfits` 同款复用；`ClosetPicker`/`OutfitCollage` 默认样式未动，只在 `/home` 调用处用 `className` 覆盖，把影响面收在 `/home` 内）、`src/components/stylist/review-inbox.tsx`（目前只有 `/home` 引用）。`/plan`、`/outfits`、`/closet`、`/pro`、`/stylist`、`/travel` 等路由本身的页面代码未碰，但会通过上述共享文件、全局 token 和全局背景色间接改变外观。
+
+**已验证**：`npm run lint` / `npm run typecheck` / `npm test`（83 个测试全过，本来就不测 UI）/ `npm run build` 四项按 CI 顺序全过。
+**未验证**：浏览器里的实际效果——没有跑起来看过 `/home` 和上述共享组件在其它路由（`/plan`、`/outfits` 等）里的样子，颜色覆盖和字体切换是否如预期渲染需要真人打开页面确认。
 
 ---
 
