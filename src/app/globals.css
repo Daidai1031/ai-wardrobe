@@ -121,6 +121,12 @@
   animation: home-splash-text 2000ms ease-out both;
 }
 
+/* Style swipe card (swipe-deck.tsx): invites a drag on pointer devices only.
+   Touch fires a synthetic hover on tap with no matching leave, so an ungated
+   hover:animate- risks looking stuck; gating to real hover devices avoids that
+   and doubles as the reduced-motion off-switch for anyone without a mouse.
+   Plain CSS rather than a Tailwind animate- utility, since that gating can't
+   be expressed as a class the content scanner would keep. */
 /* Desktop dashboard: no page scrollbar, so the right-edge Mailbox tab sits against the screen
    edge instead of against a 15px scrollbar track. Wheel, trackpad and keyboard scrolling are
    unchanged; inner scrollers (panels, strips) keep theirs. */

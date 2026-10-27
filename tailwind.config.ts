@@ -73,19 +73,6 @@ const config: Config = {
         "space-4": "21px",
         "space-5": "34px",
       },
-      keyframes: {
-        // One decaying shake, for a card the pointer just landed on. Ends at rest with no
-        // fill, so the inline transform the deck drives for dragging takes over cleanly.
-        "card-wiggle": {
-          "0%, 100%": { transform: "translateX(0) rotate(0deg)" },
-          "25%": { transform: "translateX(-0.5px) rotate(-0.45deg)" },
-          "55%": { transform: "translateX(0.5px) rotate(0.35deg)" },
-          "80%": { transform: "translateX(0) rotate(-0.12deg)" },
-        },
-      },
-      animation: {
-        "card-wiggle": "card-wiggle 700ms ease-in-out",
-      },
       borderRadius: {
         none: "0px",
         sm: "8px", // nested image inside a card — derived (radius-md − space-2)

@@ -27,8 +27,8 @@ export const GESTURE_COPY: Record<
 > = {
   like: { verb: "Like", hint: "Save to lookbook", direction: "right" },
   dislike: { verb: "Nope", hint: "Tell us why", direction: "left" },
-  wear_now: { verb: "Wearing this", hint: "Strongest signal", direction: "up" },
-  later: { verb: "Not now", hint: "Wrong season / not today", direction: "down" },
+  wear_now: { verb: "Wear", hint: "Strongest signal", direction: "up" },
+  later: { verb: "Later", hint: "Wrong season / not today", direction: "down" },
 };
 
 /**
