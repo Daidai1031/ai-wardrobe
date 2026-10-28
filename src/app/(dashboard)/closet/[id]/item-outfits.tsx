@@ -69,11 +69,11 @@ export function ItemOutfits({
             <Sparkles size={17} className="text-brand-600" />
             <h2 className="text-lg font-semibold text-surface-900">Recommended Looks</h2>
           </div>
-          <p className="mt-1 text-sm text-surface-500">
-            {outfits.length > 0
-              ? "Showing up to 3 Looks you have already saved with this piece."
-              : "This piece has not been used in a saved Look yet."}
-          </p>
+          {outfits.length > 0 && (
+            <p className="mt-1 text-sm text-surface-500">
+              Showing up to 3 Looks you have already saved with this piece.
+            </p>
+          )}
         </div>
         {outfits.length > 0 && (
           <Link

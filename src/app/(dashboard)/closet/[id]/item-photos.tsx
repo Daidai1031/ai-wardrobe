@@ -324,11 +324,6 @@ export function ItemPhotos({
         />
       )}
 
-      <p className="text-xs text-surface-400 text-center">
-        Reference photos help preserve the exact item. Label photos only fill brand and
-        material details; they are never copied into the enhanced image.
-      </p>
-
       {item.original_url !== item.clean_url && item.clean_url && (
         <p className="text-xs text-surface-400 text-center">
           Background removed by AI ·{" "}

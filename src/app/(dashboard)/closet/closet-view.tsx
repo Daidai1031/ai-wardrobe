@@ -101,67 +101,9 @@ export function ClosetView({
 
   return (
     <div>
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
-        <div>
-          <h1 className="text-xl font-semibold text-surface-900">My Closet</h1>
-          <p className="text-sm text-surface-500 mt-0.5">
-            {totalItems} item{totalItems !== 1 ? "s" : ""}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {selecting ? (
-            <>
-              <button
-                onClick={deleteSelected}
-                disabled={selectedIds.size === 0}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-red-600 text-white hover:bg-red-700 disabled:opacity-40 disabled:hover:bg-red-600 transition-colors"
-              >
-                <Trash2 size={16} />
-                Delete{selectedIds.size > 0 ? ` (${selectedIds.size})` : ""}
-              </button>
-              <button
-                onClick={cancelSelecting}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-surface-200 text-surface-700 hover:bg-surface-300 transition-colors"
-              >
-                Cancel
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                onClick={() => setSelecting(true)}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border border-surface-200 text-surface-700 hover:bg-surface-100 transition-colors"
-              >
-                <ListChecks size={16} />
-                Select
-              </button>
-              <button
-                onClick={() => setShowUpload(!showUpload)}
-                className={cn(
-                  "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
-                  showUpload
-                    ? "bg-surface-200 text-surface-700"
-                    : "bg-surface-900 text-white hover:bg-surface-800"
-                )}
-              >
-                {showUpload ? <X size={16} /> : <Plus size={16} />}
-                {showUpload ? "Close" : "Add item"}
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* Upload zone */}
-      {showUpload && (
-        <div className="mb-6">
-          <UploadZone />
-        </div>
-      )}
-
-      {/* Category filter */}
-      <div className="flex gap-4 mb-4 overflow-x-auto scrollbar-hide border-b border-border max-lg:-mx-4 max-lg:px-4">
+      {/* One toolbar: categories on the left, actions on the right. The count lives in "All (n)". */}
+      <div className="mb-3 flex items-end justify-between gap-4 border-b border-border max-lg:flex-col-reverse max-lg:items-stretch max-lg:gap-3 max-lg:border-b-0">
+        <div className="flex min-w-0 gap-4 overflow-x-auto scrollbar-hide max-lg:-mx-4 max-lg:border-b max-lg:border-border max-lg:px-4">
         <button
           onClick={() => setFilter("category", undefined)}
           className={cn(
@@ -189,8 +131,59 @@ export function ClosetView({
         ))}
       </div>
 
+        <div className="flex shrink-0 items-center gap-2 pb-2 max-lg:self-end max-lg:pb-0">
+          {selecting ? (
+            <>
+              <button
+                onClick={deleteSelected}
+                disabled={selectedIds.size === 0}
+                className="flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-[13px] font-medium bg-red-600 text-white hover:bg-red-700 disabled:opacity-40 disabled:hover:bg-red-600 transition-colors"
+              >
+                <Trash2 size={15} />
+                Delete{selectedIds.size > 0 ? ` (${selectedIds.size})` : ""}
+              </button>
+              <button
+                onClick={cancelSelecting}
+                className="flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-[13px] font-medium bg-surface-200 text-surface-700 hover:bg-surface-300 transition-colors"
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={() => setSelecting(true)}
+                className="flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-[13px] font-medium border border-surface-200 text-surface-700 hover:bg-surface-100 transition-colors"
+              >
+                <ListChecks size={15} />
+                Select
+              </button>
+              <button
+                onClick={() => setShowUpload(!showUpload)}
+                className={cn(
+                  "flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-[13px] font-medium transition-colors",
+                  showUpload
+                    ? "bg-surface-200 text-surface-700"
+                    : "bg-surface-900 text-white hover:bg-surface-800"
+                )}
+              >
+                {showUpload ? <X size={15} /> : <Plus size={15} />}
+                {showUpload ? "Close" : "Add item"}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Upload zone */}
+      {showUpload && (
+        <div className="mb-6">
+          <UploadZone />
+        </div>
+      )}
+
       {/* Color + Season filters */}
-      <div className="flex flex-wrap gap-x-4 gap-y-3 mb-6">
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 mb-6">
         {colors.length > 0 && (
           <div className="flex items-center gap-1.5">
             <span className="text-xs text-surface-400">Color:</span>

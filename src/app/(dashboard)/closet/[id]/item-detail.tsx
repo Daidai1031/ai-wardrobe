@@ -114,9 +114,6 @@ export function ItemDetail({
               placeholder="e.g. The Grove XXIII Golf Course M Jordan"
               maxLength={200}
             />
-            <p className="mt-1 text-[12px] text-surface-400">
-              Used everywhere this item is named. Leave blank to use the AI category.
-            </p>
           </div>
 
           <div>
@@ -131,9 +128,6 @@ export function ItemDetail({
               placeholder="Fit, size, origin, comfort, or how you prefer to wear it…"
               maxLength={1000}
             />
-            <p className="mt-1 text-[12px] text-surface-400">
-              Included as context when AI builds recommendations.
-            </p>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
