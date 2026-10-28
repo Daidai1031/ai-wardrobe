@@ -5,7 +5,9 @@ import { getAccessibleClient, logWardrobeAccess } from "@/lib/stylist/access";
 import { readClientOverview } from "@/lib/stylist/client-overview";
 import { readMessagesForStylist } from "@/lib/stylist/messages";
 import { projectOccasionsForStylist } from "@/lib/stylist/occasion-projection";
-import type { WardrobeItem } from "@/types/database";
+import { readRotationLimits } from "@/lib/planning/plans";
+import { detectGaps } from "@/lib/shop/detect-gaps";
+import type { ShoppingTier, WardrobeItem } from "@/types/database";
 import { ClientConsole, type ConsoleOutfit, type ConsoleReview } from "./client-console";
 
 export const dynamic = "force-dynamic";
@@ -36,7 +38,16 @@ export default async function ProClientPage({
   const client = await getAccessibleClient(user.id, clientId);
   if (!client) notFound();
 
-  const [{ data: wardrobeItems }, { data: outfits }, { data: reviews }, occasions, overview, messages] =
+  const [
+    { data: wardrobeItems },
+    { data: outfits },
+    { data: reviews },
+    occasions,
+    overview,
+    messages,
+    { data: clientProfile },
+    rotationLimits,
+  ] =
     await Promise.all([
       supabase
         .from("wardrobe_items")
@@ -64,6 +75,9 @@ export default async function ProClientPage({
       projectOccasionsForStylist(clientId),
       readClientOverview(clientId),
       readMessagesForStylist(clientId),
+      // Her own session: 18b makes the client's whole profile row readable during the window.
+      supabase.from("profiles").select("shopping_tier").eq("id", clientId).maybeSingle(),
+      readRotationLimits(supabase, clientId),
     ]);
 
   await logWardrobeAccess(user.id, clientId, "console:view");
@@ -99,6 +113,8 @@ export default async function ProClientPage({
         messages={messages}
         accessExpiresAt={client.accessExpiresAt}
         shareOccasions={client.shareOccasions}
+        closetGaps={detectGaps((wardrobeItems || []) as WardrobeItem[], rotationLimits)}
+        shoppingTier={(clientProfile?.shopping_tier as ShoppingTier | null) ?? null}
       />
     </div>
   );

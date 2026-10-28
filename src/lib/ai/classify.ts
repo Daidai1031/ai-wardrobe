@@ -15,6 +15,18 @@ const VALID_CATEGORIES: ItemCategory[] = [
   "Tops", "Bottoms", "Dresses", "Outerwear", "Shoes", "Bags", "Accessories",
 ];
 
+const SWEATER_SUBCATEGORY = /\b(?:cardigan|sweater|pullover|jumper|knitwear|turtleneck)\b/i;
+
+function normalizeCategory(category: unknown, subcategory: unknown): ItemCategory {
+  if (typeof subcategory === "string" && SWEATER_SUBCATEGORY.test(subcategory)) {
+    return "Tops";
+  }
+
+  return VALID_CATEGORIES.includes(category as ItemCategory)
+    ? (category as ItemCategory)
+    : "Accessories";
+}
+
 const CLASSIFICATION_PROMPT = `You are an expert fashion stylist AI. Analyze this clothing/accessory image and return a JSON object with these fields:
 
 {
@@ -29,7 +41,10 @@ const CLASSIFICATION_PROMPT = `You are an expert fashion stylist AI. Analyze thi
   "confidence": 0.0 to 1.0 indicating how confident you are in the classification
 }
 
-Category rule: anything worn as a LAYER over something else — cardigans, sweaters, blazers, vests, jackets, coats — is "Outerwear", not "Tops". "Tops" is only for the garment worn directly against the body. Planning treats these differently: outerwear may be layered over a dress, tops may not, and outerwear is dropped on hot days.
+Category rules:
+- "Tops" includes every sweater and knitted top: sweaters, pullovers, jumpers, cardigans, sweater vests, and turtlenecks. This remains true when the garment is worn as a layer.
+- "Outerwear" is reserved for garments such as jackets, coats, blazers, and non-knit outer layers. Never classify a sweater or cardigan as "Outerwear".
+- Do not decide between "Tops" and "Outerwear" solely from whether the garment can be layered.
 
 Return ONLY valid JSON, no markdown fences, no explanation.`;
 
@@ -77,13 +92,10 @@ export async function classifyItem(imageUrl: string): Promise<AIClassification> 
   try {
     const parsed = JSON.parse(cleaned);
 
-    // Validate category
-    if (!VALID_CATEGORIES.includes(parsed.category)) {
-      parsed.category = "Accessories"; // safe fallback
-    }
+    const category = normalizeCategory(parsed.category, parsed.subcategory);
 
     return {
-      category: parsed.category,
+      category,
       subcategory: parsed.subcategory || "",
       color: parsed.color || "unknown",
       colors: Array.isArray(parsed.colors) ? parsed.colors : [parsed.color || "unknown"],

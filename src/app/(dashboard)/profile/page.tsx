@@ -1,9 +1,9 @@
+import { redirect } from "next/navigation";
 import { createServerSupabase } from "@/lib/supabase/server";
 import { getConnectionStatus } from "@/lib/google/client";
 import { ProfileForm } from "./profile-form";
 import { GoogleConnections } from "./google-connections";
 import { StylistSharing } from "./stylist-sharing";
-import { ClosetAnalytics } from "./closet-analytics";
 import { ProfileTabs, type ProfileTab } from "./profile-tabs";
 import { SignOutButton } from "./sign-out-button";
 
@@ -34,9 +34,7 @@ export default async function ProfilePage({
   const initialTab: ProfileTab =
     calendarResult !== undefined || requestedTab === "privacy"
       ? "privacy"
-      : requestedTab === "analytics"
-        ? "analytics"
-        : "profile";
+      : "profile";
 
   return (
     <ProfileTabs
@@ -50,7 +48,6 @@ export default async function ProfilePage({
             </div>
           </div>
         ),
-        analytics: <ClosetAnalytics userId={user.id} />,
         privacy: (
           <div className="space-y-6">
             <GoogleConnections

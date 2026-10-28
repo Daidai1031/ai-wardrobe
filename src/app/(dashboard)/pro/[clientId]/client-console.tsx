@@ -54,6 +54,8 @@ import {
 } from "@/components/outfit/outfit-canvas";
 import type { StylistClientOverview } from "@/lib/stylist/client-overview";
 import { MessagesSection } from "./messages-section";
+import { GapRow, TIER_LABEL } from "@/components/shop/gap-row";
+import { MIN_ITEMS_FOR_GAPS, type ClosetGap } from "@/lib/shop/detect-gaps";
 import type { StylistOccasionProjection } from "@/lib/stylist/occasion-projection";
 import { wardrobeItemLabel, wardrobeItemName } from "@/lib/wardrobe/item-label";
 import { wardrobeItemImage } from "@/lib/wardrobe/item-image";
@@ -61,6 +63,7 @@ import { cn } from "@/lib/utils";
 import {
   ITEM_CATEGORIES,
   type ItemCategory,
+  type ShoppingTier,
   type StylistMessage,
   type StylistReviewStatus,
   type StylistReviewTargetKind,
@@ -156,6 +159,8 @@ export function ClientConsole({
   messages,
   accessExpiresAt,
   shareOccasions,
+  closetGaps,
+  shoppingTier,
 }: {
   clientId: string;
   clientName: string;
@@ -167,6 +172,8 @@ export function ClientConsole({
   messages: StylistMessage[];
   accessExpiresAt: string;
   shareOccasions: boolean;
+  closetGaps: ClosetGap[];
+  shoppingTier: ShoppingTier | null;
 }) {
   const router = useRouter();
   const itemById = useMemo(
@@ -624,6 +631,8 @@ export function ClientConsole({
           shareOccasions={shareOccasions}
           itemCount={wardrobeItems.length}
           lookCount={outfits.length}
+          closetGaps={closetGaps}
+          shoppingTier={shoppingTier}
         />
       )}
 
@@ -887,6 +896,8 @@ function OverviewPanel({
   shareOccasions,
   itemCount,
   lookCount,
+  closetGaps,
+  shoppingTier,
 }: {
   clientId: string;
   clientName: string;
@@ -897,6 +908,8 @@ function OverviewPanel({
   shareOccasions: boolean;
   itemCount: number;
   lookCount: number;
+  closetGaps: ClosetGap[];
+  shoppingTier: ShoppingTier | null;
 }) {
   const { profile, sessions } = overview;
   const now = Date.now();
@@ -1058,6 +1071,31 @@ function OverviewPanel({
             )}
           </div>
         </div>
+      </section>
+
+      {/* The same rules as the client's Gaps & shop tab, run over the closet she can already
+          see. Wardrobe-derived only, so the calendar switches don't gate it. The client's own
+          brand suggestions are not shown: shopping_recommendations has no stylist policy. */}
+      <section className="rounded-2xl border border-surface-200 bg-white p-4">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-sm font-semibold text-surface-900">Closet gaps</h2>
+          <p className="text-xs text-surface-500">
+            Price range: {shoppingTier ? TIER_LABEL[shoppingTier] : "not chosen yet"}
+          </p>
+        </div>
+        {itemCount < MIN_ITEMS_FOR_GAPS ? (
+          <p className="mt-2 text-xs text-surface-400">
+            Too few pieces uploaded to judge ({itemCount} of at least {MIN_ITEMS_FOR_GAPS}).
+          </p>
+        ) : closetGaps.length === 0 ? (
+          <p className="mt-2 text-xs text-surface-400">No obvious gaps by the closet rules.</p>
+        ) : (
+          <ul className="mt-1">
+            {closetGaps.map((gap) => (
+              <GapRow key={gap.key} gap={gap} />
+            ))}
+          </ul>
+        )}
       </section>
 
       <MessagesSection clientId={clientId} clientName={clientName} messages={messages} />

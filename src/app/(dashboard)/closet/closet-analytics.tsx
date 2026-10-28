@@ -38,9 +38,6 @@ export async function ClosetAnalytics({ userId }: { userId: string }) {
 
   return (
     <section>
-      <h2 className="text-lg font-semibold text-surface-900 mb-1">Closet analytics</h2>
-      <p className="text-sm text-surface-500 mb-6">Understand your wardrobe</p>
-
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8">
         {statBox("Total Items", total)}

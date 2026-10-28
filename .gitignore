@@ -27,3 +27,7 @@ supabase/.temp/
 # 扫描输出
 .secrets.baseline
 scan-result.json
+
+# 公司内部品牌清单(不上传 GitHub;应用从数据库读取,见 shop_brands)
+docs/BRANDS TO SHOP.md
+data/private/

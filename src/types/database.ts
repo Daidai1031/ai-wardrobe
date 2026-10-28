@@ -1,5 +1,9 @@
 // ── Core domain types matching Supabase schema ──
 
+export type ShoppingTier = "lower" | "contemporary" | "designer";
+
+export const SHOPPING_TIERS: ShoppingTier[] = ["lower", "contemporary", "designer"];
+
 export type BodyShape = "pear" | "apple" | "hourglass" | "rectangle" | "inverted_triangle";
 
 export interface Profile {
@@ -21,6 +25,8 @@ export interface Profile {
   // holding ONLY the categories the user changed. Merged over the defaults by
   // resolveRotationLimits(); never read raw.
   rotation_limits: Record<string, number>;
+  // Schema section 26: the user's own price tier for shopping recommendations.
+  shopping_tier: ShoppingTier | null;
   height_cm: number | null;
   weight_kg: number | null;
   body_shape: BodyShape | null;
@@ -420,4 +426,23 @@ export interface StylistMessage {
   created_at: string;
   /** When the recipient first saw it; null while unread. */
   read_at: string | null;
+}
+
+/**
+ * A cached closet-gap recommendation (schema section 26). The gap is detected in
+ * TypeScript; the model only wrote `summary` and picked `brands` from the private
+ * `shop_brands` table. `dismissed` stays dismissed.
+ */
+export interface ShoppingRecommendation {
+  id: string;
+  user_id: string;
+  gap_key: string;
+  gap: Record<string, unknown>;
+  summary: string | null;
+  brands: { name: string; url: string }[];
+  tier: ShoppingTier | null;
+  closet_fingerprint: string | null;
+  status: "new" | "saved" | "dismissed";
+  created_at: string;
+  updated_at: string;
 }
