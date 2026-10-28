@@ -23,8 +23,14 @@
 
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, Send, X } from "lucide-react";
+import { AlertTriangle, Loader2, Send, X } from "lucide-react";
 import { ReviewStrip, type Action } from "@/components/stylist/review-inbox";
+import {
+  dismissPlanNotice,
+  readPlanNotices,
+  subscribePlanNotices,
+  type PlanNotice,
+} from "@/lib/planning/plan-notices";
 import type { StylistReviewCard } from "@/lib/stylist/reviews";
 import type { StylistMessage } from "@/types/database";
 import { cn } from "@/lib/utils";
@@ -94,6 +100,14 @@ export function StylistMailbox({
 
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+
+  // Planner notices (e.g. repeats a week couldn't avoid) arrive from /plan in this tab.
+  // Read after mount so the server render and the first client render match.
+  const [notices, setNotices] = useState<PlanNotice[]>([]);
+  useEffect(() => {
+    setNotices(readPlanNotices());
+    return subscribePlanNotices(setNotices);
+  }, []);
 
   // null until the user has moved it: the CSS default (top right) applies, which also keeps
   // the server render and the first client render identical.
@@ -183,8 +197,8 @@ export function StylistMailbox({
   const newMessages = thread.filter((m) => unreadAtLoad.has(m.id));
 
   const hasUnreadMessages = unreadAtLoad.size > 0 && !messagesSeen;
-  const showDot = pending.length > 0 || hasUnreadMessages;
-  const newCount = pending.length + newMessages.length;
+  const showDot = pending.length > 0 || hasUnreadMessages || notices.length > 0;
+  const newCount = pending.length + newMessages.length + notices.length;
 
   const history: HistoryEntry[] = [
     ...answered.map((review) => ({ kind: "review" as const, at: review.createdAt, review })),
@@ -386,6 +400,9 @@ export function StylistMailbox({
                     You&apos;re all caught up.
                   </p>
                 )}
+                {notices.map((notice) => (
+                  <PlanNoticeCard key={notice.id} notice={notice} />
+                ))}
                 {newMessages.map((message) => (
                   <MessageBubble key={message.id} message={message} />
                 ))}
@@ -449,6 +466,34 @@ export function StylistMailbox({
         </div>
       )}
     </>
+  );
+}
+
+/** A note from the planner itself, not the stylist; dismissing it removes it for the session. */
+function PlanNoticeCard({ notice }: { notice: PlanNotice }) {
+  return (
+    <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3">
+      <div className="flex items-start justify-between gap-2">
+        <p className="flex items-center gap-1.5 text-xs font-semibold text-amber-800">
+          <AlertTriangle size={13} /> {notice.title}
+        </p>
+        <button
+          type="button"
+          onClick={() => dismissPlanNotice(notice.id)}
+          aria-label="Dismiss"
+          className="p-0.5 text-amber-700 transition-colors hover:text-amber-900"
+        >
+          <X size={13} />
+        </button>
+      </div>
+      <ul className="mt-1.5 space-y-0.5">
+        {notice.lines.map((line) => (
+          <li key={line} className="text-[12px] leading-relaxed text-amber-700">
+            {line}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

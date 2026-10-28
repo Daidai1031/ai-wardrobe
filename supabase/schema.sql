@@ -2469,6 +2469,195 @@ grant execute on function public.save_outfit_plan_segment_choice(uuid, jsonb, te
 notify pgrst, 'reload schema';
 
 -- ============================================================
+-- 25. ADD AND DELETE PLAN SEGMENTS
+-- Re-runnable against an existing database.
+--
+-- /plan lets the user add another look or remove an unnecessary one. Calendar
+-- events stay assigned by the deterministic occasion-grouping logic; there is no
+-- manual event reassignment control. These mutations touch segment positions and
+-- event arrays together, so they live in RPCs rather than a chain of browser writes
+-- that could stop halfway through. Position rows are parked before shifting because
+-- the (outfit_plan_id, position) unique constraint is immediate.
+-- ============================================================
+create or replace function public.add_outfit_plan_segment(
+  p_plan_id uuid,
+  p_after_segment_id uuid
+)
+returns uuid
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_plan public.outfit_plans%rowtype;
+  v_anchor public.outfit_plan_segments%rowtype;
+  v_position int;
+  v_segment_id uuid;
+begin
+  if v_user_id is null then
+    raise exception 'Unauthorized';
+  end if;
+
+  select * into v_plan
+  from public.outfit_plans
+  where id = p_plan_id and user_id = v_user_id
+  for update;
+
+  if not found then
+    raise exception 'Plan not found';
+  end if;
+  if v_plan.status = 'worn' then
+    raise exception 'A worn plan cannot be changed';
+  end if;
+
+  select * into v_anchor
+  from public.outfit_plan_segments
+  where id = p_after_segment_id and outfit_plan_id = p_plan_id;
+
+  if not found then
+    raise exception 'Anchor segment not found';
+  end if;
+
+  v_position := v_anchor.position + 1;
+
+  update public.outfit_plan_segments
+  set position = position + 1000000
+  where outfit_plan_id = p_plan_id and position >= v_position;
+
+  insert into public.outfit_plan_segments (
+    outfit_plan_id,
+    position,
+    label,
+    reasoning,
+    change_from_previous,
+    event_ids,
+    saved_outfit_id,
+    source_outfit_id
+  ) values (
+    p_plan_id,
+    v_position,
+    'New segment',
+    'Starts with the previous segment''s look. Adjust or rebuild it for the extra part of your day.',
+    null,
+    '{}',
+    v_anchor.saved_outfit_id,
+    v_anchor.source_outfit_id
+  ) returning id into v_segment_id;
+
+  insert into public.outfit_plan_segment_items (segment_id, item_id, position, x, y, width)
+  select v_segment_id, item_id, position, x, y, width
+  from public.outfit_plan_segment_items
+  where segment_id = v_anchor.id
+  order by position;
+
+  update public.outfit_plan_segments
+  set position = position - 999999
+  where outfit_plan_id = p_plan_id and position >= v_position + 1000000;
+
+  update public.outfit_plans set updated_at = now() where id = p_plan_id;
+  return v_segment_id;
+end;
+$$;
+
+create or replace function public.delete_outfit_plan_segment(p_segment_id uuid)
+returns void
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_plan public.outfit_plans%rowtype;
+  v_segment public.outfit_plan_segments%rowtype;
+  v_recipient_id uuid;
+  v_following_id uuid;
+  v_count int;
+begin
+  if v_user_id is null then
+    raise exception 'Unauthorized';
+  end if;
+
+  select plans.* into v_plan
+  from public.outfit_plans plans
+  join public.outfit_plan_segments segments on segments.outfit_plan_id = plans.id
+  where segments.id = p_segment_id and plans.user_id = v_user_id
+  for update of plans;
+
+  if not found then
+    raise exception 'Segment not found';
+  end if;
+  if v_plan.status = 'worn' then
+    raise exception 'A worn plan cannot be changed';
+  end if;
+
+  select * into v_segment
+  from public.outfit_plan_segments
+  where id = p_segment_id and outfit_plan_id = v_plan.id;
+
+  select count(*) into v_count
+  from public.outfit_plan_segments
+  where outfit_plan_id = v_plan.id;
+
+  if v_count <= 1 then
+    raise exception 'A plan must keep at least one segment';
+  end if;
+
+  select id into v_recipient_id
+  from public.outfit_plan_segments
+  where outfit_plan_id = v_plan.id and id <> p_segment_id
+  order by abs(position - v_segment.position), position
+  limit 1;
+
+  select id into v_following_id
+  from public.outfit_plan_segments
+  where outfit_plan_id = v_plan.id and position > v_segment.position
+  order by position
+  limit 1;
+
+  update public.outfit_plan_segments recipient
+  set event_ids = coalesce(
+        (
+          select array_agg(distinct event_id)
+          from unnest(recipient.event_ids || v_segment.event_ids) as event_id
+        ),
+        '{}'::uuid[]
+      ),
+      updated_at = now()
+  where id = v_recipient_id;
+
+  delete from public.outfit_plan_segments where id = p_segment_id;
+
+  update public.outfit_plan_segments
+  set position = position + 1000000
+  where outfit_plan_id = v_plan.id and position > v_segment.position;
+
+  update public.outfit_plan_segments
+  set position = position - 1000001
+  where outfit_plan_id = v_plan.id and position > v_segment.position + 1000000;
+
+  if v_following_id is not null then
+    update public.outfit_plan_segments
+    set change_from_previous = null, updated_at = now()
+    where id = v_following_id;
+  end if;
+
+  update public.outfit_plan_segments
+  set change_from_previous = null, updated_at = now()
+  where outfit_plan_id = v_plan.id and position = 0;
+
+  update public.outfit_plans set updated_at = now() where id = v_plan.id;
+end;
+$$;
+
+revoke execute on function public.add_outfit_plan_segment(uuid, uuid) from public, anon;
+grant execute on function public.add_outfit_plan_segment(uuid, uuid) to authenticated;
+revoke execute on function public.delete_outfit_plan_segment(uuid) from public, anon;
+grant execute on function public.delete_outfit_plan_segment(uuid) to authenticated;
+
+notify pgrst, 'reload schema';
+
+-- ============================================================
 -- 19. USER-DEFINED ROTATION LIMITS
 -- Re-runnable against an existing database.
 --

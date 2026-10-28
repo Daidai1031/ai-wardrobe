@@ -3,17 +3,18 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
-  AlertTriangle,
   CalendarDays,
   CloudSun,
   Layers3,
   Loader2,
   MapPin,
   Pencil,
+  Plus,
   RefreshCw,
   RotateCcw,
   Shirt,
   Sparkles,
+  Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { wardrobeItemLabel } from "@/lib/wardrobe/item-label";
@@ -24,6 +25,7 @@ import {
   type SegmentCanvasSaveResult,
 } from "@/components/outfit/segment-canvas-editor";
 import { SegmentSaveButton } from "@/components/outfit/segment-save-button";
+import { publishPlanNotice } from "@/lib/planning/plan-notices";
 import { RotationSettings } from "./rotation-settings";
 import type {
   DailyOccasion,
@@ -67,9 +69,11 @@ export function WeekView({
   const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
   const [reusingSegmentId, setReusingSegmentId] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [structureAction, setStructureAction] = useState<string | null>(null);
+  const supabase = useMemo(() => createClient(), []);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (showLoading = true) => {
+    if (showLoading) setLoading(true);
     try {
       const response = await fetch("/api/ai/weekly", { cache: "no-store" });
       const next = (await response.json()) as WeeklyResponse;
@@ -79,7 +83,7 @@ export function WeekView({
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Couldn't load the week.");
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   }, []);
 
@@ -131,6 +135,16 @@ export function WeekView({
       if (!response.ok || next.error) throw new Error(next.error || "Couldn't plan the week.");
 
       setData(next);
+      // Rotation rules the generator couldn't satisfy go to the mailbox rather than the
+      // page: shown rather than swallowed, since a repeat the user can see explained
+      // reads as a closet limitation and an unexplained one as the planner being careless.
+      if (next.warnings && next.warnings.length > 0) {
+        publishPlanNotice({
+          id: "weekly-repeats",
+          title: "Couldn't avoid every repeat this week",
+          lines: next.warnings,
+        });
+      }
       if (next.message) {
         toast.error(next.message);
       } else {
@@ -178,6 +192,50 @@ export function WeekView({
     } finally {
       setRegeneratingSegmentId(null);
     }
+  }
+
+  async function addSegment(day: WeeklyDay) {
+    if (!day.planId || day.segments.length === 0) return;
+    const after = day.segments[day.segments.length - 1];
+    setStructureAction(`add:${day.date}`);
+    const { error } = await supabase.rpc("add_outfit_plan_segment", {
+      p_plan_id: day.planId,
+      p_after_segment_id: after.id,
+    });
+
+    if (error) {
+      toast.error(error.message || "Couldn't add a segment");
+    } else {
+      toast.success("Segment added. Adjust or rebuild the new look when you're ready.");
+      await load(false);
+    }
+    setStructureAction(null);
+  }
+
+  async function deleteSegment(day: WeeklyDay, segment: DailySegmentResponse) {
+    if (!day.planId || day.segments.length <= 1) return;
+    const eventCount = day.occasions.filter((occasion) =>
+      segment.eventIds.includes(occasion.id)
+    ).length;
+    const confirmed = window.confirm(
+      eventCount > 0
+        ? `Delete “${segment.label}”? Its ${eventCount} event${eventCount === 1 ? "" : "s"} will move to the closest segment.`
+        : `Delete “${segment.label}”?`
+    );
+    if (!confirmed) return;
+
+    setStructureAction(`delete:${segment.id}`);
+    const { error } = await supabase.rpc("delete_outfit_plan_segment", {
+      p_segment_id: segment.id,
+    });
+
+    if (error) {
+      toast.error(error.message || "Couldn't delete that segment");
+    } else {
+      toast.success("Segment deleted");
+      await load(false);
+    }
+    setStructureAction(null);
   }
 
   function applyEditedSegment(segmentId: string, result: SegmentCanvasSaveResult) {
@@ -300,24 +358,6 @@ export function WeekView({
         </div>
       </div>
 
-      {/* Rotation rules the generator couldn't satisfy. Shown rather than swallowed:
-          a repeat the user can see explained reads as a closet limitation, an
-          unexplained one reads as the planner being careless. */}
-      {data.warnings && data.warnings.length > 0 && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-          <p className="flex items-center gap-1.5 text-xs font-semibold text-amber-800">
-            <AlertTriangle size={13} /> Couldn&apos;t avoid every repeat this week
-          </p>
-          <ul className="mt-1.5 space-y-0.5">
-            {data.warnings.map((warning) => (
-              <li key={warning} className="text-[12px] leading-relaxed text-amber-700">
-                {warning}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
       {/* Seven columns on wide screens, scrolling horizontally rather than reflowing —
           a week that wraps onto two rows stops reading as a week. */}
       <div className="-mx-1 overflow-x-auto px-1 pb-1 max-lg:-mx-4 max-lg:px-4 max-lg:scrollbar-hide">
@@ -422,6 +462,9 @@ export function WeekView({
           day={selected}
           shareOccasions={Boolean(data.stylistShareOccasions)}
           onCalendarChanged={load}
+          structureAction={structureAction}
+          onAddSegment={() => void addSegment(selected)}
+          onDeleteSegment={(segment) => void deleteSegment(selected, segment)}
           regeneratingSegmentId={regeneratingSegmentId}
           onRegenerateSegment={(segment) => void regenerateSegment(selected.date, segment)}
           onEditSegment={(segment, reuseSaved) => {
@@ -459,6 +502,9 @@ function DayDetail({
   day,
   shareOccasions,
   onCalendarChanged,
+  structureAction,
+  onAddSegment,
+  onDeleteSegment,
   regeneratingSegmentId,
   onRegenerateSegment,
   onEditSegment,
@@ -467,6 +513,9 @@ function DayDetail({
   day: WeeklyDay;
   shareOccasions: boolean;
   onCalendarChanged: () => Promise<void>;
+  structureAction: string | null;
+  onAddSegment: () => void;
+  onDeleteSegment: (segment: DailySegmentResponse) => void;
   regeneratingSegmentId: string | null;
   onRegenerateSegment: (segment: DailySegmentResponse) => void;
   onEditSegment: (segment: DailySegmentResponse, reuseSaved: boolean) => void;
@@ -478,27 +527,43 @@ function DayDetail({
     month: "long",
     day: "numeric",
   }).format(new Date(`${day.date}T12:00:00Z`));
+  const structureBusy = structureAction !== null;
 
   return (
     <div className="rounded-xl border border-surface-200 bg-white p-4 sm:p-6">
-      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-        <div>
+      <div className="mb-5">
+        <div className="flex w-full items-center justify-between gap-3">
           <h2 className="text-sm font-semibold text-surface-900">{fullDate}</h2>
-          {day.occasions.length > 0 ? (
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {day.occasions.map((occasion) => (
-                <OccasionChip
-                  key={occasion.id}
-                  occasion={occasion}
-                  shareOccasions={shareOccasions}
-                  onLocationSaved={onCalendarChanged}
-                />
-              ))}
-            </div>
-          ) : (
-            <p className="mt-1 text-xs text-surface-400">Nothing on the calendar</p>
+          {day.status !== "worn" && day.planId && day.segments.length > 0 && (
+            <button
+              type="button"
+              onClick={onAddSegment}
+              disabled={structureBusy || Boolean(regeneratingSegmentId)}
+              className="ml-auto flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg border border-surface-200 px-3 text-xs font-semibold text-surface-700 transition-colors hover:bg-surface-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500 disabled:cursor-not-allowed disabled:text-surface-300"
+            >
+              {structureAction === `add:${day.date}` ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Plus size={14} />
+              )}
+              Add segment
+            </button>
           )}
         </div>
+        {day.occasions.length > 0 ? (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {day.occasions.map((occasion) => (
+              <OccasionChip
+                key={occasion.id}
+                occasion={occasion}
+                shareOccasions={shareOccasions}
+                onLocationSaved={onCalendarChanged}
+              />
+            ))}
+          </div>
+        ) : (
+          <p className="mt-1 text-xs text-surface-400">Nothing on the calendar</p>
+        )}
       </div>
 
       {day.segments.length === 0 ? (
@@ -508,7 +573,10 @@ function DayDetail({
       ) : (
         <div className="space-y-5">
           {day.segments.map((segment, index) => (
-            <section key={segment.id} className="grid gap-4 sm:grid-cols-[minmax(0,13rem)_1fr] sm:items-start">
+            <section
+              key={segment.id}
+              className="grid gap-4 sm:grid-cols-[minmax(0,13rem)_1fr] sm:items-start"
+            >
               <OutfitCollage items={segment.items} layouts={layoutsFromRows(segment.items)} />
               <div className="space-y-2">
                 <div className="flex flex-wrap items-start justify-between gap-2">
@@ -522,7 +590,7 @@ function DayDetail({
                     <div className="flex flex-wrap items-center justify-end gap-1.5">
                       <button
                         onClick={() => onRegenerateSegment(segment)}
-                        disabled={Boolean(regeneratingSegmentId)}
+                        disabled={Boolean(regeneratingSegmentId) || structureBusy}
                         title="Rebuild only this look"
                         className="rounded-lg border border-surface-200 p-1.5 text-surface-400 transition-colors hover:text-surface-700 disabled:opacity-40"
                       >
@@ -534,7 +602,7 @@ function DayDetail({
                       </button>
                       <button
                         onClick={() => onEditSegment(segment, true)}
-                        disabled={Boolean(regeneratingSegmentId)}
+                        disabled={Boolean(regeneratingSegmentId) || structureBusy}
                         title="Replace this look with one of your saved outfits"
                         className="flex items-center gap-1.5 rounded-lg border border-surface-200 px-2.5 py-1.5 text-xs font-medium text-surface-600 hover:bg-surface-50 disabled:opacity-40"
                       >
@@ -543,7 +611,7 @@ function DayDetail({
                       </button>
                       <button
                         onClick={() => onEditSegment(segment, false)}
-                        disabled={Boolean(regeneratingSegmentId)}
+                        disabled={Boolean(regeneratingSegmentId) || structureBusy}
                         title="Adjust this look on the canvas"
                         className="flex items-center gap-1.5 rounded-lg border border-surface-200 px-2.5 py-1.5 text-xs font-medium text-surface-600 hover:bg-surface-50 disabled:opacity-40"
                       >
@@ -555,6 +623,23 @@ function DayDetail({
                         date={day.date}
                         onSaved={(outfitId) => onSavedSegment(segment, outfitId)}
                       />
+                      {day.segments.length > 1 && (
+                        <div className="ml-1 border-l border-surface-200 pl-2">
+                          <button
+                            type="button"
+                            onClick={() => onDeleteSegment(segment)}
+                            disabled={Boolean(regeneratingSegmentId) || structureBusy}
+                            className="flex min-h-11 items-center gap-1.5 rounded-lg px-3 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500 disabled:cursor-not-allowed disabled:text-surface-300"
+                          >
+                            {structureAction === `delete:${segment.id}` ? (
+                              <Loader2 size={13} className="animate-spin" />
+                            ) : (
+                              <Trash2 size={13} />
+                            )}
+                            Delete segment
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
