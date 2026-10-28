@@ -27,7 +27,9 @@
       "Bash(git commit *)",
       "Bash(git push *)",
       "Bash(node -e \"const p=require\\('./package.json'\\);console.log\\(JSON.stringify\\({dev:p.devDependencies,dep:p.dependencies},null,1\\)\\)\")",
-      "Bash(cd e:/Cornell/26summer/ai-wardrobe)"
+      "Bash(cd e:/Cornell/26summer/ai-wardrobe)",
+      "ClaudeInChromeDomain(claude.ai)",
+      "ClaudeInChromeDomain(localhost:3000)"
     ]
   }
 }
