@@ -3030,3 +3030,113 @@ revoke execute on function public.unmark_outfit_plan_worn(uuid) from public, ano
 grant execute on function public.unmark_outfit_plan_worn(uuid) to authenticated;
 
 notify pgrst, 'reload schema';
+
+-- ============================================================
+-- 26. CLOSET GAPS & SHOPPING (Phase 9-A)
+-- Re-runnable against an existing database. Run each statement group as its own submission.
+--
+-- `shop_brands` is the company's private brand list. RLS is enabled with NO policy, like google_connections: a browser session can never read it, only the service role (the shop route) does. Nothing in the repo holds the list -- it is seeded from the gitignored data/private/brands.json by `npm run seed:brands`. Users only ever see the few brands a recommendation names.
+-- `profiles.shopping_tier` is the user's own price tier. `profiles` is already readable whole-row by the stylist through 18b, so her console sees the tier without any new policy.
+-- `shopping_recommendations` is one row per (user, gap): the gap is detected in TypeScript, the row caches the model's wording plus the brands it picked, and `dismissed` stays dismissed.
+-- ============================================================
+create table if not exists public.shop_brands (id uuid primary key default gen_random_uuid(), name text not null, categories text[] not null default '{}', tier text not null, tags text[] not null default '{}', notes text, priority integer not null default 0, active boolean not null default true, created_at timestamptz not null default now());
+
+-- Higher priority = the company's preferred brand: the shop route offers these to the model first. Added by alter for databases where the table already exists.
+alter table public.shop_brands add column if not exists priority integer not null default 0;
+
+alter table public.shop_brands drop constraint if exists shop_brands_tier_check;
+alter table public.shop_brands add constraint shop_brands_tier_check check (tier in ('lower','contemporary','designer'));
+
+alter table public.shop_brands drop constraint if exists shop_brands_name_tier_key;
+alter table public.shop_brands add constraint shop_brands_name_tier_key unique (name, tier);
+
+alter table public.shop_brands enable row level security;
+
+alter table public.profiles add column if not exists shopping_tier text;
+
+alter table public.profiles drop constraint if exists profiles_shopping_tier_check;
+alter table public.profiles add constraint profiles_shopping_tier_check check (shopping_tier is null or shopping_tier in ('lower','contemporary','designer'));
+
+create table if not exists public.shopping_recommendations (id uuid primary key default gen_random_uuid(), user_id uuid not null references public.profiles(id) on delete cascade, gap_key text not null, gap jsonb not null default '{}'::jsonb, summary text, brands jsonb not null default '[]'::jsonb, tier text, closet_fingerprint text, status text not null default 'new', created_at timestamptz not null default now(), updated_at timestamptz not null default now());
+
+alter table public.shopping_recommendations drop constraint if exists shopping_recommendations_status_check;
+alter table public.shopping_recommendations add constraint shopping_recommendations_status_check check (status in ('new','saved','dismissed'));
+
+alter table public.shopping_recommendations drop constraint if exists shopping_recommendations_gap_key;
+alter table public.shopping_recommendations add constraint shopping_recommendations_gap_key unique (user_id, gap_key);
+
+create index if not exists shopping_recommendations_user_idx on public.shopping_recommendations (user_id);
+
+alter table public.shopping_recommendations enable row level security;
+
+drop policy if exists "shopping_recommendations_select_own" on public.shopping_recommendations;
+create policy "shopping_recommendations_select_own" on public.shopping_recommendations for select using (auth.uid() = user_id);
+drop policy if exists "shopping_recommendations_insert_own" on public.shopping_recommendations;
+create policy "shopping_recommendations_insert_own" on public.shopping_recommendations for insert with check (auth.uid() = user_id);
+drop policy if exists "shopping_recommendations_update_own" on public.shopping_recommendations;
+create policy "shopping_recommendations_update_own" on public.shopping_recommendations for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+drop policy if exists "shopping_recommendations_delete_own" on public.shopping_recommendations;
+create policy "shopping_recommendations_delete_own" on public.shopping_recommendations for delete using (auth.uid() = user_id);
+
+notify pgrst, 'reload schema';
+
+-- ============================================================
+-- 27. PRIVATE FULL-BODY PHOTOS + FLUX VIRTUAL TRY-ON (Phase 8)
+-- Re-runnable against an existing database.
+--
+-- Personal photos and generated try-on images live in a private bucket. The
+-- browser never receives a permanent public URL: pages and API responses use
+-- short-lived signed URLs. One row per exact (photo, outfit contents) acts as
+-- both a paid-call lock and a durable cache, so repeated clicks do not spend
+-- another fal.ai generation.
+-- ============================================================
+alter table public.profiles add column if not exists full_body_photo_path text;
+alter table public.profiles add column if not exists full_body_photo_updated_at timestamptz;
+
+create table if not exists public.virtual_try_ons (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  outfit_id uuid not null references public.outfits(id) on delete cascade,
+  person_photo_path text not null,
+  item_fingerprint text not null,
+  result_path text,
+  model text not null default 'fal-ai/flux-pro/v1/vto',
+  prompt text not null,
+  seed bigint,
+  status text not null default 'processing',
+  error text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.virtual_try_ons drop constraint if exists virtual_try_ons_status_check;
+alter table public.virtual_try_ons add constraint virtual_try_ons_status_check check (status in ('processing','complete','failed'));
+
+alter table public.virtual_try_ons drop constraint if exists virtual_try_ons_input_key;
+alter table public.virtual_try_ons add constraint virtual_try_ons_input_key unique (user_id, outfit_id, person_photo_path, item_fingerprint);
+
+create index if not exists virtual_try_ons_user_idx on public.virtual_try_ons (user_id, created_at desc);
+
+alter table public.virtual_try_ons enable row level security;
+
+drop policy if exists "virtual_try_ons_select_own" on public.virtual_try_ons;
+create policy "virtual_try_ons_select_own" on public.virtual_try_ons for select using (auth.uid() = user_id);
+drop policy if exists "virtual_try_ons_insert_own" on public.virtual_try_ons;
+create policy "virtual_try_ons_insert_own" on public.virtual_try_ons for insert with check (auth.uid() = user_id);
+drop policy if exists "virtual_try_ons_update_own" on public.virtual_try_ons;
+create policy "virtual_try_ons_update_own" on public.virtual_try_ons for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+drop policy if exists "virtual_try_ons_delete_own" on public.virtual_try_ons;
+create policy "virtual_try_ons_delete_own" on public.virtual_try_ons for delete using (auth.uid() = user_id);
+
+insert into storage.buckets (id, name, public) values ('try-on', 'try-on', false) on conflict (id) do update set public = false;
+
+drop policy if exists "Users upload own try-on images" on storage.objects;
+create policy "Users upload own try-on images" on storage.objects for insert with check (bucket_id = 'try-on' and (storage.foldername(name))[1] = auth.uid()::text);
+drop policy if exists "Users read own try-on images" on storage.objects;
+create policy "Users read own try-on images" on storage.objects for select using (bucket_id = 'try-on' and (storage.foldername(name))[1] = auth.uid()::text);
+drop policy if exists "Users update own try-on images" on storage.objects;
+create policy "Users update own try-on images" on storage.objects for update using (bucket_id = 'try-on' and (storage.foldername(name))[1] = auth.uid()::text) with check (bucket_id = 'try-on' and (storage.foldername(name))[1] = auth.uid()::text);
+drop policy if exists "Users delete own try-on images" on storage.objects;
+create policy "Users delete own try-on images" on storage.objects for delete using (bucket_id = 'try-on' and (storage.foldername(name))[1] = auth.uid()::text);
+
+notify pgrst, 'reload schema';
