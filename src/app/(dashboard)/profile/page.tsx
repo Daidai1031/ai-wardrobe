@@ -6,6 +6,8 @@ import { GoogleConnections } from "./google-connections";
 import { StylistSharing } from "./stylist-sharing";
 import { ProfileTabs, type ProfileTab } from "./profile-tabs";
 import { SignOutButton } from "./sign-out-button";
+import { FullBodyPhoto } from "./full-body-photo";
+import { TRY_ON_BUCKET } from "@/lib/try-on/constants";
 
 export default async function ProfilePage({
   searchParams,
@@ -27,6 +29,16 @@ export default async function ProfilePage({
   ]);
 
   const calendarResult = params.google_calendar;
+  const photoPath = (profile as { full_body_photo_path?: string | null } | null)
+    ?.full_body_photo_path;
+  const photoUpdatedAt = (profile as { full_body_photo_updated_at?: string | null } | null)
+    ?.full_body_photo_updated_at;
+  const { data: signedPhoto } = photoPath
+    ? await supabase.storage.from(TRY_ON_BUCKET).createSignedUrl(photoPath, 60 * 60)
+    : { data: null };
+
+  // Closet analytics moved to /closet; keep old links landing on it.
+  if (params.tab === "analytics") redirect("/closet?tab=analytics");
 
   // Google's OAuth callback lands here with ?google_calendar=…, and that result is
   // reported by the connected-accounts section, which lives on the privacy tab.
@@ -43,6 +55,10 @@ export default async function ProfilePage({
         profile: (
           <div className="space-y-8">
             <ProfileForm profile={profile} />
+            <FullBodyPhoto
+              initialPhotoUrl={signedPhoto?.signedUrl ?? null}
+              updatedAt={photoUpdatedAt ?? null}
+            />
             <div className="max-w-2xl border-t border-surface-200 pt-6">
               <SignOutButton />
             </div>

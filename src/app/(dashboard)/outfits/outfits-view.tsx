@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import {
   Check,
+  Camera,
   ChevronLeft,
   ChevronRight,
   Layers3,
@@ -31,6 +32,7 @@ import {
 } from "@/components/outfit/outfit-canvas";
 import { cn } from "@/lib/utils";
 import { StylistChat } from "./stylist-chat";
+import { VirtualTryOn, type InitialTryOnResult } from "./virtual-try-on";
 
 type OutfitItemPreview = Pick<
   WardrobeItem,
@@ -68,6 +70,8 @@ interface OutfitsViewProps {
   outfits: SavedOutfit[];
   wardrobeItems: WardrobeItem[];
   userId: string;
+  profilePhotoUrl: string | null;
+  initialTryOns: InitialTryOnResult[];
 }
 
 const OUTFIT_FOLDERS = [
@@ -81,14 +85,29 @@ const OUTFIT_FOLDERS = [
   "Special Occasion",
 ];
 
-export function OutfitsView({ outfits, wardrobeItems, userId }: OutfitsViewProps) {
+export function OutfitsView({
+  outfits,
+  wardrobeItems,
+  userId,
+  profilePhotoUrl,
+  initialTryOns,
+}: OutfitsViewProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const openHandledRef = useRef(false);
   const supabase = useMemo(() => createClient(), []);
-  const [tab, setTab] = useState<"looks" | "stylist">(
-    searchParams.get("tab") === "stylist" ? "stylist" : "looks"
+  const requestedTab = searchParams.get("tab");
+  const [tab, setTab] = useState<"looks" | "tryon" | "stylist">(
+    requestedTab === "stylist" ? "stylist" : requestedTab === "tryon" ? "tryon" : "looks"
   );
+
+  function selectTab(next: "looks" | "tryon" | "stylist") {
+    setTab(next);
+    const url = new URL(window.location.href);
+    if (next === "looks") url.searchParams.delete("tab");
+    else url.searchParams.set("tab", next);
+    window.history.replaceState(window.history.state, "", url);
+  }
   const [isCreating, setIsCreating] = useState(false);
   const [editingOutfitId, setEditingOutfitId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -413,10 +432,11 @@ export function OutfitsView({ outfits, wardrobeItems, userId }: OutfitsViewProps
 
   return (
     <div>
-      <div className="mb-5 flex gap-1 border-b border-surface-200" role="tablist">
+      <div className="mb-5 flex gap-1 overflow-x-auto border-b border-surface-200" role="tablist">
         {(
           [
             ["looks", "Saved Looks", Layers3],
+            ["tryon", "Virtual Try-On", Camera],
             ["stylist", "AI Stylist", Sparkles],
           ] as const
         ).map(([id, label, Icon]) => (
@@ -425,9 +445,9 @@ export function OutfitsView({ outfits, wardrobeItems, userId }: OutfitsViewProps
             type="button"
             role="tab"
             aria-selected={tab === id}
-            onClick={() => setTab(id)}
+            onClick={() => selectTab(id)}
             className={cn(
-              "-mb-px inline-flex items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors",
+              "-mb-px inline-flex shrink-0 items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors",
               tab === id
                 ? "border-brand-600 text-brand-700"
                 : "border-transparent text-surface-500 hover:text-surface-800"
@@ -448,9 +468,16 @@ export function OutfitsView({ outfits, wardrobeItems, userId }: OutfitsViewProps
           deletingOutfitId={deletingOutfitId}
         />
       </div>
+      <div hidden={tab !== "tryon"}>
+        <VirtualTryOn
+          outfits={visibleOutfits}
+          profilePhotoUrl={profilePhotoUrl}
+          initialResults={initialTryOns}
+        />
+      </div>
       {/* Stays mounted while hidden so switching tabs doesn't drop the conversation. */}
       <div hidden={tab !== "stylist"}>
-        <StylistChat onOpenLooks={() => setTab("looks")} />
+        <StylistChat onOpenLooks={() => selectTab("looks")} />
       </div>
     </div>
   );

@@ -36,6 +36,9 @@ export interface Profile {
   skin_tone: string | null;
   hair_color: string | null;
   hair_length: string | null;
+  /** Private Storage object used as the person input for virtual try-on. */
+  full_body_photo_path: string | null;
+  full_body_photo_updated_at: string | null;
   preference_dna: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -140,6 +143,25 @@ export interface Outfit {
   updated_at: string;
   // joined
   items?: WardrobeItem[];
+}
+
+export type VirtualTryOnStatus = "processing" | "complete" | "failed";
+
+/** One cached FLUX VTO result for an exact person-photo + saved-Look revision. */
+export interface VirtualTryOn {
+  id: string;
+  user_id: string;
+  outfit_id: string;
+  person_photo_path: string;
+  item_fingerprint: string;
+  result_path: string | null;
+  model: string;
+  prompt: string;
+  seed: number | null;
+  status: VirtualTryOnStatus;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface OutfitJournalEntry {
