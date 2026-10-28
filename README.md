@@ -52,7 +52,8 @@ Not a toy: it runs end to end against a live Supabase database, a real Google Ca
     - [2. Auth](#2-auth)
     - [3. Environment variables](#3-environment-variables)
     - [4. Google Calendar OAuth](#4-google-calendar-oauth)
-    - [5. Opening a stylist's access window](#5-opening-a-stylists-access-window)
+    - [5. Loading the private brand list](#5-loading-the-private-brand-list)
+    - [6. Opening a stylist's access window](#6-opening-a-stylists-access-window)
   - [Deployment](#deployment)
   - [Cost](#cost)
   - [Known gaps](#known-gaps)
@@ -155,6 +156,7 @@ Honest labels. **Live** means exercised end-to-end against a real account and th
 | Extra reference angles | 🟡 Built | Requires schema §17 |
 | Magic-wand photo enhancement | 🟡 Built | Requires the photo-enhancement schema block |
 | Recommended looks on an item | 🟡 Built | Page load never calls AI; generation is an explicit click |
+| Closet gaps + where to shop | ✅ Live | Gaps from rules, one Haiku call picks brands from a private list; requires schema §26 and `npm run seed:brands` |
 
 ### Outfits & stylist
 
@@ -163,6 +165,7 @@ Honest labels. **Live** means exercised end-to-end against a real account and th
 | Freeform Canvas builder, persisted geometry | ✅ Live | Shared component across `/outfits`, `/home`, `/plan`, `/stylist`, `/pro` |
 | Save / edit / delete saved looks | ✅ Live | |
 | AI Stylist — discovery questions → validated look | 🟡 Built | Forced Anthropic tool choice + plain-text fallback |
+| FLUX Virtual Try-On Pro | 🟢 Built | Saved Look on `/outfits?tab=tryon`, person photo from User. Schema §27 is applied. A real full-body generation has not been run |
 | Human stylist booking (slot picker) | 🟡 Built | Requires §16. Postgres exclusion constraint is the final race guard |
 | `/pro` review console + proposals + undo | 🟡 Built | Requires §18, a role flip, and an open window on a test client |
 
@@ -434,6 +437,7 @@ npm run test:watch # vitest, in watch mode
 | §21 + §21b | Travel columns, and the two-argument `replace_weekly_plans` — **§21b drops the one-argument version first**; leaving both makes every call ambiguous between overloads, which PostgREST reports as an illegible 300 |
 | §22 | `travel_trip_decisions` |
 | Photo enhancement | `wardrobe_items` optimized/candidate columns + photo analysis cache |
+| §27 | Private full-body photo fields, `virtual_try_ons` cache, and the private `try-on` Storage bucket/RLS. Applied on the current production project 2026-10-27 |
 
 Two things learned the hard way:
 
@@ -454,7 +458,7 @@ Supabase → **Authentication → Providers**. Email is on by default (turn off 
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | ✅ | Browser client |
 | `SUPABASE_SERVICE_ROLE_KEY` | ✅ | **Server-only, never `NEXT_PUBLIC_`.** OAuth tokens, global booking availability, stylist writes, public share page |
 | `ANTHROPIC_API_KEY` | ✅ | Classification, planning, stylist |
-| `FAL_KEY` | ✅ | Background removal, segmentation, enhancement |
+| `FAL_KEY` | ✅ | Background removal, segmentation, enhancement, FLUX Virtual Try-On Pro |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | ✅ | Calendar OAuth (see below) |
 | `OPENWEATHER_API_KEY` | — | Current conditions; weather features degrade gracefully without it |
 | `STYLIST_TIME_ZONE` | — | The human stylist's working calendar, IANA, default `America/New_York`. Slots are generated here and displayed in each client's own timezone |
@@ -478,7 +482,18 @@ Two failures that look like Cloud Console problems but aren't:
 - **`Error 401: invalid_client — The OAuth client was not found`** means `GOOGLE_CLIENT_ID` is unset on the host serving the request (locally: a dev server started before the value was added; on Vercel: the variable was never added to the project). `/api/google/auth` now returns a 500 saying so instead of bouncing you to Google, but an older deployment will still show Google's version.
 - **`Error 400: redirect_uri_mismatch`** means you started the flow from a host whose callback isn't registered. The redirect URI is derived from the request origin, so **every** origin you connect from needs its own entry in step 4 — including `*.vercel.app` preview domains, which change per deployment. In practice: connect Calendar from localhost or from the production domain, not from a preview URL.
 
-### 5. Opening a stylist's access window
+### 5. Loading the private brand list
+
+Gaps & shop recommends brands from the company's own list, which is deliberately **not** in this repository. It lives in the `shop_brands` table (schema §26; RLS with no policy, so only the server reads it). Put the list in `data/private/brands.json` (gitignored), then:
+
+```bash
+npm run seed:brands -- --dry-run   # validate and count, writes nothing
+npm run seed:brands                # upsert on (name, tier)
+```
+
+Each row is `{ "name", "tier": "lower|contemporary|designer", "categories": [...wardrobe categories], "tags": [...], "notes", "priority": 0, "active": true }`. A higher `priority` marks a preferred brand, offered first. To retire a brand, set `active: false` rather than deleting it. Re-seeding marks every unsaved suggestion stale, so users' next refresh picks from the new list.
+
+### 6. Opening a stylist's access window
 
 `POST /api/webhooks/consult-ended` is the one automation hook in the product: it takes `{"client_email": "..."}` plus an `x-webhook-secret` header, and sets that client's `access_expires_at` 14 days out — which is what makes them appear in the stylist's console.
 
@@ -534,8 +549,8 @@ Next, in order (full technical design in `Roadmap.md`):
 
 1. **Gmail's independent OAuth leg** — so a trip can be imported from a booking email instead of found on the calendar.
 2. **Cold-start onboarding** — questionnaire plus style-preference swiping. Upstream of every recommendation's quality, and the cheapest thing on this list.
-3. **Avatar generation** (fal.ai) — the profile's body/appearance columns exist for it; needs caching and rate limiting, since the cost is a different order from text calls.
-4. **Shopping recommendations** — the gap signals are already produced (daily gaps, category imbalance) and currently discarded. The open question is the product data source.
+3. **A real full-body try-on pass** — FLUX Virtual Try-On Pro is built (schema §27 applied, `/outfits` tab, cached `fal-ai/flux-pro/v1/vto` calls). What is left is one upload → generate → cache-hit → replace-photo cleanup on a real photo. Static avatar generation is not built.
+4. **Real-product shopping recommendations** — the brand-level version (Gaps & shop on `/closet`) is built; recommending actual products needs a product data source, most likely an affiliate feed.
 5. **Continuation of the human stylist service** — staff assignment, payment, cancellation and rescheduling, CRM sync.
 
 Deliberately **not** built: a capsule-wardrobe generator (minimizing pieces packed), because the same rotation rules as `/plan` were the chosen tradeoff; and a third-party stylist marketplace, since the stylists are in-house.

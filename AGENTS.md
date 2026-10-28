@@ -27,8 +27,8 @@ npm run typecheck  # tsc --noEmit, over src/ and tests/
 npm test           # vitest run
 ```
 
-Tests cover the deterministic planning/travel/calendar core only, never a route, component or
-live query — see `CLAUDE.md`'s Commands section before adding to them. Stack: Next.js 16 App Router, Supabase (auth/DB/storage),
+Tests cover deterministic modules only (planning, travel, calendar, closet gaps, try-on input,
+`cn()`), never a route, component or live query — see `CLAUDE.md`'s Commands section before adding to them. Stack: Next.js 16 App Router, Supabase (auth/DB/storage),
 **Claude** Vision (classify/stylist/detect), fal.ai (background removal + SAM 3.1 segmentation).
 Required env: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `FAL_KEY`,
 `ANTHROPIC_API_KEY`. Optional: `OPENWEATHER_API_KEY`.

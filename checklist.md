@@ -118,7 +118,7 @@
 | 搭配创建/保存 + 编辑/删除 | ✅ 完成 | `outfits-view.tsx`：衣橱单品拖入/点击加入、自由定位、缩放、层级调整、名称/合集/备注及 Supabase 保存；Canvas 使用去背图透明展示；已保存搭配可从库卡片打开进 Canvas 编辑，也可经确认后删除（只删 Look，衣橱单品保留）；`outfit_items.x/y/width` 持久化自由坐标（见「已完成任务详情」） |
 | 天气 API 集成 | ✅ API 就绪 | 需要 OpenWeather Key；daily/weekly 已接天气，Stylist 目前通过需求澄清询问与当次穿搭相关的天气/室内外约束 |
 | 每日推荐 (Home Page) | ✅ Phase 6.1 完成且已真实验证（2026-07-30） | `/home` 已接天气 + `eventsOnLocalDay()` + 活跃衣橱，Haiku 动态输出 1–N 个 segments；三层数据库结构是唯一缓存，普通同日 GET 不再调 Claude；Dislike 明确排除旧 item IDs；segment 可编辑和单独保存；Worn 原子写 journal，并让当天出现过的每件单品统一 `times_worn +1`。端到端验证详见下方「任务 1」 |
-| Weekly planning (7 天规划) | ✅ Phase 6.2 代码完成 / ⚠️ 待数据库迁移后真实验证 | `/plan` 一次规划从今天起的 7 天。日历地点会在同步时提取城市并缓存坐标，逐日按 event 城市获取 Open-Meteo 预报；支持同日多城市。`Vacation: Hamptons` 这类跨日度假在每个重叠日使用目的地；`Business Trip (London)` 这类跨日商务出差首尾日同时使用常住地 + London，中间日只用 London。事件地址可点击修正或恢复 Google 原地址。仍包含 D8 硬过滤与跨天轮换约束。需执行 schema 中 weekly 唯一键/RPC 及 Calendar location override 的 `alter table`。 |
+| Weekly planning (7 天规划) | ✅ Phase 6.2 代码完成 / ⚠️ 待数据库迁移后真实验证 | `/plan` 一次规划从今天起的 7 天。日历地点会在同步时提取城市并缓存坐标，逐日按 event 城市获取 Open-Meteo 预报；支持同日多城市。`Vacation: Hamptons` 这类跨日度假在每个重叠日使用目的地；`Business Trip (London)` 这类跨日商务出差首尾日同时使用常住地 + London，中间日只用 London。事件地址可点击修正或恢复 Google 原地址。event 继续按原有 `groupOccasions()` 自动分配；日详情只新增 Add segment / Delete segment，新增段复制最后一段造型，删除段把 event refs 交给最近的保留段。结构编辑需执行 schema section 25 的两个 RPC。仍包含 D8 硬过滤与跨天轮换约束。需执行 schema 中 weekly 唯一键/RPC、Calendar location override 的 `alter table` 及 section 25。 |
 | Weekly planning 的轮换间隔用户可配置 | ❌ 待开发 | 2026-08-06 新增需求，方案见 ROADMAP 第三节「并行小需求 B」。「同一件多久能再出现一次」现在是 `plan-rules.ts` 里写死的 `REPEAT_GAP_BY_CATEGORY`，要改成用户可调：新增 `profiles.repeat_gap_overrides jsonb`（schema 第 18 节，只存改过的品类、其余回落默认）+ `/profile` 的「Planning preferences」区块（三个预设 + 展开后按品类步进器 + 可行性提示）。**仍按品类分档，不做全局滑块**——6.2 第二次生成已经证明一刀切会把墨镜误判成违规。落地要点：常量降级为默认表、所有吃间隔的函数改成从参数拿 map（不许再直接 import 常量），weekly 和 daily 两条路径都要传，**prompt 里的数字也要跟着改**（否则模型朝错误目标生成、再靠事后强制替换，搭配质量更差）。零新增模型调用 |
 | Google Calendar 集成 | ✅ OAuth/设置页/事件同步/地点天气/daily/weekly 接线 / ❌ stylist 待接 | daily 和 weekly 都用真实缓存事件构建动态 segments；同步会从 event location 或明确的旅行标题（冒号、末尾括号、`trip to ...`）提取目的地并缓存。旧的“只看 location”空结果会在下次 sync 自动回填。`/plan` 支持本地修正事件城市/地区（不改 Google Calendar）；`stylist` route 的 `context.calendar` 仍未接线。 |
 | Gmail 集成（行程/dress code 信号） | ❌ 待开发 | ROADMAP Phase 6.0/6.3。用途是行程确认邮件 → 自动发现出差、活动邀请、邮件里的明文 dress code；只存抽取后的结构化字段，不存正文。注意 Gmail readonly 属于 Google restricted scope，上线前需通过 Google 验证审核 |
@@ -155,8 +155,9 @@
 | 本地日期分桶工具（`day-bucket.ts`） | ✅ 已实现且已真实验证 | 2026-07-30。`src/lib/calendar/day-bucket.ts` 的 `eventsOnLocalDay(events, localDate, timeZone)`——daily（6.1）和 weekly（6.2）共用同一份时区转换 + 跨天事件重叠判断逻辑，不各写一份。全天事件特殊处理：按 UTC 日期字符串直接比较，不经过时区转换（因为全天事件本来就没有真实的时刻，硬转时区会把它错误地挪到相邻的本地日）。**已用真实 8 个测试事件验证**：`America/New_York` 时区下，9:45am/3pm/8:15pm（跨 UTC 日期）三个事件正确落进同一个本地日——命中用户「一天三个场合」的测试意图；2 天的 Boston 出差全天事件正确出现在两个本地日上、且不出现在 exclusive 的结束日；换成 `Asia/Shanghai` 时区后分桶结果确实不同（不是写死某个时区）。这一步做完才开始 6.1 的 daily 专属逻辑 |
 | 轮换频率由用户决定（ROADMAP 并行小需求 B） | ✅ 代码完成，⚠️ 待 section 19 + 真实验证（2026-08-13） | 规则从「最小间隔天数」改成「滚动 7 天内最多几天」，默认上装/下装/连衣裙/外套 1 天、鞋 2 天、包和配饰 3 天；`profiles.rotation_limits` 只存用户改过的品类，`/plan` 的「Repeat rules」按钮里编辑（三档预设 + 按品类步进器 + 「这个品类你只有 N 件，排满一周需要 M 件」的可行性提示）。同一批改动还修了「总是那几件」的另外三个原因和「运动装进正式场合」——见 Debug Log #19/#20。**同日第二轮**按真实一周的截图修了三处：上限查得出来但没有替换品时被静默忽略（→ 不占槽位的品类改为直接摘掉）、运动段没有「必须是运动装」这条正向规则（→ 新增 `not_sport` + 候选池 `pinnedIds`）、只换一只鞋的两段没有被合并且文字对不上 canvas（→ 合并只比对核心品类 + 新增 `segment-text.ts`），见 Debug Log #21/#22/#23。规则本身有覆盖这三个场景的合成用例跑通，**仍未跑真实生成**；section 19 没执行时会静默沿用默认值（`readRotationLimits()` 单独查询、失败即回落），只有设置面板存不进去 |
 | 冷启动 Onboarding（问卷 + 风格滑卡） | ❌ 待开发 | Phase 7。`preference_swipes` 表 + `profiles.preference_dna` 字段都已就绪；ROADMAP 里建议把它排在 Avatar/Shopping 之前，因为它是所有推荐质量的上游且成本最低。唯一非代码工作量是准备 20–40 张风格参考图 |
-| Avatar 生成（fal.ai） | ❌ 待开发 | Phase 8。`profiles` 的 `skin_tone`/`hair_color`/`hair_length`/`body_shape` 就是给这个预留的。**成本量级和文本调用不同，必须缓存 + 限流**；虚拟试穿比静态 avatar 难得多，建议分两步 |
-| Shopping Recommendations | ❌ 待开发 | Phase 9。缺口信号已经在产出（daily 的 `gap`、出差 capsule 缺口、Analytics 类别失衡）只是丢掉了。**最大未决问题是商品数据源**，建议先接一个联盟 feed 而不是做通用爬虫 |
+| Virtual Try-On（fal.ai） | ✅ 代码完成，schema 27 已在生产库 / ⚠️ 待真实全身照联调（2026-10-27） | `/profile` 上传可复用全身照，`/outfits` 新增 Virtual Try-On tab；服务端把 Saved Look 的多件衣物合成一张 reference 后调用 `fal-ai/flux-pro/v1/vto`。人物照与结果只存私有 `try-on` bucket，页面用 signed URL；`virtual_try_ons` 以人物照 + outfit 图片 fingerprint 做付费调用锁与缓存。已核查：`profiles` 两列、`virtual_try_ons` 4 条 policy、私有 `try-on` bucket 4 条 storage policy。尚无全身照、无生成结果。静态生成 avatar 不在本次范围。 |
+| Shopping Recommendations — 9-A Closet gap + 品牌推荐 | ✅ 客户端真机验证（2026-10-27）；`/pro` 区块未在浏览器验证 | `/closet` 三个 tab（Items / Analytics / Gaps & shop），Closet analytics 从 `/profile` 搬来，`/analytics` 与 `/profile?tab=analytics` 重定向已验证。缺口由 `detect-gaps.ts` 规则算；`/api/ai/shop` 一次 Haiku 调用写文案并从候选里挑品牌；品牌表 `shop_brands` 无 policy、不入仓库。section 26 已应用并核查（`shop_brands` 0 policy，匿名读返回 `[]`）。真机验证：选价位 → 生成 → Save / Not for me / Restore 均落库并刷新后保持；`seed:brands` 重导后显示「Update where to shop」并按新清单重选。`/pro` 未验证原因：唯一的搭配师账号需另行登录，且需给客户开访问窗口 |
+| Shopping Recommendations — 9-B 真商品 | ❌ 待开发 | 缺口信号已经在产出（daily 的 `gap`、出差 capsule 缺口、Analytics 类别失衡）。**最大未决问题是商品数据源**，建议先接一个联盟 feed 而不是做通用爬虫 |
 | 搭配师授权访问 + Folk CRM 集成 | 🟡 预约入口 + Phase 10-A 评审工作台已完成 / CRM 流程待开发 | 已完成单一共享产能日历的线上/线下预约 MVP，以及 Phase 10-A 的 `/pro` 搭配师工作台（见下方任务 3）。人员分配、付款、取消/改期、通知和 Folk 同步仍待开发。**`wardrobe_grants` 按 D16 暂不建** —— 只有一位搭配师时每行 `stylist_id` 都是同一个值；门禁改用 `roles` + `access_expires_at`，加第二位搭配师时再迁移。预约成功不会隐式放开衣橱数据 |
 | 双端（C 端客户 + B 端公司/造型师） | 🚫 **已取消**（2026-07-30，D12） | 公司为自有少数长期搭配师，不做第三方入驻平台。改为 Folk CRM 管客户列表/阶段/跟进 + App 只做 `wardrobe_grants` 授权访问。省掉 Stripe Connect 分账、入驻审核、评价体系 |
 
@@ -164,7 +165,7 @@
 
 | 功能 | 状态 | 备注 |
 |------|------|------|
-| 单元测试（Vitest） | ✅ 完成并跑通（2026-08-14） | 83 个用例，`npm test`，约 0.5s。**只覆盖确定性内核**——`plan-rules.ts` / `occasion-groups.ts` / `detect-trips.ts` / `day-bucket.ts`，也就是 D8 说的「用 TS 判定而不是问模型」的那几个模块，因为只有它们的回归既可能发生又完全无声。每个用例都对应本文件 Debug Log 里真实出现过的故障：一套里两条裤子、一整天只有一双凉鞋、高跟鞋上飞机、高尔夫穿 midi 裙配 pumps、外套上限设成一周一天却连着三天同一件、Hamptons 与 London 相邻被并成一趟、同一个 "Hamptons" 被 geocode 成两地却被拆成两趟、全天事件被时区转换挪到相邻日。**全部是纯函数调用，不碰网络/Supabase/API key/组件**——所以它替代不了状态表里那些「待浏览器验证」，写测试不等于验过。`vitest.config.mts` 里塞了一个假的 `ANTHROPIC_API_KEY`：`classify-events.ts` 在模块作用域构造 SDK client，而 `detect-trips.ts` 从它 import 了一个纯函数，SDK 在空 key 时构造即抛 |
+| 单元测试（Vitest） | ✅ 完成并跑通（2026-08-14；其后又加了 shop / try-on / `cn()`） | 2026-08-14 时 83 个用例，`npm test`，约 0.5s。**只覆盖确定性内核**：起初是 `plan-rules.ts` / `occasion-groups.ts` / `detect-trips.ts` / `day-bucket.ts`（D8：用 TS 判定而不是问模型）。规划与行程的用例对应本文件 Debug Log 里真实出现过的故障。后来又加了 `tests/shop/`（缺口与品牌候选）、`tests/try-on/input.test.ts`（可试衣单品、穿着顺序、fingerprint）和 `tests/lib/utils.test.ts`（`cn()` 保留自定义字号）。**全部是纯函数调用，不碰网络/Supabase/API key/组件**——所以它替代不了状态表里那些「待浏览器验证」，写测试不等于验过。`vitest.config.mts` 里塞了一个假的 `ANTHROPIC_API_KEY`：`classify-events.ts` 在模块作用域构造 SDK client，而 `detect-trips.ts` 从它 import 了一个纯函数，SDK 在空 key 时构造即抛 |
 | CI（GitHub Actions） | ✅ 代码完成，⚠️ 待首次 push 后看结果 | `.github/workflows/ci.yml`：push 到 main 和每个 PR 跑 lint → typecheck → test → build，Node 22 + `npm ci` + npm cache，同分支新 push 取消旧 run。build 步骤喂占位 env（同样是模块作用域 client 的原因），CI 里不会发出任何真实请求。**已在本地用与 CI 完全相同的那组占位环境变量跑过 `npm run build` 并通过**，所以这一步不是没验证过的写法；只是 workflow 本身还没在 GitHub 上跑过一次。注意 CI 是拿手写的 `src/types/database.ts` 做类型检查的，**抓不到 schema drift**，绿灯也不代表某个 schema section 已经执行过 |
 | 仓库整理 | ✅ 完成（2026-08-14） | 删掉根目录三张测试图（`test_shoe_1.jpg` / `test_belts.jpg` / `test_bag&single_shoe.jpg`，共 ~12.8MB，已 `git rm`；它们在 Debug Log「鞋子配对」里被引用为历史验证素材，需要时从 git 历史取回）。`.env.local.example` 本来就不存在（且 `.gitignore` 的 `.env*` 会把它一并忽略），README 里那句 `cp .env.local.example .env.local` 已改成直接看环境变量表。新增 `LICENSE`（专有，源码可读、可评估，禁止复制/改造/分发/商用/训练模型） |
 
@@ -507,6 +508,30 @@
 - **未验证**：没有为了开发验证额外烧 fal 调用；生产库需先执行 `supabase/schema.sql` 中的 `WARDROBE ITEM PHOTO ENHANCEMENT` block，再用真实的 2–4 张 reference（含一张 label）检查自动字段、身份保持、扫光、确认/拒绝/恢复和各搭配页面图片同步。
 - **Runtime debug（2026-08-13）**：远端库未执行该 block 时，显式读取 `optimized_url` 会报 Postgres `42703`，并曾被增强 API 误报成 404。普通读取现用兼容新旧 schema 的 star select；增强 API 会返回带迁移指引的 `503 ENHANCEMENT_SCHEMA_MISSING`。详情主图同时补了 eager loading，清除 LCP 警告。
 - **长任务 debug（2026-08-13）**：真实 3-reference 测试中，2 张 label 正确排除、1 张 back 进入生成；候选图成功落库，但 Seedream → BiRefNet → normalize 同步链路约 80 秒，原 UI 在十几秒后停在同一句 copy，容易误判卡死。现显示累计用时与 45–100 秒预期，刷新后自动恢复 `ready` candidate；fal 两段都有 request id / queue status / duration 日志和可取消硬超时，下载及 Haiku reference 分析也有上限。
+
+### 任务: Closet gap + 品牌推荐（Phase 9-A）— ✅ 代码完成，✅ 客户端真机验证，⚠️ `/pro` 区块待浏览器验证
+
+- `/closet` 改为三个 tab（`closet-tabs.tsx`，与 Profile 共用 `src/components/layout/page-tabs.tsx`）；Closet analytics 从 `/profile` 移入；`/analytics`、`/profile?tab=analytics` 重定向到 `/closet?tab=analytics`。
+- 缺口：`src/lib/shop/detect-gaps.ts`，纯规则；品牌候选：`src/lib/shop/brands.ts`，纯函数；两者都有测试（`tests/shop/`，品牌名全部虚构）。
+- `POST /api/ai/shop`：一次 Haiku forced-tool 调用；模型只能从候选里选品牌，越界名字丢弃，失败回退到排名前两位 + 规则描述。
+- 私有品牌清单：`shop_brands`（RLS 无 policy）+ `npm run seed:brands`，读 gitignore 的 `data/private/brands.json`。已确认代码、测试、schema、文档和 `.next` 构建产物里都没有品牌名。
+- **已验证（2026-10-27）**：section 26 在生产库应用并用 `information_schema` / `pg_policies` 核查；匿名 key 读 `shop_brands` 返回 `[]`；`npm test`（112 条）、typecheck、lint、build 通过；浏览器里用真实账号走完：选价位 → 生成 → Save / Not for me / Restore，刷新后状态保持，数据库行与界面一致；`seed:brands` 重导后出现「Update where to shop」并按新清单重选。
+- **真机发现并修复的两个问题**：
+  1. 真实衣橱（84 件）按初版规则 0 个缺口 —— 规则只看「一件都没有」，库存充足的衣橱永远不会触发。新增「某场合某槽位只有一件」（低严重度）。
+  2. 「运动下装」推荐了三个通勤品牌 —— 10 个 priority=1 的通勤品牌在排序上压过唯一带 `sport` 标签的品牌，并把它挤出 8 个候选。改为：运动缺口只给 `sport` 品牌（若存在）；排序 priority → 标签 → 价位。
+- **未验证**：`/pro/[clientId]` Overview 的 Closet gaps 卡片。需要用搭配师账号登录，并给一位客户打开访问窗口。
+
+---
+
+### 任务: FLUX Virtual Try-On Pro（Phase 8）— ✅ 代码完成，schema 27 已应用，⚠️ 待真实全身照联调
+
+- User/Profile 新增全身照上传：HEIC 先走现有转换，服务端旋转并压到最大 864×1152 JPEG；原图只存私有 `try-on` bucket，`profiles` 只记 object path，不落永久公开 URL。
+- Your outfits 新增 **Virtual Try-On** tab：只从 Saved Looks 选择；包和小配饰不送模型，最多合成 6 件 Tops/Bottoms/Dresses/Outerwear/Shoes，选中后列出实际送去生成的单品名。无全身照时直接引导到 `/profile#full-body-photo`。标签写回 `?tab=tryon`（Looks 是默认，地址栏不带 `tab`）。
+- `POST /api/ai/virtual-try-on`：校验用户对 Look 的所有权。参考图按外套 → 上装 → 连衣裙 → 下装 → 鞋排列并铺满格子：1 件 640×832，2 件 768×640，3–4 件 768×768，5–6 件 768×960，都低于 fal 的 1MP 上限。人物图用 15 分钟 signed URL，结果下载回私有 Storage。
+- 缓存/限流：`virtual_try_ons` 在付费调用前先占行，唯一键为 `(user_id, outfit_id, person_photo_path, item_fingerprint)`；同一照片 + 同一 Look 图片版本直接返回缓存，5 分钟内的 processing 行拒绝重复提交。换人物照、编辑 Look 或增强任一单品图才会生成新 fingerprint。
+- 隐私：结果页只拿 1 小时 signed URL；删除或替换全身照都会删掉该用户的缓存行和生成结果对象。`FAL_KEY` 只在服务端使用。
+- **已验证**：早先的 `npm run typecheck` 与 `npm run lint`（仅保留 `docs/fonts.snippet.tsx` 两条既有 warning）。2026-10-27 参考图顺序与换照清理改完后重跑了 `tsc --noEmit` 和 `tests/try-on/input.test.ts`（资格过滤、穿着顺序、fingerprint 不随顺序或包变化）。同日复查生产库：`profiles.full_body_photo_path` / `full_body_photo_updated_at` 已在，`virtual_try_ons` 有 4 条 own policy，`try-on` bucket 为 private 且有 4 条 storage policy。当时 0 张全身照、0 条试衣结果。打开 `/outfits` 停在登录页，没有走登录后的页面。
+- **未验证**：用真人全身照和至少一套 Saved Look 走上传 → 生成 → 刷新命中缓存 → 改单品后重新生成 → 换照/删照会清掉旧结果。没有为代码验证额外烧 fal 调用。浏览器里的试衣 tab 本身也还没点过。
 
 ---
 

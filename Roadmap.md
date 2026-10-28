@@ -305,6 +305,7 @@ interface WeatherProvider {
   - 输出：7 天数组，每天包含 1–N 个 `{items, reasoning, changeFromPrevious, eventRefs}` segments；批量写入 7 条 `outfit_plans` 父行（`source='weekly'`）及各自子段
 - 成本：这是唯一值得用 Sonnet 的规划调用（7 天 × 约束满足），但一周只跑一次。也可以先用 Haiku 试，效果不行再升。
 - UI：7 列周视图，每格一个缩略拼贴；点开进 outfits Canvas 编辑；支持「换一套这天」单天重生成（只重算一天，不重算整周）
+- ✅ `/plan` 的日详情允许手动增删 segment。calendar event 仍完全按原有 `groupOccasions()` 逻辑自动分配，不提供手动改派入口。新增段复制最后一段造型作为可穿的起点；删除段把 event refs 合并到最近的保留段。两种写操作由 schema section 25 的原子 RPC 完成，Worn 后禁止结构编辑。
 
 ### 6.3 出差模式（重写 `/travel`） — ✅ 2026-08-13 完成，实现与下面的原方案有三处出入
 
@@ -440,6 +441,8 @@ interface WeatherProvider {
 
 ### Phase 8：Avatar（fal.ai）
 
+> **2026-10-27 范围更新：Virtual Try-On 代码与 schema section 27 已落地，静态 avatar 仍未开发。** 使用用户在 `/profile` 上传的真人全身照，入口是 `/outfits` 的 Virtual Try-On tab，不是 Canvas 或 Home。服务端按 fal 的单张 garment URL 限制，把最多 6 件可穿单品（外套、上装、连衣裙、下装、鞋）合成一张低于 1MP 的参考图，再调用 `fal-ai/flux-pro/v1/vto`。人物照和结果在私有 Storage；`virtual_try_ons` 用人物照路径 + Look 图片 fingerprint 做缓存和付费锁；替换或删除全身照会清掉旧结果。生产库已有表、policy 和私有 bucket。还差用真实全身照走一遍生成。下面三条是写这段更新之前的方案，静态 avatar 和「在我身上看看」按钮都没有做。
+
 **为什么排在 Onboarding 后**：avatar 需要外貌数据，onboarding 正好负责收集。
 
 - `profiles` 已有 `skin_tone`/`hair_color`/`hair_length`/`body_shape`/`height_cm`/身围 —— 输入齐了
@@ -453,13 +456,43 @@ interface WeatherProvider {
 
 **依赖**：衣橱缺口分析（`/api/ai/daily` 的 `gap` 字段和出差 capsule 的缺口提示已经在产出这个信号了，现在只是丢掉没用）。
 
+#### 9-A：Closet gap + 品牌推荐 MVP（2026-10-27 定方案并完成；客户端已真机验证，`/pro` 部分未在浏览器验证）
+
+实现与方案的差异（开发中根据真实数据调整）：
+- 缺口规则多了一条「某场合某槽位**只有一件**」（低严重度）。唯一的真实衣橱有 84 件，按原规则（只看「一件都没有」）报出 0 个缺口——库存充足的衣橱永远拿不到推荐。
+- 运动类缺口只给打了 `sport` 标签的品牌（只要存在）；排序改为 priority → 标签契合 → 价位。真机发现：10 个主推的通勤品牌把唯一的运动品牌挤出了候选列表。
+- 搭配师只看缺口和价位档，**不看**客户生成的品牌建议（`shopping_recommendations` 不给 stylist policy）。
+- `seed:brands` 重新导入后会把未保存的建议标记为过期，下次点击按新清单重选。
+
+**决策（均已与用户确认）**
+- **粒度只到「缺什么 + 去哪个品牌买」**，不推具体商品。公司提供的是品牌级清单（按品类 × 价位分层），没有商品、价格、链接；真商品需要联盟 feed，留给 9-B。链接用「品牌 + 品类」的搜索链接，不编造深链。
+- **缺口由 TypeScript 规则算（D8），模型不判断缺不缺**：品类数量、每个场合/正式度档位是否有完整可穿搭配（无正式鞋、无 formality≥3 的下装、无适合低温的外套）、中性色基础款缺失；附加信号来自 `/plan` 的 `selectCandidates` 放宽记录和 daily 的 `gap`。每个缺口是结构化对象（品类/场合/季节/颜色倾向/严重度）。「这件新品能和你已有的 N 件搭」同样由代码算——这是区别于普通导购的点。
+- **模型只做两件事**：把缺口写成人话；从品牌表里挑 2–3 个品牌。品牌必须来自品牌表，不允许模型自己写品牌名；返回后在服务端校验。一次 Haiku 调用，**用户点按钮才触发**，按「衣橱指纹 + 价位档」缓存。缺口列表本身是纯规则、免费，进 tab 自动算。
+- **价位档由用户自选**（Lower / Contemporary / Designer 三档，Gaps 页顶部），存 `profiles.shopping_tier`；推荐出所选档及相邻一档。
+- **品牌有优先级**：`shop_brands.priority`（整数，越大越优先，默认 0）标出公司主推品牌；`/api/ai/shop` 先把高优先级品牌给模型，只有同档同品类不够 2–3 个时才补其他品牌。
+- **大码品牌组暂时忽略**，不做开关。
+- **品牌清单私有，不进仓库**：存 Supabase 表 `shop_brands`，RLS 开启且**不设任何 policy**（同 `google_connections`），只有服务端 service role 读取。首次导入走本地脚本 `npm run seed:brands`，读 gitignore 掉的 `data/private/brands.json`（`docs/BRANDS TO SHOP.md` 也已 gitignore）。**CLAUDE.md、Roadmap、README、测试里不写任何具体品牌名。** 用户只会看到被推荐的那几个品牌，看不到整份清单和分档。
+- **搭配师可见**：`/pro/[clientId]` 加只读区块，显示该客户的缺口和他选的价位档。缺口只由衣橱算出，不涉及日历，所以不受 L1/L2 开关约束，但仍走 `stylist_can_view()` 访问窗口并写 `wardrobe_access_log`。`profiles.shopping_tier` 是 `profiles` 上新增的列，已确认：18b 对 `profiles` 是整行可读，无需新 policy。
+
+**页面位置**：`/closet` 加 tab 栏（沿用 `profile-tabs.tsx` 样式）：**Items | Analytics | Gaps & shop**。`ClosetAnalytics` 从 `/profile` 搬到 `/closet`，Profile 只剩 *Profile* 与 *Permissions & privacy* 两个 tab；`/analytics`、`/profile?tab=analytics` 重定向到 `/closet?tab=analytics`，`/stylist` 的旧重定向不变。
+
+**数据库（schema section 26，已应用到生产库并验证）**
+- `shop_brands`（name、categories[]、tier、tags[]、notes、priority、active）：RLS 开启、无 policy。
+- `profiles.shopping_tier`（nullable，check 三档）。
+- `shopping_recommendations`（user_id / 缺口快照 / 品牌 / 搜索链接 / status：new|saved|dismissed）：自有数据，四条 policy；`dismissed` 的缺口不再重复推。
+
+**模块（已完成）**：`src/lib/shop/detect-gaps.ts`（纯函数，进测试套件）、`src/lib/shop/brands.ts`（候选品牌排序，纯函数；service-role 读取在路由里）、`POST /api/ai/shop`、`closet/gaps-shop.tsx`、`pro/[clientId]/gaps-section.tsx`、`scripts/seed-brands.mts`。
+
+**测试**：`detect-gaps` 是确定性核心，按现有约定加用例；用例里用虚构品牌名。
+
+#### 9-B：真商品推荐（未排期）
+
 - 缺口来源三条：日推 `gap`、出差 capsule 缺口、Analytics 的类别分布失衡
 - 商品数据来源是这一项的**最大未决问题**，必须先定：
   - 联盟平台 feed（如 ShopStyle / Rakuten / Amazon Associates）—— 有结构化数据 + 佣金，但需要申请
   - 电商 API —— 覆盖有限
   - Web search + Claude 抽取 —— 灵活但不稳定、不可持续做商业化
-  - 建议：先接一个联盟 feed 做 MVP，别做通用爬虫
-- 新表 `shopping_recommendations`（user_id / gap_reason / product 快照 / url / status）
+  - 建议：先接一个联盟 feed，别做通用爬虫
 - 关键产品判断：推荐必须**和已有衣橱挂钩**（"这件能和你已有的 6 件搭"），否则就是普通导购，没有差异化
 
 ### Phase 10：搭配师授权访问 + Folk CRM 集成
@@ -640,7 +673,7 @@ Folk 有完整 REST API（workspace 级 Bearer key）、自定义字段、pipeli
          ★ 决策点：Phase 11 的角色/组织模型（不写代码，只定 schema 方向）
          ─────────────────────────────────────────────
          Phase 8    Avatar（fal.ai）
-         Phase 9    Shopping Recommendations（先定商品数据源）
+         Phase 9    Shopping Recommendations（9-A 品牌级 MVP 已完成；9-B 真商品先定数据源）
          Phase 10   搭配师授权访问 + Folk CRM 集成
                     （Phase 11「双端」已取消 —— 见第四节）
 ```
